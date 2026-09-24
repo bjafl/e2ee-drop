@@ -80,6 +80,63 @@ describe("upload routes", () => {
     expect(drops).toHaveLength(1);
   });
 
+  it("allows only one of two concurrent upload-url requests on the same link to succeed", async () => {
+    // server.inject() simulates requests in-process and does not reliably interleave two
+    // concurrent calls (Fastify/light-my-request tends to resolve one fully before the next
+    // handler body even starts, which would pass even against the old, unguarded code without
+    // proving anything). Listen on a real socket and fire genuine concurrent HTTP requests so
+    // both handlers' DB round-trips actually overlap and exercise the real race.
+    const server = buildServer();
+    await server.listen({ port: 0, host: "127.0.0.1" });
+    const address = server.server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    try {
+      const slug = await createLink(server);
+
+      const fire = () =>
+        fetch(`${baseUrl}/api/links/${slug}/upload-url`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ senderPublicKey: "c2VuZGVy", metadata: validMetadata }),
+        });
+
+      // Fire many concurrent requests, not just two: with only two racers, one request's
+      // full round trip (read + insert + sign) can complete before the other's read even
+      // returns, which "accidentally" avoids the race without proving anything was fixed.
+      // A wider burst makes it overwhelmingly likely that at least two reads land inside
+      // the same open window, so this reliably exercises the actual race.
+      const CONCURRENT_REQUESTS = 12;
+      const responses = await Promise.all(Array.from({ length: CONCURRENT_REQUESTS }, fire));
+      const statusCodes = responses.map((r) => r.status);
+      const successes = statusCodes.filter((s) => s === 200);
+      const conflicts = statusCodes.filter((s) => s === 409);
+      expect(successes).toHaveLength(1);
+      expect(conflicts).toHaveLength(CONCURRENT_REQUESTS - 1);
+
+      const drops = await prisma.drop.findMany({ where: { link: { slug } } });
+      expect(drops).toHaveLength(1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("rejects an empty body with 400 instead of crashing", async () => {
+    const server = buildServer();
+    const slug = await createLink(server);
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+    });
+
+    expect(response.statusCode).toBe(400);
+
+    const drops = await prisma.drop.findMany({ where: { link: { slug } } });
+    expect(drops).toHaveLength(0);
+  });
+
   it("returns 404 for an expired link", async () => {
     const server = buildServer();
     const link = await prisma.link.create({

@@ -9,3 +9,4 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 export type { Link, Drop } from "@prisma/client";
+export { Prisma } from "@prisma/client";
