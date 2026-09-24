@@ -1,0 +1,20 @@
+{
+  "name": "@e2ee-drop/db",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "generate": "prisma generate",
+    "migrate:dev": "prisma migrate dev",
+    "migrate:deploy": "prisma migrate deploy",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.1.0"
+  },
+  "devDependencies": {
+    "prisma": "^6.1.0",
+    "vitest": "^2.1.8",
+    "typescript": "^5.9.3"
+  }
+}
