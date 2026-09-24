@@ -1,0 +1,26 @@
+{
+  "name": "@e2ee-drop/api",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "cleanup": "tsx src/jobs/cleanup.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@e2ee-drop/db": "workspace:*",
+    "@e2ee-drop/shared": "workspace:*",
+    "@aws-sdk/client-s3": "^3.908.0",
+    "@aws-sdk/s3-request-presigner": "^3.908.0",
+    "fastify": "^5.1.0",
+    "nanoid": "^5.0.9"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.8"
+  }
+}
