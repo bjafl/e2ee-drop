@@ -134,7 +134,9 @@ browser extensions or local device access).
 
 ## 5. Data model (high-level; exact schema is a plan-stage decision)
 
-- **User**: id, email, passwordHash (Argon2id), passwordSalt,
+- **User**: id, email, emailVerified (bool, default false), name
+  (user-entered display name — never verified, shown to senders labeled
+  as self-entered), passwordHash (Argon2id), passwordSalt,
   passwordWrappedPrivateKey, recoveryWrappedPrivateKey, publicKey,
   totpSecretEncrypted (nullable), totpEnabled (bool), storageQuotaBytes,
   storageUsedBytes, createdAt.
@@ -148,7 +150,8 @@ browser extensions or local device access).
   user), createdAt, revokedAt (nullable).
 - **Drop**: id, linkId, senderPublicKey, senderUserId (nullable —
   populated when the sender was authenticated), s3Key, nonce, fileName,
-  fileSize, mimeType, contentMD5, status, createdAt, expiresAt.
+  fileSize, mimeType, contentMD5, message (nullable, short plaintext
+  string, max ~500 chars — see §6.1), status, createdAt, expiresAt.
 - **Contact**: id, userId, contactUserId, status (`pending` |
   `accepted`), createdAt — a mutual request/accept relationship, checked
   when a sender uploads to a `contacts-only` link.
@@ -178,6 +181,35 @@ schema, avoiding two parallel systems for the same underlying concept.
   selecting a contact simply navigates to their default personal link
   (`/d/<contact-username>`), and the existing visibility check handles
   access control transparently.
+
+### 6.1 Sender-facing recipient identity and optional message
+
+Before uploading, the sender is shown who they are sending to, so they
+can confirm they have the right recipient:
+
+- **Owned links** (link has an `ownerId`): show the owner's `name` and
+  `email`, each labeled with its trust level — `name` is always shown as
+  "entered by the user, not verified" (it is free text the account
+  holder chose, never checked against anything); `email` shows a
+  verified/unverified badge driven by `User.emailVerified`. Neither
+  claim is cryptographically tied to the recipient's public key — this
+  is ordinary account metadata, not part of the E2EE trust model — but
+  showing it helps a sender catch an obviously wrong link before they
+  upload.
+- **Anonymous links** (`ownerId` is null): there is no verified identity
+  to show at all, so the UI displays a plain "Anonymous recipient"
+  indicator instead of a name/email block. Inventing a placeholder name
+  or email for an anonymous link would misrepresent a flow where nothing
+  about the recipient has been checked.
+
+Independent of recipient identity, the sender may attach a short,
+**optional** plaintext comment to a `Drop` (`Drop.message`, capped at
+~500 characters) — e.g. "here's the invoice we discussed." The upload UI
+must display an explicit, unavoidable notice next to this field stating
+that, unlike the file itself, **this message is not end-to-end
+encrypted** and is readable by whoever operates the server/database. The
+message is plain data in the `Drop` row, not part of the NaCl box
+payload.
 
 ## 7. Live status updates
 
