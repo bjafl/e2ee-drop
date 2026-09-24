@@ -1,6 +1,7 @@
 // apps/api/src/jobs/cleanup.ts
 import { prisma } from "@e2ee-drop/db";
 import { deleteObject } from "../lib/storage";
+import { deleteLinkIfExists } from "../lib/links";
 
 export async function runCleanup(): Promise<{ deletedLinks: number }> {
   const now = new Date();
@@ -13,7 +14,7 @@ export async function runCleanup(): Promise<{ deletedLinks: number }> {
     for (const drop of link.drops) {
       await deleteObject(drop.s3Key);
     }
-    await prisma.link.delete({ where: { id: link.id } });
+    await deleteLinkIfExists(link.id);
   }
 
   return { deletedLinks: expiredLinks.length };

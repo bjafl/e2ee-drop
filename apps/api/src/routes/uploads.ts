@@ -3,7 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { nanoid } from "nanoid";
 import { prisma, Prisma } from "@e2ee-drop/db";
 import type { RequestUploadUrlRequest, RequestUploadUrlResponse } from "@e2ee-drop/shared";
-import { getLinkBySlug, isLinkExpired } from "../lib/links";
+import { deleteLinkIfExists, getLinkBySlug, isLinkExpired } from "../lib/links";
 import { getSignedUploadUrl } from "../lib/storage";
 import { env } from "../env";
 
@@ -33,7 +33,7 @@ export function registerUploadRoutes(server: FastifyInstance): void {
       const link = await getLinkBySlug(request.params.slug);
       if (!link) return reply.status(404).send({ error: "Link not found" });
       if (isLinkExpired(link)) {
-        await prisma.link.delete({ where: { id: link.id } });
+        await deleteLinkIfExists(link.id);
         return reply.status(404).send({ error: "Link not found" });
       }
       // Fast path only: avoids opening a transaction for the common case where we

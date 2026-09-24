@@ -2,7 +2,7 @@
 import type { FastifyInstance } from "fastify";
 import { prisma } from "@e2ee-drop/db";
 import type { DownloadUrlResponse } from "@e2ee-drop/shared";
-import { getLinkBySlug, isLinkExpired } from "../lib/links";
+import { deleteLinkIfExists, getLinkBySlug, isLinkExpired } from "../lib/links";
 import { getSignedDownloadUrl } from "../lib/storage";
 
 export function registerDownloadRoutes(server: FastifyInstance): void {
@@ -10,7 +10,7 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
     const link = await getLinkBySlug(request.params.slug);
     if (!link) return reply.status(404).send({ error: "Link not found" });
     if (isLinkExpired(link)) {
-      await prisma.link.delete({ where: { id: link.id } });
+      await deleteLinkIfExists(link.id);
       return reply.status(404).send({ error: "Link not found" });
     }
     const drop = link.drops[0];

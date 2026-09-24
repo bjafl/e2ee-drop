@@ -2,7 +2,13 @@
 import type { FastifyInstance } from "fastify";
 import { prisma } from "@e2ee-drop/db";
 import type { CreateLinkRequest, CreateLinkResponse } from "@e2ee-drop/shared";
-import { createOneTimeLink, getLinkBySlug, isLinkExpired, toLinkStatusResponse } from "../lib/links";
+import {
+  createOneTimeLink,
+  deleteLinkIfExists,
+  getLinkBySlug,
+  isLinkExpired,
+  toLinkStatusResponse,
+} from "../lib/links";
 import { resolveLocale, deriveCodewords, CODEWORD_MAX_COUNT } from "../lib/codewords";
 
 export function registerLinkRoutes(server: FastifyInstance): void {
@@ -24,7 +30,7 @@ export function registerLinkRoutes(server: FastifyInstance): void {
     const link = await getLinkBySlug(request.params.slug);
     if (!link) return reply.status(404).send({ error: "Link not found" });
     if (isLinkExpired(link)) {
-      await prisma.link.delete({ where: { id: link.id } });
+      await deleteLinkIfExists(link.id);
       return reply.status(404).send({ error: "Link not found" });
     }
     return reply.send(toLinkStatusResponse(link));
