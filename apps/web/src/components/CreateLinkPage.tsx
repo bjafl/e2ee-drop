@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import nacl from "tweetnacl";
 import { encodeBase64 } from "tweetnacl-util";
 import { useTranslation } from "react-i18next";
+import type { CreateLinkResponse } from "@e2ee-drop/shared";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useLocalLinks } from "@/hooks/useLocalLinks";
@@ -38,7 +39,7 @@ export function CreateLinkPage() {
           body: JSON.stringify({ recipientPublicKey: encodeBase64(keyPair.publicKey), locale }),
         });
         if (!response.ok) throw new Error("create failed");
-        const body = await response.json();
+        const body = (await response.json()) as CreateLinkResponse;
         if (cancelled) return;
         saveLink(body.slug, encodeBase64(keyPair.secretKey), Date.now() + LINK_EXPIRY_MS);
         setSlug(body.slug);
