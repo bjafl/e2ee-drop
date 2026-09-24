@@ -2399,9 +2399,43 @@ git commit -m "feat(web): route the contacts and new-link pages"
 
 ---
 
-## Post-plan reconciliation note
+## Post-plan reconciliation note — RESOLVED against Plan 2's actual committed output
 
-Two assumptions in this plan need a one-line confirmation against Plan 2's actual output once both land on the same branch, since Plan 2 was written in parallel without visibility into this plan and vice versa:
+Both open assumptions below have been checked against Plan 2 as actually committed (`docs/superpowers/plans/2026-09-24-accounts-and-key-management.md`) and are now given concrete, confirmed fixes. Apply both before running any task in this plan that touches `x-test-user-id` or `useAuth().keyPair`.
 
-1. **Auth test-faking mechanism.** Tasks 3, 5, 6, 7, and 8 use an `x-test-user-id` request header as a stand-in for an authenticated `request.user` inside Fastify `.inject()` calls, since this plan cannot see how Plan 2's own test suite fakes a session. Replace every occurrence with whatever Plan 2 actually uses (e.g. a signed test cookie, a `request.user` override option on `buildServer()`, or similar) before running this plan's test suite for real.
-2. **`useAuth().keyPair`.** Task 12 assumes `useAuth()` exposes the logged-in user's decrypted `nacl.BoxKeyPair` under a `keyPair` field, which the Plan 2 contract handed to this plan's author did not explicitly promise (it only specified `user: { id, username, publicKey }`). If Plan 2 exposes the decrypted secret key differently, update Task 12 Step 4's `authKeyPair` source accordingly — everything else in this plan is independent of that name.
+1. **Auth test-faking mechanism — replace every `x-test-user-id` header with a real signed session cookie.** Plan 2's `plugins/auth.ts` only ever populates `request.user` by reading and unsigning the `SESSION_COOKIE_NAME` cookie (via `request.unsignCookie`) — it has no header-based bypass, so every test in this plan that sends `headers: { "x-test-user-id": someUser.id }` would 403 for real (unauthenticated) once run against Plan 2's actual plugin. Plan 2's own tests authenticate by performing a real login and reusing the resulting cookie; do the same here, but skip the full registration/key-wrapping HTTP flow (irrelevant to contacts/links tests) by creating the `User` row directly and minting a session directly. Add this helper once, e.g. in a new `apps/api/src/test/authHelpers.ts`, and import it everywhere a test in Tasks 3, 5, 6, 7, and 8 currently sends `x-test-user-id`:
+
+   ```typescript
+   // apps/api/src/test/authHelpers.ts
+   import type { FastifyInstance } from "fastify";
+   import { prisma } from "@e2ee-drop/db";
+   import { createSession } from "../lib/sessions";
+   import { SESSION_COOKIE_NAME } from "../plugins/auth";
+
+   export async function createTestUser(overrides: Partial<{ username: string; email: string }> = {}) {
+     return prisma.user.create({
+       data: {
+         email: overrides.email ?? `${crypto.randomUUID()}@example.test`,
+         username: overrides.username ?? `user${crypto.randomUUID().slice(0, 8)}`,
+         name: "Test User",
+         passwordHash: "unused-in-these-tests",
+         passwordSalt: "unused-in-these-tests",
+         passwordWrappedPrivateKey: "unused-in-these-tests",
+         recoveryWrappedPrivateKey: "unused-in-these-tests",
+         publicKey: "dGVzdC1wdWJsaWMta2V5", // "test-public-key" as base64, not a real NaCl key — fine for auth-only tests
+         storageQuotaBytes: 5 * 1024 * 1024 * 1024,
+       },
+     });
+   }
+
+   export async function loginCookie(server: FastifyInstance, userId: string) {
+     const session = await createSession(userId);
+     return { [SESSION_COOKIE_NAME]: server.signCookie(session.id) };
+   }
+   ```
+
+   Then every occurrence of `headers: { "x-test-user-id": alice.id }` becomes `cookies: await loginCookie(server, alice.id)` (and correspondingly, wherever a test currently creates its test users with an ad hoc inline `prisma.user.create`, use `createTestUser(...)` instead, for consistency — check each of Tasks 3, 5, 6, 7, 8's test setup and align it with these two helpers before writing that task's implementation). `server.signCookie` is available because Plan 2's Task 8 registers `@fastify/cookie` on the server instance, which decorates it with `.signCookie`/`.unsignCookie` in addition to the per-request `request.unsignCookie` the auth plugin itself uses.
+
+2. **`useAuth().keyPair` — it exists, but nested one level deeper than assumed.** Plan 2's actual `useAuth()` returns `{ user: AuthUser | null, login, logout, register }`, and `keyPair: nacl.BoxKeyPair | null` lives on `AuthUser`, not on the hook's top-level return. Task 12 Step 4's `const { keyPair: authKeyPair } = useAuth();` is wrong and must be `const { user } = useAuth(); const authKeyPair = user?.keyPair ?? null;` instead — update Task 12 Step 4 accordingly (and Task 12's own `vi.mock("@/hooks/useAuth", ...)` in Step 1, which already mocks the correct nested shape and does not need to change).
+
+   **Second-order issue this surfaces, not present in the original assumption:** Plan 2 explicitly does not persist `keyPair` across a page reload — a bare reload restores `user` from `GET /api/auth/me` but leaves `keyPair` `null` until the next `login()` call. Task 12's DownloadPage must therefore treat `authKeyPair === null` while `user` is non-null as "logged in, but needs to re-enter their password to decrypt" — not as "not logged in." Add this as an explicit branch in Task 12 (a fourth test case: mock `useAuth()` returning a non-null `user` with `keyPair: null`, and assert the page shows a password re-entry prompt rather than silently failing to decrypt or treating the viewer as anonymous) before marking Task 12 done.
