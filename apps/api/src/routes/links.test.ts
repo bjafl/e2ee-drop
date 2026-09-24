@@ -51,4 +51,21 @@ describe("link routes", () => {
     const getResponse = await server.inject({ method: "GET", url: `/api/links/${slug}` });
     expect(getResponse.statusCode).toBe(404);
   });
+
+  it("returns a codewords phrase on create and on the link status response", async () => {
+    const server = buildServer();
+    const createResponse = await server.inject({
+      method: "POST",
+      url: "/api/links",
+      payload: { recipientPublicKey: "cmVjaXBpZW50a2V5", locale: "nb" },
+    });
+    const createBody = createResponse.json();
+    expect(Array.isArray(createBody.codewords)).toBe(true);
+    expect(createBody.codewords.length).toBeGreaterThan(0);
+
+    const getResponse = await server.inject({ method: "GET", url: `/api/links/${createBody.slug}` });
+    const body = getResponse.json();
+
+    expect(body.codewords).toEqual(createBody.codewords);
+  });
 });

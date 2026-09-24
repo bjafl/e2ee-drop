@@ -3,15 +3,20 @@ import type { FastifyInstance } from "fastify";
 import { prisma } from "@e2ee-drop/db";
 import type { CreateLinkRequest, CreateLinkResponse } from "@e2ee-drop/shared";
 import { createOneTimeLink, getLinkBySlug, isLinkExpired, toLinkStatusResponse } from "../lib/links";
+import { resolveLocale, deriveCodewords, CODEWORD_MAX_COUNT } from "../lib/codewords";
 
 export function registerLinkRoutes(server: FastifyInstance): void {
   server.post<{ Body: CreateLinkRequest }>("/api/links", async (request, reply) => {
-    const { recipientPublicKey } = request.body;
+    const { recipientPublicKey, locale } = request.body;
     if (!recipientPublicKey) {
       return reply.status(400).send({ error: "Missing recipientPublicKey" });
     }
-    const link = await createOneTimeLink(recipientPublicKey);
-    const body: CreateLinkResponse = { linkId: link.id, slug: link.slug };
+    const link = await createOneTimeLink(recipientPublicKey, locale);
+    const body: CreateLinkResponse = {
+      linkId: link.id,
+      slug: link.slug,
+      codewords: deriveCodewords(link.recipientPublicKey, resolveLocale(link.codewordLocale), CODEWORD_MAX_COUNT),
+    };
     return reply.send(body);
   });
 

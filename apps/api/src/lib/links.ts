@@ -3,15 +3,17 @@ import { customAlphabet } from "nanoid";
 import { prisma, type Link, type Drop } from "@e2ee-drop/db";
 import type { DropSummary, LinkStatusResponse } from "@e2ee-drop/shared";
 import { env } from "../env";
+import { resolveLocale, deriveCodewords, CODEWORD_MAX_COUNT } from "./codewords";
 
 const nanoid = customAlphabet("123456789abcdefghijkmnopqrstuvwxyz", 16);
 
-export async function createOneTimeLink(recipientPublicKey: string): Promise<Link> {
+export async function createOneTimeLink(recipientPublicKey: string, locale?: string): Promise<Link> {
   return prisma.link.create({
     data: {
       slug: nanoid(),
       mode: "one-time",
       recipientPublicKey,
+      codewordLocale: resolveLocale(locale),
       expiresAt: new Date(Date.now() + env.LINK_EXPIRY_HOURS * 60 * 60 * 1000),
     },
   });
@@ -47,5 +49,10 @@ export function toLinkStatusResponse(link: Link & { drops: Drop[] }): LinkStatus
     recipientPublicKey: link.recipientPublicKey,
     drop: activeDrop ? toDropSummary(activeDrop) : null,
     isAnonymous: link.ownerId === null,
+    codewords: deriveCodewords(
+      link.recipientPublicKey,
+      resolveLocale(link.codewordLocale),
+      CODEWORD_MAX_COUNT
+    ),
   };
 }
