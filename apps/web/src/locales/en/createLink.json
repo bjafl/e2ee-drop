@@ -1,0 +1,10 @@
+{
+  "title": "Receive a file",
+  "creating": "Creating your link…",
+  "copyLink": "Copy link",
+  "copied": "Copied!",
+  "codewordsLabel": "Verification words — read these aloud to confirm the sender has the right link",
+  "showMoreWords": "Show more words",
+  "showFewerWords": "Show fewer words",
+  "errors": { "createFailed": "Could not create a link. Please try again." }
+}

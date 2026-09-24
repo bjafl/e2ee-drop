@@ -1,0 +1,10 @@
+{
+  "title": "Motta en fil",
+  "creating": "Oppretter lenken din…",
+  "copyLink": "Kopier lenke",
+  "copied": "Kopiert!",
+  "codewordsLabel": "Verifiseringsord — les disse høyt for å bekrefte at avsenderen har riktig lenke",
+  "showMoreWords": "Vis flere ord",
+  "showFewerWords": "Vis færre ord",
+  "errors": { "createFailed": "Kunne ikke opprette lenke. Prøv igjen." }
+}
