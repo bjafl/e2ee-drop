@@ -20,6 +20,7 @@
 - Docker Compose services: `web` (nginx serving the static build, reverse-proxying `/api/*` to `api`), `api`, `postgres`, `minio`, `migrate` (one-shot `prisma migrate deploy`), `cleanup` (interval retention sweep) — all four non-DB/storage services build from the `api`/`web` images with different `command`s where applicable (spec §9.2).
 - The server never sees plaintext file bytes or private keys; crypto (NaCl box, `tweetnacl`) runs client-side only (spec §2).
 - `Drop.message` is optional, capped at ~500 characters, and is plain (unencrypted) data — the UI must show an explicit "not encrypted" notice next to it (spec §6.1).
+- Every `Link` carries a deterministic 3-5 word verification codeword phrase derived server-side from its `recipientPublicKey` (SHA-256, 8 bits/word, 256-word list per locale) — same key and locale always produce the same words, shown to both sender and recipient as an out-of-band check (spec §2.1).
 - Anonymous (ownerless) links must show a plain "Anonymous recipient" indicator to the sender — never an invented name/email (spec §6.1).
 - `react-i18next` with `en` and `nb` locales is required from the start (spec §11); this plan uses per-feature i18next namespaces so parallel tasks touch separate locale files.
 - No bundled reverse proxy/TLS beyond the `web` nginx container; operators front it themselves (spec §9.2).
@@ -194,6 +195,7 @@ model Link {
   mode               String
   visibility         String    @default("public")
   recipientPublicKey String
+  codewordLocale     String    @default("en")
   retentionDays      Int?
   isDefault          Boolean   @default(false)
   createdAt          DateTime  @default(now())
@@ -282,10 +284,10 @@ git commit -m "feat(db): add Prisma schema for Link/Drop and client singleton"
 - Consumes: nothing beyond the workspace root (Task 1).
 - Produces (imported as `@e2ee-drop/shared` by both `apps/api` and `apps/web`):
   - Types: `LinkMode`, `LinkVisibility`, `DropStatus`
-  - `CreateLinkRequest { recipientPublicKey: string }`
-  - `CreateLinkResponse { linkId: string; slug: string }`
+  - `CreateLinkRequest { recipientPublicKey: string; locale?: string }`
+  - `CreateLinkResponse { linkId: string; slug: string; codewords: string[] }`
   - `DropSummary { id: string; status: DropStatus; senderPublicKey: string; nonce: string; fileName: string; fileSize: number; mimeType: string; contentMD5: string; message: string | null }`
-  - `LinkStatusResponse { slug: string; mode: LinkMode; recipientPublicKey: string; drop: DropSummary | null; isAnonymous: boolean }`
+  - `LinkStatusResponse { slug: string; mode: LinkMode; recipientPublicKey: string; drop: DropSummary | null; isAnonymous: boolean; codewords: string[] }`
   - `RequestUploadUrlRequest { senderPublicKey: string; message?: string; metadata: { fileName: string; fileSize: number; nonce: string; mimeType: string; contentMD5: string } }`
   - `RequestUploadUrlResponse { dropId: string; uploadUrl: string }`
   - `DownloadUrlResponse { downloadUrl: string; fileName: string; fileSize: number; mimeType: string; nonce: string; senderPublicKey: string; contentMD5: string }`
@@ -324,11 +326,13 @@ export type DropStatus = "uploading" | "uploaded" | "downloading" | "downloaded"
 
 export interface CreateLinkRequest {
   recipientPublicKey: string; // base64
+  locale?: string; // "en" | "nb" — UI language of the link creator, fixes the codeword wordlist for this link
 }
 
 export interface CreateLinkResponse {
   linkId: string;
   slug: string;
+  codewords: string[]; // returned immediately so the creator doesn't need a second round-trip to see their phrase
 }
 
 export interface DropSummary {
@@ -349,6 +353,7 @@ export interface LinkStatusResponse {
   recipientPublicKey: string; // base64
   drop: DropSummary | null;
   isAnonymous: boolean;
+  codewords: string[]; // deterministic verification phrase, up to CODEWORD_MAX_COUNT words, in the link's fixed locale
 }
 
 export interface RequestUploadUrlRequest {
@@ -1511,6 +1516,277 @@ git add apps/api/src/lib/links.ts apps/api/src/routes/links.ts apps/api/src/rout
 git commit -m "feat(api): add link create/get/delete routes"
 ```
 
+### Task 9b: Link verification codewords
+
+**Files:**
+- Create: `apps/api/src/lib/wordlists.ts`
+- Create: `apps/api/src/lib/codewords.ts`
+- Modify: `apps/api/src/lib/links.ts`
+- Modify: `apps/api/src/routes/links.ts`
+- Test: `apps/api/src/lib/codewords.test.ts`
+- Test (extend): `apps/api/src/routes/links.test.ts`
+
+**Interfaces:**
+- Consumes: `CreateLinkRequest`, `LinkStatusResponse` from `@e2ee-drop/shared` (Task 3, already patched with `locale?: string` and `codewords: string[]`); `createOneTimeLink`, `toLinkStatusResponse` from `../lib/links` (Task 9, modified by this task).
+- Produces: `CodewordLocale = "en" | "nb"`, `WORDLISTS: Record<CodewordLocale, string[]>`, `DEFAULT_LOCALE: CodewordLocale` from `wordlists.ts`; `CODEWORD_DEFAULT_COUNT`, `CODEWORD_MAX_COUNT`, `resolveLocale(locale?: string): CodewordLocale`, `deriveCodewords(publicKeyBase64: string, locale: CodewordLocale, count?: number): string[]` from `codewords.ts` — consumed by `lib/links.ts` in this same task, and by Task 13 (which needs `CODEWORD_DEFAULT_COUNT`/`CODEWORD_MAX_COUNT` client-side only as display constants duplicated in the frontend, since the derivation itself always runs server-side).
+
+- [ ] **Step 1: Write `apps/api/src/lib/wordlists.ts`**
+
+256 short, common, unambiguous nouns per locale (English and Norwegian Bokmål), one 8-bit hash byte indexes one word (see spec §2.1). Kept in the same order across locales for maintainability, though nothing requires exact translation pairing.
+
+```typescript
+// apps/api/src/lib/wordlists.ts
+export type CodewordLocale = "en" | "nb";
+export const DEFAULT_LOCALE: CodewordLocale = "en";
+
+const EN: string[] = [
+  "fox", "wolf", "bear", "deer", "stoat", "lynx", "mole", "mouse", "otter", "badger", "rabbit", "squirrel", "hedgehog", "raccoon", "beaver", "elk",
+  "owl", "hawk", "crow", "swan", "duck", "goose", "robin", "sparrow", "eagle", "falcon", "heron", "stork", "magpie", "raven", "dove", "wren",
+  "fish", "seal", "whale", "shark", "crab", "clam", "squid", "eel", "trout", "salmon", "perch", "pike", "shrimp", "mussel", "starfish", "jellyfish",
+  "ant", "bee", "wasp", "moth", "fly", "beetle", "cricket", "spider", "ladybug", "dragonfly", "grasshopper", "firefly", "snail", "mite", "worm", "mosquito",
+  "oak", "pine", "birch", "maple", "elm", "willow", "cedar", "spruce", "fern", "moss", "reed", "thistle", "clover", "ivy", "bamboo", "cactus",
+  "apple", "pear", "plum", "peach", "cherry", "grape", "lemon", "orange", "melon", "currant", "fig", "mango", "kiwi", "apricot", "olive", "walnut",
+  "carrot", "potato", "onion", "garlic", "cabbage", "leek", "radish", "turnip", "beet", "pumpkin", "celery", "spinach", "lettuce", "parsley", "bean", "yam",
+  "bread", "butter", "cheese", "honey", "sugar", "salt", "pepper", "grain", "rice", "oat", "wheat", "syrup", "jam", "broth", "soup", "tea",
+  "river", "lake", "ocean", "cloud", "storm", "rain", "snow", "frost", "fog", "wind", "thunder", "rainbow", "valley", "hill", "cliff", "cave",
+  "forest", "meadow", "desert", "island", "mountain", "glacier", "canyon", "marsh", "dune", "coast", "star", "moon", "comet", "planet", "dawn", "dusk",
+  "chair", "table", "lamp", "mirror", "pillow", "blanket", "carpet", "curtain", "shelf", "drawer", "basket", "candle", "vase", "clock", "broom", "bucket",
+  "hammer", "nail", "screw", "wrench", "saw", "drill", "chisel", "ladder", "rope", "anchor", "hook", "blade", "axe", "shovel", "rake", "pliers",
+  "scarf", "glove", "hat", "boot", "coat", "jacket", "sock", "belt", "button", "ribbon", "cape", "apron", "mitten", "sandal", "cloak", "veil",
+  "finger", "elbow", "ankle", "shoulder", "wrist", "cheek", "chin", "jaw", "wagon", "sled", "canoe", "raft", "barge", "kayak", "ferry", "tram",
+  "bridge", "tower", "castle", "cabin", "barn", "mill", "harbor", "market", "chapel", "cottage", "iron", "copper", "silver", "gold", "marble", "clay",
+  "key", "lock", "coin", "bell", "flag", "kite", "drum", "flute", "mask", "ring", "crown", "shield", "lantern", "compass", "feather", "pebble",
+];
+
+const NB: string[] = [
+  "rev", "ulv", "bjørn", "hjort", "røyskatt", "gaupe", "muldvarp", "mus", "oter", "grevling", "kanin", "ekorn", "pinnsvin", "vaskebjørn", "bever", "elg",
+  "ugle", "hauk", "kråke", "svane", "and", "gås", "rødstrupe", "spurv", "ørn", "falk", "hegre", "stork", "skjære", "ravn", "due", "gjerdesmett",
+  "fisk", "sel", "hval", "hai", "krabbe", "musling", "blekksprut", "ål", "ørret", "laks", "abbor", "gjedde", "reke", "blåskjell", "sjøstjerne", "manet",
+  "maur", "bie", "veps", "møll", "flue", "bille", "siriss", "edderkopp", "marihøne", "øyenstikker", "gresshoppe", "sankthansorm", "snegle", "midd", "mark", "mygg",
+  "eik", "furu", "bjørk", "lønn", "alm", "pil", "seder", "gran", "bregne", "mose", "siv", "tistel", "kløver", "eføy", "bambus", "kaktus",
+  "eple", "pære", "plomme", "fersken", "kirsebær", "drue", "sitron", "appelsin", "melon", "rips", "fiken", "mango", "kiwi", "aprikos", "oliven", "valnøtt",
+  "gulrot", "potet", "løk", "hvitløk", "kål", "purre", "reddik", "kålrot", "rødbete", "gresskar", "selleri", "spinat", "salat", "persille", "bønne", "jams",
+  "brød", "smør", "ost", "honning", "sukker", "salt", "pepper", "korn", "ris", "havre", "hvete", "sirup", "syltetøy", "kraft", "suppe", "te",
+  "elv", "innsjø", "hav", "sky", "storm", "regn", "snø", "frost", "tåke", "vind", "torden", "regnbue", "dal", "ås", "klippe", "hule",
+  "skog", "eng", "ørken", "øy", "fjell", "isbre", "kløft", "myr", "sanddyne", "kyst", "stjerne", "måne", "komet", "planet", "morgengry", "skumring",
+  "stol", "bord", "lampe", "speil", "pute", "teppe", "matte", "gardin", "hylle", "skuff", "kurv", "lys", "vase", "klokke", "kost", "bøtte",
+  "hammer", "spiker", "skrue", "skiftenøkkel", "sag", "drill", "meisel", "stige", "tau", "anker", "krok", "blad", "øks", "spade", "rake", "tang",
+  "skjerf", "hanske", "hatt", "støvel", "frakk", "jakke", "sokk", "belte", "knapp", "bånd", "kappe", "forkle", "vott", "sandal", "kåpe", "slør",
+  "finger", "albue", "ankel", "skulder", "håndledd", "kinn", "hake", "kjeve", "vogn", "kjelke", "kano", "flåte", "lekter", "kajakk", "ferge", "trikk",
+  "bro", "tårn", "slott", "hytte", "låve", "mølle", "havn", "marked", "kapell", "landsted", "jern", "kobber", "sølv", "gull", "marmor", "leire",
+  "nøkkel", "lås", "mynt", "bjelle", "flagg", "drage", "tromme", "fløyte", "maske", "ring", "krone", "skjold", "lykt", "kompass", "fjær", "småstein",
+];
+
+export const WORDLISTS: Record<CodewordLocale, string[]> = { en: EN, nb: NB };
+```
+
+- [ ] **Step 2: Write the failing test for `codewords.ts`**
+
+```typescript
+// apps/api/src/lib/codewords.test.ts
+import { describe, it, expect } from "vitest";
+import { deriveCodewords, resolveLocale, CODEWORD_DEFAULT_COUNT, CODEWORD_MAX_COUNT } from "./codewords";
+import { WORDLISTS } from "./wordlists";
+
+const KEY_A = "cmVjaXBpZW50a2V5MTIzNDU2Nzg5MA==";
+const KEY_B = "YW5vdGhlcmtleTk4NzY1NDMyMTA=";
+
+describe("codewords", () => {
+  it("is deterministic for the same key and locale", () => {
+    const first = deriveCodewords(KEY_A, "en");
+    const second = deriveCodewords(KEY_A, "en");
+    expect(first).toEqual(second);
+  });
+
+  it("returns words that belong to the requested locale's wordlist", () => {
+    const words = deriveCodewords(KEY_A, "nb", CODEWORD_MAX_COUNT);
+    for (const word of words) {
+      expect(WORDLISTS.nb).toContain(word);
+    }
+  });
+
+  it("falls back to the default locale for an unsupported locale code", () => {
+    expect(resolveLocale("fr")).toBe("en");
+    expect(resolveLocale(undefined)).toBe("en");
+    expect(resolveLocale("nb")).toBe("nb");
+  });
+
+  it("is prefix-stable across word counts", () => {
+    const three = deriveCodewords(KEY_A, "en", CODEWORD_DEFAULT_COUNT);
+    const five = deriveCodewords(KEY_A, "en", CODEWORD_MAX_COUNT);
+    expect(five.slice(0, CODEWORD_DEFAULT_COUNT)).toEqual(three);
+  });
+
+  it("produces a different phrase for a different public key", () => {
+    const wordsA = deriveCodewords(KEY_A, "en");
+    const wordsB = deriveCodewords(KEY_B, "en");
+    expect(wordsA).not.toEqual(wordsB);
+  });
+});
+```
+
+- [ ] **Step 3: Run test to verify it fails**
+
+Run: `pnpm --filter @e2ee-drop/api test -- codewords`
+Expected: FAIL — `./codewords` module not found.
+
+- [ ] **Step 4: Write `apps/api/src/lib/codewords.ts`**
+
+```typescript
+// apps/api/src/lib/codewords.ts
+import { createHash } from "node:crypto";
+import { WORDLISTS, DEFAULT_LOCALE, type CodewordLocale } from "./wordlists";
+
+export const CODEWORD_DEFAULT_COUNT = 3;
+export const CODEWORD_MAX_COUNT = 5;
+
+export function resolveLocale(locale: string | undefined): CodewordLocale {
+  return locale === "en" || locale === "nb" ? locale : DEFAULT_LOCALE;
+}
+
+export function deriveCodewords(
+  publicKeyBase64: string,
+  locale: CodewordLocale,
+  count: number = CODEWORD_MAX_COUNT
+): string[] {
+  const wordlist = WORDLISTS[locale];
+  const keyBytes = Buffer.from(publicKeyBase64, "base64");
+  const hash = createHash("sha256").update(keyBytes).digest();
+  const words: string[] = [];
+  for (let i = 0; i < count; i++) {
+    words.push(wordlist[hash[i % hash.length]]);
+  }
+  return words;
+}
+```
+
+- [ ] **Step 5: Run test to verify it passes**
+
+Run: `pnpm --filter @e2ee-drop/api test -- codewords`
+Expected: PASS (all five tests).
+
+- [ ] **Step 6: Modify `apps/api/src/lib/links.ts` to store the locale and include codewords**
+
+Replace the whole file's content with:
+
+```typescript
+// apps/api/src/lib/links.ts
+import { customAlphabet } from "nanoid";
+import { prisma, type Link, type Drop } from "@e2ee-drop/db";
+import type { DropSummary, LinkStatusResponse } from "@e2ee-drop/shared";
+import { env } from "../env";
+import { resolveLocale, deriveCodewords, CODEWORD_MAX_COUNT } from "./codewords";
+
+const nanoid = customAlphabet("123456789abcdefghijkmnopqrstuvwxyz", 16);
+
+export async function createOneTimeLink(recipientPublicKey: string, locale?: string): Promise<Link> {
+  return prisma.link.create({
+    data: {
+      slug: nanoid(),
+      mode: "one-time",
+      recipientPublicKey,
+      codewordLocale: resolveLocale(locale),
+      expiresAt: new Date(Date.now() + env.LINK_EXPIRY_HOURS * 60 * 60 * 1000),
+    },
+  });
+}
+
+export async function getLinkBySlug(slug: string): Promise<(Link & { drops: Drop[] }) | null> {
+  return prisma.link.findFirst({ where: { slug }, include: { drops: true } });
+}
+
+export function isLinkExpired(link: Link): boolean {
+  return link.expiresAt !== null && link.expiresAt.getTime() < Date.now();
+}
+
+export function toDropSummary(drop: Drop): DropSummary {
+  return {
+    id: drop.id,
+    status: drop.status as DropSummary["status"],
+    senderPublicKey: drop.senderPublicKey,
+    nonce: drop.nonce,
+    fileName: drop.fileName,
+    fileSize: drop.fileSize,
+    mimeType: drop.mimeType,
+    contentMD5: drop.contentMD5,
+    message: drop.message,
+  };
+}
+
+export function toLinkStatusResponse(link: Link & { drops: Drop[] }): LinkStatusResponse {
+  const activeDrop = link.drops[0] ?? null;
+  return {
+    slug: link.slug,
+    mode: link.mode as LinkStatusResponse["mode"],
+    recipientPublicKey: link.recipientPublicKey,
+    drop: activeDrop ? toDropSummary(activeDrop) : null,
+    isAnonymous: link.ownerId === null,
+    codewords: deriveCodewords(
+      link.recipientPublicKey,
+      resolveLocale(link.codewordLocale),
+      CODEWORD_MAX_COUNT
+    ),
+  };
+}
+```
+
+- [ ] **Step 7: Modify `apps/api/src/routes/links.ts` to accept and pass through `locale`**
+
+Replace the `POST /api/links` handler with:
+
+```typescript
+  server.post<{ Body: CreateLinkRequest }>("/api/links", async (request, reply) => {
+    const { recipientPublicKey, locale } = request.body;
+    if (!recipientPublicKey) {
+      return reply.status(400).send({ error: "Missing recipientPublicKey" });
+    }
+    const link = await createOneTimeLink(recipientPublicKey, locale);
+    const body: CreateLinkResponse = {
+      linkId: link.id,
+      slug: link.slug,
+      codewords: deriveCodewords(link.recipientPublicKey, resolveLocale(link.codewordLocale), CODEWORD_MAX_COUNT),
+    };
+    return reply.send(body);
+  });
+```
+
+Also add the import to the top of `apps/api/src/routes/links.ts`: `import { resolveLocale, deriveCodewords, CODEWORD_MAX_COUNT } from "../lib/codewords";`.
+
+- [ ] **Step 8: Extend `apps/api/src/routes/links.test.ts` with a codewords assertion**
+
+Add this test inside the existing `describe("link routes", ...)` block:
+
+```typescript
+  it("returns a codewords phrase on create and on the link status response", async () => {
+    const server = buildServer();
+    const createResponse = await server.inject({
+      method: "POST",
+      url: "/api/links",
+      payload: { recipientPublicKey: "cmVjaXBpZW50a2V5", locale: "nb" },
+    });
+    const createBody = createResponse.json();
+    expect(Array.isArray(createBody.codewords)).toBe(true);
+    expect(createBody.codewords.length).toBeGreaterThan(0);
+
+    const getResponse = await server.inject({ method: "GET", url: `/api/links/${createBody.slug}` });
+    const body = getResponse.json();
+
+    expect(body.codewords).toEqual(createBody.codewords);
+  });
+```
+
+- [ ] **Step 9: Run test to verify it passes**
+
+Run: `DATABASE_URL=postgresql://e2eedrop:change-me@localhost:5432/e2eedrop MINIO_ENDPOINT=http://localhost:9000 MINIO_BUCKET=e2ee-drop MINIO_ACCESS_KEY=minioadmin MINIO_SECRET_KEY=change-me-too pnpm --filter @e2ee-drop/api test -- links`
+Expected: PASS (all four tests, including the new one).
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add apps/api/src/lib/wordlists.ts apps/api/src/lib/codewords.ts apps/api/src/lib/codewords.test.ts apps/api/src/lib/links.ts apps/api/src/routes/links.ts apps/api/src/routes/links.test.ts
+git commit -m "feat(api): derive per-link verification codewords from the recipient public key"
+```
+
 ### Task 10: Upload routes
 
 **Files:**
@@ -2204,6 +2480,9 @@ export function useLocalLinks() {
   "creating": "Creating your link…",
   "copyLink": "Copy link",
   "copied": "Copied!",
+  "codewordsLabel": "Verification words — read these aloud to confirm the sender has the right link",
+  "showMoreWords": "Show more words",
+  "showFewerWords": "Show fewer words",
   "errors": { "createFailed": "Could not create a link. Please try again." }
 }
 ```
@@ -2215,6 +2494,9 @@ export function useLocalLinks() {
   "creating": "Oppretter lenken din…",
   "copyLink": "Kopier lenke",
   "copied": "Kopiert!",
+  "codewordsLabel": "Verifiseringsord — les disse høyt for å bekrefte at avsenderen har riktig lenke",
+  "showMoreWords": "Vis flere ord",
+  "showFewerWords": "Vis færre ord",
   "errors": { "createFailed": "Kunne ikke opprette lenke. Prøv igjen." }
 }
 ```
@@ -2234,7 +2516,7 @@ describe("CreateLinkPage", () => {
       "fetch",
       vi.fn().mockResolvedValue({
         ok: true,
-        json: async () => ({ linkId: "link1", slug: "abc123" }),
+        json: async () => ({ linkId: "link1", slug: "abc123", codewords: ["fox", "river", "lamp"] }),
       })
     );
   });
@@ -2244,6 +2526,14 @@ describe("CreateLinkPage", () => {
 
     await waitFor(() => {
       expect(screen.getByText(/abc123/)).toBeInTheDocument();
+    });
+  });
+
+  it("shows the verification codewords", async () => {
+    render(<CreateLinkPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/fox.*river.*lamp/i)).toBeInTheDocument();
     });
   });
 });
@@ -2273,11 +2563,14 @@ i18n.addResourceBundle("en", "createLink", createLinkEn, true, false);
 i18n.addResourceBundle("nb", "createLink", createLinkNb, true, false);
 
 const LINK_EXPIRY_MS = 24 * 60 * 60 * 1000;
+const CODEWORD_DEFAULT_COUNT = 3;
 
 export function CreateLinkPage() {
-  const { t } = useTranslation("createLink");
+  const { t, i18n: i18next } = useTranslation("createLink");
   const { saveLink } = useLocalLinks();
   const [slug, setSlug] = useState<string | null>(null);
+  const [codewords, setCodewords] = useState<string[]>([]);
+  const [showAllCodewords, setShowAllCodewords] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -2287,16 +2580,18 @@ export function CreateLinkPage() {
     async function create() {
       try {
         const keyPair = nacl.box.keyPair();
+        const locale = i18next.language?.startsWith("nb") ? "nb" : "en";
         const response = await fetch("/api/links", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ recipientPublicKey: encodeBase64(keyPair.publicKey) }),
+          body: JSON.stringify({ recipientPublicKey: encodeBase64(keyPair.publicKey), locale }),
         });
         if (!response.ok) throw new Error("create failed");
         const body = await response.json();
         if (cancelled) return;
         saveLink(body.slug, encodeBase64(keyPair.secretKey), Date.now() + LINK_EXPIRY_MS);
         setSlug(body.slug);
+        setCodewords(body.codewords ?? []);
       } catch {
         if (!cancelled) setError(t("errors.createFailed"));
       }
@@ -2305,9 +2600,10 @@ export function CreateLinkPage() {
     return () => {
       cancelled = true;
     };
-  }, [slug, saveLink, t]);
+  }, [slug, saveLink, t, i18next]);
 
   const link = slug ? `${window.location.origin}/send/${slug}` : null;
+  const visibleCodewords = showAllCodewords ? codewords : codewords.slice(0, CODEWORD_DEFAULT_COUNT);
 
   const copyLink = async () => {
     if (!link) return;
@@ -2326,6 +2622,19 @@ export function CreateLinkPage() {
           <>
             <p className="break-all rounded bg-muted p-2 text-sm">{link}</p>
             <Button onClick={copyLink}>{copied ? t("copied") : t("copyLink")}</Button>
+            <div>
+              <p className="text-sm text-muted-foreground">{t("codewordsLabel")}</p>
+              <p className="font-mono text-lg">{visibleCodewords.join(" · ")}</p>
+              {codewords.length > CODEWORD_DEFAULT_COUNT && (
+                <button
+                  type="button"
+                  className="text-xs underline"
+                  onClick={() => setShowAllCodewords((v) => !v)}
+                >
+                  {showAllCodewords ? t("showFewerWords") : t("showMoreWords")}
+                </button>
+              )}
+            </div>
           </>
         )}
         {!link && !error && <p>{t("creating")}</p>}
@@ -2367,6 +2676,7 @@ git commit -m "feat(web): add local link storage hook and receive-a-file page"
   "loading": "Loading link…",
   "anonymousRecipient": "Anonymous recipient (no verified identity for this link)",
   "verifiedRecipient": "Sending to a registered account",
+  "codewordsLabel": "Verification words — ask the recipient to confirm these match",
   "messagePlaceholder": "Optional message (not encrypted)",
   "messageNotEncryptedWarning": "This message is NOT end-to-end encrypted — unlike the file, it can be read by whoever operates this server.",
   "success": "File sent successfully.",
@@ -2381,6 +2691,7 @@ git commit -m "feat(web): add local link storage hook and receive-a-file page"
   "loading": "Laster lenke…",
   "anonymousRecipient": "Anonym mottaker (ingen verifisert identitet for denne lenken)",
   "verifiedRecipient": "Sender til en registrert konto",
+  "codewordsLabel": "Verifiseringsord — be mottakeren bekrefte at disse stemmer",
   "messagePlaceholder": "Valgfri melding (ikke kryptert)",
   "messageNotEncryptedWarning": "Denne meldingen er IKKE ende-til-ende-kryptert — i motsetning til filen kan den leses av den som drifter serveren.",
   "success": "Filen ble sendt.",
@@ -2423,9 +2734,21 @@ describe("UploadPage", () => {
       "fetch",
       vi.fn().mockResolvedValue({
         ok: true,
-        json: async () => ({ recipientPublicKey: "cmVjaXBpZW50", isAnonymous: true }),
+        json: async () => ({
+          recipientPublicKey: "cmVjaXBpZW50",
+          isAnonymous: true,
+          codewords: ["fox", "river", "lamp"],
+        }),
       })
     );
+  });
+
+  it("shows the verification codewords", async () => {
+    renderAt("abc123");
+
+    await waitFor(() => {
+      expect(screen.getByText(/fox.*river.*lamp/i)).toBeInTheDocument();
+    });
   });
 
   it("shows the anonymous-recipient indicator for an ownerless link", async () => {
@@ -2474,6 +2797,7 @@ const MAX_MESSAGE_LENGTH = 500;
 interface LinkStatus {
   recipientPublicKey: string;
   isAnonymous: boolean;
+  codewords: string[];
 }
 
 export function UploadPage() {
@@ -2496,7 +2820,13 @@ export function UploadPage() {
         if (!res.ok) throw new Error("not found");
         return res.json();
       })
-      .then((data) => setLink({ recipientPublicKey: data.recipientPublicKey, isAnonymous: data.isAnonymous }))
+      .then((data) =>
+        setLink({
+          recipientPublicKey: data.recipientPublicKey,
+          isAnonymous: data.isAnonymous,
+          codewords: data.codewords ?? [],
+        })
+      )
       .catch(() => setError(t("errors.linkNotFound")));
   }, [slug, t]);
 
@@ -2551,6 +2881,10 @@ export function UploadPage() {
         <div data-testid="recipient-badge">
           {link.isAnonymous ? t("anonymousRecipient") : t("verifiedRecipient")}
         </div>
+        <div>
+          <p className="text-sm text-muted-foreground">{t("codewordsLabel")}</p>
+          <p className="font-mono text-lg">{link.codewords.slice(0, 3).join(" · ")}</p>
+        </div>
         <textarea
           value={message}
           maxLength={MAX_MESSAGE_LENGTH}
@@ -2597,6 +2931,7 @@ git commit -m "feat(web): add sender upload page with recipient identity and une
 // apps/web/src/locales/en/download.json
 {
   "title": "Receive a file",
+  "codewordsLabel": "Verification words — share these with the sender to confirm",
   "waitingForFile": "Waiting for the file to be uploaded…",
   "downloadButton": "Download and decrypt",
   "downloadedMessage": "File downloaded and decrypted.",
@@ -2608,6 +2943,7 @@ git commit -m "feat(web): add sender upload page with recipient identity and une
 // apps/web/src/locales/nb/download.json
 {
   "title": "Motta en fil",
+  "codewordsLabel": "Verifiseringsord — del disse med avsenderen for bekreftelse",
   "waitingForFile": "Venter på at filen skal lastes opp…",
   "downloadButton": "Last ned og dekrypter",
   "downloadedMessage": "Filen ble lastet ned og dekryptert.",
@@ -2665,9 +3001,18 @@ describe("DownloadPage", () => {
             fileName: "report.pdf",
             message: "here's the file",
           },
+          codewords: ["fox", "river", "lamp"],
         }),
       })
     );
+  });
+
+  it("shows the verification codewords", async () => {
+    renderAt("abc123");
+
+    await waitFor(() => {
+      expect(screen.getByText(/fox.*river.*lamp/i)).toBeInTheDocument();
+    });
   });
 
   it("shows the download button once the drop is uploaded", async () => {
@@ -2720,6 +3065,7 @@ export function DownloadPage() {
   const { links } = useLocalLinks();
   const { setKeyPair, decryptFile } = useFileEncryption();
   const [drop, setDrop] = useState<DropInfo | null>(null);
+  const [codewords, setCodewords] = useState<string[]>([]);
   const [downloaded, setDownloaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval>>();
@@ -2742,6 +3088,7 @@ export function DownloadPage() {
       }
       const data = await res.json();
       setDrop(data.drop);
+      setCodewords(data.codewords ?? []);
       if (data.drop?.status === "uploaded") clearInterval(pollRef.current);
     }
     poll();
@@ -2785,6 +3132,12 @@ export function DownloadPage() {
         <CardTitle>{t("title")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        {codewords.length > 0 && (
+          <div>
+            <p className="text-sm text-muted-foreground">{t("codewordsLabel")}</p>
+            <p className="font-mono text-lg">{codewords.slice(0, 3).join(" · ")}</p>
+          </div>
+        )}
         {(!drop || drop.status !== "uploaded") && !downloaded && <p>{t("waitingForFile")}</p>}
         {drop && drop.status === "uploaded" && !downloaded && (
           <>
@@ -3008,8 +3361,11 @@ async function main() {
     body: JSON.stringify({ recipientPublicKey: b64(recipient.publicKey) }),
   });
   if (!createRes.ok) throw new Error(`create-link failed: ${createRes.status}`);
-  const { slug } = await createRes.json();
-  console.log(`created link ${slug}`);
+  const { slug, codewords } = await createRes.json();
+  if (!Array.isArray(codewords) || codewords.length === 0) {
+    throw new Error("create-link response missing codewords");
+  }
+  console.log(`created link ${slug} (codewords: ${codewords.join(" ")})`);
 
   const plaintext = new TextEncoder().encode("e2ee-drop verification payload");
   const nonce = nacl.randomBytes(nacl.box.nonceLength);
