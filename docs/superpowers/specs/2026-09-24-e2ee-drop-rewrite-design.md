@@ -32,6 +32,48 @@ in the account system may weaken or complicate the anonymous path.
   as in the original.
 - The server never receives plaintext file bytes or private keys.
 
+### 2.1 Link verification codewords
+
+Because the trust model above is TOFU (§2), a sender or recipient has no
+built-in way to notice they've been handed a wrong or tampered link. To
+give both parties a cheap, human-usable way to catch that (read a short
+phrase aloud over a call, in chat, or in person, and confirm it matches),
+every `Link` gets a short, deterministic sequence of codewords derived
+from its `recipientPublicKey` — which is already public data, so
+generating and displaying this server-side does not weaken the
+zero-knowledge property anywhere else in the system.
+
+- **Derivation:** a SHA-256 hash of the raw `recipientPublicKey` bytes is
+  split into consecutive 11-bit groups, each indexing a word in a
+  2048-word list (the same chunking BIP39 uses, chosen so the list size
+  is a clean power of two). The same public key and the same locale
+  always produce the same words — this is what makes the codewords
+  usable for comparison at all.
+- **Word count:** the UI shows 3 words by default, with a "show more"
+  control that reveals further words (derived from later bits of the
+  same hash) up to a configurable maximum — default 5, allowing an
+  operator to raise it for a higher-assurance deployment. More words
+  trade convenience for a lower chance that two different keys collide
+  on the same displayed phrase.
+- **Language:** fixed per-link at creation time, based on the UI
+  language of whoever creates the link (for an anonymous link or a
+  registered user's default/custom link, that's the person sharing it
+  out — the "avsender" of the link itself, not of a file), and stored on
+  the `Link` row so every later viewer — sender and recipient alike —
+  sees the identical phrase regardless of their own browser's language.
+  Launches with Norwegian and English word lists; adding a language is
+  just adding a new 2048-entry word list file and locale code.
+- **Word list requirements:** common, short (capped length), unambiguous
+  nouns — no homophones, no words likely to be mistyped, spoken, or
+  misheard across regional accents, no offensive terms.
+- **Explicit caveat:** this is a usability aid against accidental
+  wrong-link sharing and gross tampering, not a cryptographic replacement
+  for comparing full key material — at 11 bits of entropy per word, the
+  default 3-word phrase (33 bits) is meant to be quick to compare, not
+  collision-proof; a deployment wanting stronger assurance should use the
+  "show more" option. This is the same honest trade-off Signal documents
+  for its own short safety-number comparison.
+
 ## 3. Key management for accounts
 
 ### 3.1 Registration and password-derived key wrapping
