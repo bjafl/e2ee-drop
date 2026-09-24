@@ -54,6 +54,18 @@ describe("download routes", () => {
     expect(body.fileName).toBe("report.pdf");
   });
 
+  it("allows re-issuing a download url on retry (e.g. after a dropped connection)", async () => {
+    const server = buildServer();
+    const { slug } = await createLinkWithDrop(server, "uploaded");
+
+    const first = await server.inject({ method: "GET", url: `/api/links/${slug}/download-url` });
+    const second = await server.inject({ method: "GET", url: `/api/links/${slug}/download-url` });
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(second.json().downloadUrl).toContain("http");
+  });
+
   it("rejects a download-url request while the drop is still uploading", async () => {
     const server = buildServer();
     const { slug } = await createLinkWithDrop(server, "uploading");

@@ -15,12 +15,20 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
     }
     const drop = link.drops[0];
     if (!drop) return reply.status(404).send({ error: "No uploaded file for this link" });
-    if (drop.status !== "uploaded") {
+    if (drop.status === "uploading") {
       return reply.status(403).send({ error: "File is not ready for download yet" });
     }
 
     const downloadUrl = await getSignedDownloadUrl(drop.s3Key);
-    await prisma.drop.update({ where: { id: drop.id }, data: { status: "downloading" } });
+    // Status is informational progress, not a one-shot gate: a download URL can be
+    // re-issued any number of times (network blip mid-download, expired presigned
+    // URL, tab closed before the download actually started, etc.) as long as the
+    // upload itself has finished. Only advance "uploaded" -> "downloading" on the
+    // first successful issuance; don't regress an already-"downloading" or
+    // "downloaded" drop back to "downloading".
+    if (drop.status === "uploaded") {
+      await prisma.drop.update({ where: { id: drop.id }, data: { status: "downloading" } });
+    }
 
     const body: DownloadUrlResponse = {
       downloadUrl,
