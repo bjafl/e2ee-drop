@@ -50,7 +50,7 @@ export function useFileEncryption(initialKeyPair?: nacl.BoxKeyPair) {
         setProgress(100);
         const md5Hash = nacl.hash(encrypted);
         return {
-          encrypted: new Blob([encrypted], { type: "application/octet-stream" }),
+          encrypted: new Blob([encrypted as BlobPart], { type: "application/octet-stream" }),
           nonce: encodeBase64(nonce),
           fileName: file.name,
           mimeType: file.type,
@@ -80,7 +80,7 @@ export function useFileEncryption(initialKeyPair?: nacl.BoxKeyPair) {
           recipientSecretKey: keyPair.secretKey,
         });
         setProgress(100);
-        return new File([decrypted], metadata.fileName, { type: metadata.mimeType });
+        return new File([decrypted as BlobPart], metadata.fileName, { type: metadata.mimeType });
       } finally {
         setIsProcessing(false);
       }

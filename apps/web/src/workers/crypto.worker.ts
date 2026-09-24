@@ -1,5 +1,8 @@
 // apps/web/src/workers/crypto.worker.ts
+/// <reference lib="webworker" />
 import { encryptFile, decryptFile } from "../lib/cryptoUtils";
+
+declare const self: DedicatedWorkerGlobalScope;
 
 self.onmessage = (e: MessageEvent) => {
   const { type, data } = e.data;
