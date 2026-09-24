@@ -66,6 +66,26 @@ describe("download routes", () => {
     expect(second.json().downloadUrl).toContain("http");
   });
 
+  it("allows re-issuing a download url after the drop has already been marked downloaded", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithDrop(server, "uploaded");
+
+    await server.inject({ method: "GET", url: `/api/links/${slug}/download-url` });
+    await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/${dropId}/downloaded`,
+    });
+
+    const response = await server.inject({ method: "GET", url: `/api/links/${slug}/download-url` });
+
+    expect(response.statusCode).toBe(200);
+    // The download-url route must not regress the "downloaded" status back to
+    // "downloading" on this re-issuance (see the conditional-update comment in
+    // downloads.ts).
+    const drop = await prisma.drop.findUnique({ where: { id: dropId } });
+    expect(drop?.status).toBe("downloaded");
+  });
+
   it("rejects a download-url request while the drop is still uploading", async () => {
     const server = buildServer();
     const { slug } = await createLinkWithDrop(server, "uploading");

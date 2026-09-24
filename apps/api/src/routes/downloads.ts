@@ -26,9 +26,22 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
     // upload itself has finished. Only advance "uploaded" -> "downloading" on the
     // first successful issuance; don't regress an already-"downloading" or
     // "downloaded" drop back to "downloading".
-    if (drop.status === "uploaded") {
-      await prisma.drop.update({ where: { id: drop.id }, data: { status: "downloading" } });
-    }
+    //
+    // This must be a conditional update keyed on the row's *current* status, not a
+    // blind update guarded by the `drop.status` snapshot read above: there's an
+    // `await` boundary above (getSignedDownloadUrl) during which a concurrent
+    // request (e.g. POST .../downloaded, or another overlapping GET that got
+    // further along) could have already advanced the row past "uploaded". A blind
+    // `update` here would stomp that newer status back to "downloading". `updateMany`
+    // with `status: "uploaded"` in the where-clause is an atomic compare-and-swap in
+    // Postgres: it only writes (and only matches a row) when the row is still
+    // exactly "uploaded" at write time, so a race loses this write silently instead
+    // of regressing state. URL issuance is returned regardless of whether the status
+    // write actually happened — the two are independent concerns.
+    await prisma.drop.updateMany({
+      where: { id: drop.id, status: "uploaded" },
+      data: { status: "downloading" },
+    });
 
     const body: DownloadUrlResponse = {
       downloadUrl,
