@@ -1,0 +1,4 @@
+{
+  "appName": "e2ee-drop",
+  "nav": { "receive": "Receive a file", "send": "Send a file" }
+}
