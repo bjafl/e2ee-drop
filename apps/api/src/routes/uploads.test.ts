@@ -137,6 +137,28 @@ describe("upload routes", () => {
     expect(drops).toHaveLength(0);
   });
 
+  it("rejects a present-but-incomplete body with 400 (missing required metadata field)", async () => {
+    // Distinct from the empty-body case above: request.body is present here, so this
+    // must fall through the `!request.body` guard and land on the actual field-by-field
+    // validation (`!senderPublicKey || !metadata?.fileName || ...`), not just prove the
+    // guard exists.
+    const server = buildServer();
+    const slug = await createLink(server);
+
+    const { nonce: _omittedNonce, ...metadataWithoutNonce } = validMetadata;
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+      payload: { senderPublicKey: "c2VuZGVy", metadata: metadataWithoutNonce },
+    });
+
+    expect(response.statusCode).toBe(400);
+
+    const drops = await prisma.drop.findMany({ where: { link: { slug } } });
+    expect(drops).toHaveLength(0);
+  });
+
   it("returns 404 for an expired link", async () => {
     const server = buildServer();
     const link = await prisma.link.create({
