@@ -1,0 +1,7 @@
+{
+  "name": "@e2ee-drop/shared",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "devDependencies": { "typescript": "^5.9.3" }
+}
