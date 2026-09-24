@@ -44,13 +44,16 @@ generating and displaying this server-side does not weaken the
 zero-knowledge property anywhere else in the system.
 
 - **Derivation:** a SHA-256 hash of the raw `recipientPublicKey` bytes is
-  split into consecutive 11-bit groups, each indexing a word in a
-  2048-word list (the same chunking BIP39 uses, chosen so the list size
-  is a clean power of two). The same public key and the same locale
-  always produce the same words — this is what makes the codewords
-  usable for comparison at all.
+  split into consecutive 8-bit groups, each indexing a word in a
+  256-word list — the same size the classic PGP Word List uses for this
+  exact purpose (a short, spoken/compared fingerprint, not a secret). A
+  256-word list is small enough to curate for real — genuinely short,
+  unambiguous, hard-to-mishear nouns — which matters more here than
+  squeezing out extra bits per word the way a 2048-word BIP39-style list
+  would. The same public key and the same locale always produce the same
+  words — this is what makes the codewords usable for comparison at all.
 - **Word count:** the UI shows 3 words by default, with a "show more"
-  control that reveals further words (derived from later bits of the
+  control that reveals further words (derived from later bytes of the
   same hash) up to a configurable maximum — default 5, allowing an
   operator to raise it for a higher-assurance deployment. More words
   trade convenience for a lower chance that two different keys collide
@@ -68,8 +71,8 @@ zero-knowledge property anywhere else in the system.
   misheard across regional accents, no offensive terms.
 - **Explicit caveat:** this is a usability aid against accidental
   wrong-link sharing and gross tampering, not a cryptographic replacement
-  for comparing full key material — at 11 bits of entropy per word, the
-  default 3-word phrase (33 bits) is meant to be quick to compare, not
+  for comparing full key material — at 8 bits of entropy per word, the
+  default 3-word phrase (24 bits) is meant to be quick to compare, not
   collision-proof; a deployment wanting stronger assurance should use the
   "show more" option. This is the same honest trade-off Signal documents
   for its own short safety-number comparison.
