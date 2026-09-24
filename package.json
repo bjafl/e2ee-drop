@@ -1,0 +1,15 @@
+{
+  "name": "e2ee-drop",
+  "private": true,
+  "version": "0.0.0",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev:api": "pnpm --filter @e2ee-drop/api dev",
+    "dev:web": "pnpm --filter @e2ee-drop/web dev",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}
