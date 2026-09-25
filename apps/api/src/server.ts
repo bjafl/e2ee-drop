@@ -7,6 +7,7 @@ import { registerPasswordResetRoutes } from "./routes/passwordReset";
 import { registerLinkRoutes } from "./routes/links";
 import { registerUploadRoutes } from "./routes/uploads";
 import { registerDownloadRoutes } from "./routes/downloads";
+import { registerTwoFactorRoutes } from "./routes/twoFactor";
 import { env } from "./env";
 
 export function buildServer(): FastifyInstance {
@@ -33,6 +34,7 @@ export function buildServer(): FastifyInstance {
   registerLinkRoutes(server);
   registerUploadRoutes(server);
   registerDownloadRoutes(server);
+  registerTwoFactorRoutes(server);
 
   return server;
 }
