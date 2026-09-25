@@ -283,4 +283,135 @@ describe("ConfirmPasswordResetPage", () => {
     await waitFor(() => expect(screen.getByText(/password has been reset/i)).toBeInTheDocument());
     expect(completeCalls).toBe(1);
   });
+
+  describe("two-factor accounts", () => {
+    function setup(totpEnabled: boolean | undefined) {
+      const keyPair = nacl.box.keyPair();
+      const recoveryCode = generateRecoveryCode();
+      const recoveryWrapped = wrapPrivateKey(keyPair.secretKey, deriveRecoveryKey(recoveryCode));
+      return {
+        recoveryCode,
+        verifyBody: JSON.stringify({
+          email: "t@example.com",
+          passwordSalt: generateWrappingSalt(),
+          recoveryWrappedPrivateKey: recoveryWrapped,
+          ...(totpEnabled === undefined ? {} : { totpEnabled }),
+        }),
+      };
+    }
+
+    it("asks for the code up front when verify-token reports totpEnabled, and sends it with /complete", async () => {
+      const { recoveryCode, verifyBody } = setup(true);
+      const completeBodies: Record<string, string>[] = [];
+      vi.spyOn(global, "fetch").mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url.includes("/verify-token")) return new Response(verifyBody, { status: 200 });
+        if (url.includes("/complete") && !url.includes("fresh")) {
+          completeBodies.push(JSON.parse(String(init?.body)));
+          return new Response(JSON.stringify({ reset: true }), { status: 200 });
+        }
+        throw new Error(`unexpected fetch ${url}`);
+      });
+
+      const user = userEvent.setup();
+      renderAt("/reset-password/confirm?token=abc");
+      await waitFor(() => screen.getByLabelText(/two-factor code/i));
+      await user.type(screen.getByLabelText(/recovery code/i), recoveryCode);
+      await user.type(screen.getByLabelText(/new password/i), "a brand new password");
+      await user.type(screen.getByLabelText(/two-factor code/i), "123456");
+      await user.click(screen.getByRole("button", { name: /reset with recovery code/i }));
+
+      await waitFor(() => expect(screen.getByText(/password has been reset/i)).toBeInTheDocument());
+      expect(completeBodies).toHaveLength(1);
+      expect(completeBodies[0]!.totpCode).toBe("123456");
+    });
+
+    it("shows no code field and sends no totpCode for an account without 2FA", async () => {
+      const { recoveryCode, verifyBody } = setup(false);
+      let completeBody: Record<string, string> | null = null;
+      vi.spyOn(global, "fetch").mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url.includes("/verify-token")) return new Response(verifyBody, { status: 200 });
+        if (url.includes("/complete")) {
+          completeBody = JSON.parse(String(init?.body));
+          return new Response(JSON.stringify({ reset: true }), { status: 200 });
+        }
+        throw new Error(`unexpected fetch ${url}`);
+      });
+
+      const user = userEvent.setup();
+      renderAt("/reset-password/confirm?token=abc");
+      await waitFor(() => screen.getByLabelText(/recovery code/i));
+      expect(screen.queryByLabelText(/two-factor code/i)).not.toBeInTheDocument();
+      await user.type(screen.getByLabelText(/recovery code/i), recoveryCode);
+      await user.type(screen.getByLabelText(/new password/i), "a brand new password");
+      await user.click(screen.getByRole("button", { name: /reset with recovery code/i }));
+
+      await waitFor(() => expect(screen.getByText(/password has been reset/i)).toBeInTheDocument());
+      expect(completeBody).not.toHaveProperty("totpCode");
+    });
+
+    it("reveals the code field on a requiresTotp rejection from /complete-fresh, flags a wrong code, and completes on resubmit", async () => {
+      const { verifyBody } = setup(undefined);
+      const freshBodies: Record<string, string>[] = [];
+      vi.spyOn(global, "fetch").mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url.includes("/verify-token")) return new Response(verifyBody, { status: 200 });
+        if (url.includes("complete-fresh")) {
+          const body = JSON.parse(String(init?.body));
+          freshBodies.push(body);
+          if (body.totpCode === "654321") return new Response(JSON.stringify({ reset: true }), { status: 200 });
+          return new Response(
+            JSON.stringify({ error: body.totpCode ? "Invalid TOTP code" : "TOTP code required", requiresTotp: true }),
+            { status: 401 }
+          );
+        }
+        throw new Error(`unexpected fetch ${url}`);
+      });
+
+      const user = userEvent.setup();
+      renderAt("/reset-password/confirm?token=abc");
+      await waitFor(() => screen.getByRole("button", { name: /don't have my recovery code/i }));
+      await user.click(screen.getByRole("button", { name: /don't have my recovery code/i }));
+      expect(screen.queryByLabelText(/two-factor code/i)).not.toBeInTheDocument();
+      await user.type(screen.getByLabelText(/new password/i), "a brand new password");
+      await user.click(screen.getByRole("button", { name: /start fresh and reset password/i }));
+
+      await waitFor(() => expect(screen.getByText(/enter the code from your authenticator/i)).toBeInTheDocument());
+      expect(screen.queryByText(/invalid or has expired/i)).not.toBeInTheDocument();
+
+      await user.type(screen.getByLabelText(/two-factor code/i), "000000");
+      await user.click(screen.getByRole("button", { name: /start fresh and reset password/i }));
+      await waitFor(() => expect(screen.getByText(/two-factor code is invalid/i)).toBeInTheDocument());
+
+      await user.clear(screen.getByLabelText(/two-factor code/i));
+      await user.type(screen.getByLabelText(/two-factor code/i), "654321");
+      await user.click(screen.getByRole("button", { name: /start fresh and reset password/i }));
+      await user.click(await screen.findByRole("button", { name: /saved my new recovery code/i }));
+      await waitFor(() => expect(screen.getByText(/password has been reset/i)).toBeInTheDocument());
+
+      expect(freshBodies.map((b) => b.totpCode)).toEqual([undefined, "000000", "654321"]);
+    });
+
+    it("shows a throttling message when too many codes were tried", async () => {
+      const { recoveryCode, verifyBody } = setup(true);
+      vi.spyOn(global, "fetch").mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("/verify-token")) return new Response(verifyBody, { status: 200 });
+        if (url.includes("/complete")) {
+          return new Response(JSON.stringify({ error: "Too many attempts. Please try again later." }), { status: 429 });
+        }
+        throw new Error(`unexpected fetch ${url}`);
+      });
+
+      const user = userEvent.setup();
+      renderAt("/reset-password/confirm?token=abc");
+      await waitFor(() => screen.getByLabelText(/two-factor code/i));
+      await user.type(screen.getByLabelText(/recovery code/i), recoveryCode);
+      await user.type(screen.getByLabelText(/new password/i), "a brand new password");
+      await user.type(screen.getByLabelText(/two-factor code/i), "111111");
+      await user.click(screen.getByRole("button", { name: /reset with recovery code/i }));
+      await waitFor(() => expect(screen.getByText(/too many incorrect codes/i)).toBeInTheDocument());
+    });
+  });
 });

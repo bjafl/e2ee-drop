@@ -16,6 +16,7 @@ import {
   deriveRecoveryKey,
   generateRecoveryCode,
 } from "@/lib/keyWrapping";
+import type { PasswordResetVerifyTokenResponse } from "@e2ee-drop/shared";
 import i18n from "@/i18n";
 import passwordResetEn from "@/locales/en/passwordReset.json";
 import passwordResetNb from "@/locales/nb/passwordReset.json";
@@ -23,10 +24,7 @@ import passwordResetNb from "@/locales/nb/passwordReset.json";
 i18n.addResourceBundle("en", "passwordReset", passwordResetEn, true, false);
 i18n.addResourceBundle("nb", "passwordReset", passwordResetNb, true, false);
 
-interface VerifyTokenInfo {
-  passwordSalt: string;
-  recoveryWrappedPrivateKey: string;
-}
+type VerifyTokenInfo = Pick<PasswordResetVerifyTokenResponse, "passwordSalt" | "recoveryWrappedPrivateKey" | "totpEnabled">;
 
 export function ConfirmPasswordResetPage() {
   const { t } = useTranslation("passwordReset");
@@ -37,6 +35,14 @@ export function ConfirmPasswordResetPage() {
   const [noRecovery, setNoRecovery] = useState(false);
   const [recoveryCode, setRecoveryCode] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  // 2FA accounts must also supply a current TOTP code (the server rejects
+  // /complete and /complete-fresh with 401 requiresTotp otherwise). The field
+  // is shown up front when /verify-token reports totpEnabled, and also
+  // revealed on a requiresTotp rejection (e.g. 2FA was enabled after the page
+  // loaded) — the same prompt-and-resubmit flow as LoginPage. A rejection
+  // does not consume the reset token, so the user can simply retry.
+  const [needsTotp, setNeedsTotp] = useState(false);
+  const [totpCode, setTotpCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
   // Set once the "start fresh" path has generated (and the server has
@@ -72,9 +78,29 @@ export function ConfirmPasswordResetPage() {
       body: JSON.stringify({ token }),
     })
       .then((res) => (res.ok ? res.json() : Promise.reject()))
-      .then(setInfo)
+      .then((body: VerifyTokenInfo) => {
+        setInfo(body);
+        setNeedsTotp(body.totpEnabled === true);
+      })
       .catch(() => setInvalidToken(true));
   }, [token]);
+
+  // Only included when the account needs it, so non-2FA resets send exactly
+  // the same body as before.
+  const totpField = () => (needsTotp ? { totpCode } : {});
+
+  // Maps a 2FA-related rejection from /complete or /complete-fresh to a
+  // message (revealing the code field if needed), or null if the failure
+  // was something else.
+  const totpErrorFor = async (response: Response): Promise<string | null> => {
+    if (response.status === 429) return t("confirm.errors.tooManyTotpAttempts");
+    if (response.status !== 401) return null;
+    const body = (await response.json().catch(() => ({}))) as { requiresTotp?: boolean };
+    if (!body.requiresTotp) return null;
+    const hadCode = needsTotp && totpCode !== "";
+    setNeedsTotp(true);
+    return hadCode ? t("confirm.errors.invalidTotp") : t("confirm.errors.totpRequired");
+  };
 
   const handleRecoverySubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -116,9 +142,14 @@ export function ConfirmPasswordResetPage() {
           newAuthKey,
           newPasswordSalt: newSalt,
           newPasswordWrappedPrivateKey,
+          ...totpField(),
         }),
       });
-      if (!response.ok) throw new Error("reset failed");
+      if (!response.ok) {
+        const totpError = await totpErrorFor(response);
+        if (totpError) return setError(totpError);
+        throw new Error("reset failed");
+      }
       setDone(true);
     } catch {
       setError(t("confirm.errors.resetFailed"));
@@ -150,9 +181,10 @@ export function ConfirmPasswordResetPage() {
         newPasswordWrappedPrivateKey,
         newRecoveryWrappedPrivateKey,
         newPublicKey: encodeBase64(keyPair.publicKey),
+        ...totpField(),
       }),
     });
-    if (!response.ok) return setError(t("confirm.errors.invalidToken"));
+    if (!response.ok) return setError((await totpErrorFor(response)) ?? t("confirm.errors.invalidToken"));
     // Don't setDone here — show the new recovery code first and wait for
     // explicit confirmation (see handleFreshRecoveryConfirm below).
     setFreshRecoveryCode(newRecoveryCode);
@@ -213,6 +245,20 @@ export function ConfirmPasswordResetPage() {
                 className="w-full rounded border p-2"
               />
             </div>
+            {needsTotp && (
+              <div>
+                <p>{t("confirm.totpHelp")}</p>
+                <label htmlFor="reset-totp">{t("confirm.totpCode")}</label>
+                <input
+                  id="reset-totp"
+                  autoComplete="one-time-code"
+                  inputMode="numeric"
+                  value={totpCode}
+                  onChange={(e) => setTotpCode(e.target.value)}
+                  className="w-full rounded border p-2"
+                />
+              </div>
+            )}
             <Button type="submit" disabled={submitting}>
               {t("confirm.submitWithRecovery")}
             </Button>
@@ -236,6 +282,20 @@ export function ConfirmPasswordResetPage() {
                 className="w-full rounded border p-2"
               />
             </div>
+            {needsTotp && (
+              <div>
+                <p>{t("confirm.totpHelp")}</p>
+                <label htmlFor="fresh-reset-totp">{t("confirm.totpCode")}</label>
+                <input
+                  id="fresh-reset-totp"
+                  autoComplete="one-time-code"
+                  inputMode="numeric"
+                  value={totpCode}
+                  onChange={(e) => setTotpCode(e.target.value)}
+                  className="w-full rounded border p-2"
+                />
+              </div>
+            )}
             <Button type="submit" disabled={submitting}>
               {t("confirm.submitFresh")}
             </Button>
