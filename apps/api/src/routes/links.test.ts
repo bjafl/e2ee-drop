@@ -298,4 +298,93 @@ describe("link routes", () => {
     });
     expect(thirdDifferentOwner.statusCode).toBe(409);
   });
+
+  it("lists queued drops for the owner, oldest first, excluding downloaded ones", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "queueowner");
+
+    const link = await prisma.link.create({
+      data: {
+        ownerId: owner.userId,
+        slug: "queue-test",
+        mode: "permanent",
+        recipientPublicKey: owner.publicKey,
+      },
+    });
+    const older = await prisma.drop.create({
+      data: {
+        linkId: link.id,
+        senderPublicKey: "a",
+        s3Key: "k1",
+        nonce: "n",
+        fileName: "old.txt",
+        fileSize: 1,
+        mimeType: "text/plain",
+        contentMD5: "m",
+        status: "uploaded",
+        createdAt: new Date(Date.now() - 60_000),
+      },
+    });
+    await prisma.drop.create({
+      data: {
+        linkId: link.id,
+        senderPublicKey: "b",
+        s3Key: "k2",
+        nonce: "n",
+        fileName: "new.txt",
+        fileSize: 1,
+        mimeType: "text/plain",
+        contentMD5: "m",
+        status: "uploaded",
+      },
+    });
+    await prisma.drop.create({
+      data: {
+        linkId: link.id,
+        senderPublicKey: "c",
+        s3Key: "k3",
+        nonce: "n",
+        fileName: "gone.txt",
+        fileSize: 1,
+        mimeType: "text/plain",
+        contentMD5: "m",
+        status: "downloaded",
+      },
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: `/api/links/${link.slug}/drops`,
+      cookies: owner.cookies,
+    });
+
+    expect(response.statusCode).toBe(200);
+    const { drops } = response.json();
+    expect(drops).toHaveLength(2);
+    expect(drops[0].id).toBe(older.id);
+    expect(drops.map((drop: { fileName: string }) => drop.fileName)).not.toContain("gone.txt");
+  });
+
+  it("rejects a non-owner from listing another user's queue", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "queueowner2");
+    const intruder = await registerAndGetCookie(server, "queueintruder");
+
+    const link = await prisma.link.create({
+      data: {
+        ownerId: owner.userId,
+        slug: "private-queue",
+        mode: "permanent",
+        recipientPublicKey: owner.publicKey,
+      },
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: `/api/links/${link.slug}/drops`,
+      cookies: intruder.cookies,
+    });
+
+    expect(response.statusCode).toBe(403);
+  });
 });

@@ -37,6 +37,10 @@ export interface DropSummary {
   message: string | null;
 }
 
+export interface ListDropsResponse {
+  drops: DropSummary[];
+}
+
 export interface LinkStatusResponse {
   slug: string;
   mode: LinkMode;

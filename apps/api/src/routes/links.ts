@@ -1,12 +1,18 @@
 // apps/api/src/routes/links.ts
 import type { FastifyInstance } from "fastify";
-import type { CreateLinkRequest, CreateLinkResponse, CreateCustomLinkRequest } from "@e2ee-drop/shared";
+import type {
+  CreateLinkRequest,
+  CreateLinkResponse,
+  CreateCustomLinkRequest,
+  ListDropsResponse,
+} from "@e2ee-drop/shared";
 import { prisma, Prisma } from "@e2ee-drop/db";
 import {
   createOneTimeLink,
   deleteLinkIfExists,
   getLinkBySlug,
   isLinkExpired,
+  toDropSummary,
   toLinkStatusResponse,
 } from "../lib/links";
 import { deleteObject } from "../lib/storage";
@@ -107,6 +113,29 @@ export function registerLinkRoutes(server: FastifyInstance): void {
     if (isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
     return reply.send(await toLinkStatusResponse(link));
   });
+
+  // Owner-only queue listing (Plan 3, Task 6). Returns every non-downloaded drop
+  // for the link, oldest first — the initial snapshot the frontend queue view
+  // (Task 12) renders before SSE takes over. getLinkBySlug's `include: { drops:
+  // true }` has no `take`/restrictive `where`, so link.drops already holds the
+  // full set of drops regardless of status; the filtering and ordering below is
+  // done in JS rather than pushed into the query.
+  server.get<{ Params: { slug: string } }>(
+    "/api/links/:slug/drops",
+    { preHandler: server.requireAuth },
+    async (request, reply) => {
+      const link = await getLinkBySlug(request.params.slug);
+      if (!link) return reply.status(404).send({ error: "Link not found" });
+      if (link.ownerId !== request.user!.id) return reply.status(403).send({ error: "Forbidden" });
+
+      const drops = link.drops
+        .filter((drop) => drop.status !== "downloaded")
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+
+      const body: ListDropsResponse = { drops: drops.map(toDropSummary) };
+      return reply.send(body);
+    }
+  );
 
   server.delete<{ Params: { slug: string } }>("/api/links/:slug", async (request, reply) => {
     const link = await getLinkBySlug(request.params.slug);
