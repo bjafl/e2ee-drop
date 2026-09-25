@@ -265,6 +265,30 @@ not expose:
   such as a "revoke link" button in the UI. Today no frontend code calls
   `DELETE /api/links/:slug`.
 
+  Note the manage-token design has a practical gap of its own: `/events`
+  is an `EventSource` connection, which cannot send a custom header, so
+  a manage token protecting it would have to travel in the query string
+  or a cookie instead — a detail to settle if this is ever built, not a
+  reason it's unworkable.
+
+- **A cheaper, token-free option for the early-complete sub-case
+  specifically** (identified in the SEC10 re-review): make `/complete`
+  verify rather than merely authorize. Before the CAS, HEAD the object
+  at `drop.s3Key` and only proceed if its actual `Content-Length`
+  matches `fileSize + NACL_BOX_OVERHEAD_BYTES` — a bystander (or, on an
+  owned link, a sender who never actually PUT anything) can then only
+  report a completion that's already true. Making the route idempotent
+  on an already-`uploaded`/`downloading`/`downloaded` drop (return 200
+  instead of 404) closes the real sender's "upload failed, and 409 on
+  retry" failure mode too, without any protocol or schema change. This
+  doesn't touch `DELETE` or slot-taking (still accepted, per above), but
+  it's a real, low-cost fix for early-complete specifically — including
+  for OWNED links, where the same unauthenticated-by-anything-but-drop-id
+  `/complete` currently lets a legitimate sender charge the owner's
+  quota for bytes that were never uploaded, without ever calling S3 at
+  all. Worth doing as its own follow-up regardless of whether the
+  manage-token redesign ever happens.
+
 ## 6. Links, contacts, and the "send to contact" flow
 
 - **Contacts** are established via mutual request/accept between two

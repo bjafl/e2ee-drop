@@ -240,10 +240,18 @@ export function registerUploadRoutes(server: FastifyInstance): void {
         //
         // KNOWN, ACCEPTED TRADE-OFF (security review SEC10): the drop id is
         // readable by every slug holder, so any of them can complete an
-        // "uploading" drop early. The only effect is a recipient download
-        // attempt that fails until the real PUT lands. A per-drop upload
+        // "uploading" drop early. This doesn't just delay the recipient's
+        // download — it also makes the REAL sender's own later /complete
+        // call lose the CAS (404), so the real sender sees "upload failed"
+        // with no way to retry (a fresh upload-url on the same link then
+        // 409s), even though the bytes actually landed. A per-drop upload
         // secret was considered and rejected because it closes nothing: the
-        // same bystander can DELETE the link (see links.ts). See spec §5.1.
+        // same bystander can DELETE the link (see links.ts) or, worse, claim
+        // the link's one upload slot before the real sender arrives — no
+        // token stops that. See spec §5.1, including the cheaper option of
+        // making this route verify-before-CAS (HEAD the object; only trust a
+        // Content-Length match) and idempotent on an already-`uploaded`
+        // drop, if this failure mode ever needs closing.
         updated = await transitionDropStatus(request.params.dropId, link.id, ["uploading"], "uploaded");
       } else {
         // Owned link: the CAS and the owner's quota charge commit together, and
