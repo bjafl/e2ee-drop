@@ -7,9 +7,11 @@
     "dev:api": "pnpm --filter @e2ee-drop/api dev",
     "dev:web": "pnpm --filter @e2ee-drop/web dev",
     "test": "pnpm -r test",
-    "lint": "pnpm -r lint"
+    "lint": "pnpm -r lint",
+    "verify:e2e": "node scripts/verify-e2e.mjs"
   },
   "devDependencies": {
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "tweetnacl": "^1.0.3"
   }
 }

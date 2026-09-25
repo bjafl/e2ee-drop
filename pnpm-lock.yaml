@@ -8,6 +8,9 @@ importers:
 
   .:
     devDependencies:
+      tweetnacl:
+        specifier: ^1.0.3
+        version: 1.0.3
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
