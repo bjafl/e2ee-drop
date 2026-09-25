@@ -8,6 +8,10 @@ function render(ui: ReactElement) {
   return rtlRender(<MemoryRouter>{ui}</MemoryRouter>);
 }
 
+// Deliberately far from the old hardcoded 24h: the operator may configure any
+// LINK_EXPIRY_HOURS, and the stored key must live exactly as long as the link.
+const SERVER_EXPIRES_AT = Date.now() + 72 * 60 * 60 * 1000;
+
 describe("CreateLinkPage", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -15,7 +19,12 @@ describe("CreateLinkPage", () => {
       "fetch",
       vi.fn().mockResolvedValue({
         ok: true,
-        json: async () => ({ linkId: "link1", slug: "abc123", codewords: ["fox", "river", "lamp"] }),
+        json: async () => ({
+          linkId: "link1",
+          slug: "abc123",
+          codewords: ["fox", "river", "lamp"],
+          expiresAt: SERVER_EXPIRES_AT,
+        }),
       })
     );
   });
@@ -41,5 +50,14 @@ describe("CreateLinkPage", () => {
 
     const link = await screen.findByRole("link", { name: /download page/i });
     expect(link).toHaveAttribute("href", "/download/abc123");
+  });
+
+  it("keeps the private key in localStorage until the server's expiresAt, not a hardcoded expiry", async () => {
+    render(<CreateLinkPage />);
+
+    await waitFor(() => {
+      const stored = JSON.parse(window.localStorage.getItem("e2ee-drop:links") ?? "{}");
+      expect(stored.abc123?.expiresAt).toBe(SERVER_EXPIRES_AT);
+    });
   });
 });

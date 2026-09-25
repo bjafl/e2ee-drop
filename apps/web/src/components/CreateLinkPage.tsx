@@ -15,7 +15,6 @@ import createLinkNb from "@/locales/nb/createLink.json";
 i18n.addResourceBundle("en", "createLink", createLinkEn, true, false);
 i18n.addResourceBundle("nb", "createLink", createLinkNb, true, false);
 
-const LINK_EXPIRY_MS = 24 * 60 * 60 * 1000;
 const CODEWORD_DEFAULT_COUNT = 3;
 
 export function CreateLinkPage() {
@@ -42,7 +41,10 @@ export function CreateLinkPage() {
         if (!response.ok) throw new Error("create failed");
         const body = (await response.json()) as CreateLinkResponse;
         if (cancelled) return;
-        saveLink(body.slug, encodeBase64(keyPair.secretKey), Date.now() + LINK_EXPIRY_MS);
+        // Keep the private key exactly as long as the server keeps the link
+        // (operator-configurable LINK_EXPIRY_HOURS) — forgetting it earlier would
+        // make a later drop on a still-valid link undecryptable.
+        saveLink(body.slug, encodeBase64(keyPair.secretKey), body.expiresAt);
         setSlug(body.slug);
         setCodewords(body.codewords ?? []);
       } catch {

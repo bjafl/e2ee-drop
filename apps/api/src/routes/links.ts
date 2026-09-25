@@ -18,10 +18,14 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       return reply.status(400).send({ error: "Missing recipientPublicKey" });
     }
     const link = await createOneTimeLink(recipientPublicKey, locale);
+    // One-time links always have an expiry (createOneTimeLink sets it); only
+    // permanent links, which this route doesn't create, have a null expiresAt.
+    if (!link.expiresAt) throw new Error("one-time link created without expiresAt");
     const body: CreateLinkResponse = {
       linkId: link.id,
       slug: link.slug,
       codewords: deriveCodewords(link.recipientPublicKey, resolveLocale(link.codewordLocale), CODEWORD_MAX_COUNT),
+      expiresAt: link.expiresAt.getTime(),
     };
     return reply.send(body);
   });

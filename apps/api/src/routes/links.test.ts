@@ -98,6 +98,22 @@ describe("link routes", () => {
     expect(body.codewords).toEqual(createBody.codewords);
   });
 
+  it("returns the link's actual server-side expiresAt (epoch ms) on create", async () => {
+    const server = buildServer();
+    const before = Date.now();
+    const createResponse = await server.inject({
+      method: "POST",
+      url: "/api/links",
+      payload: { recipientPublicKey: "cmVjaXBpZW50a2V5" },
+    });
+    const body = createResponse.json();
+
+    const link = await prisma.link.findFirstOrThrow({ where: { slug: body.slug } });
+    expect(typeof body.expiresAt).toBe("number");
+    expect(body.expiresAt).toBe(link.expiresAt!.getTime());
+    expect(body.expiresAt).toBeGreaterThan(before);
+  });
+
   it("returns 404 for an expired link without deleting it (deletion is cleanup's job, so the object isn't orphaned)", async () => {
     const server = buildServer();
     const { link } = await createLinkWithDrop("expired-get-test", new Date(Date.now() - 1000));

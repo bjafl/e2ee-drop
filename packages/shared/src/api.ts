@@ -12,6 +12,7 @@ export interface CreateLinkResponse {
   linkId: string;
   slug: string;
   codewords: string[]; // returned immediately so the creator doesn't need a second round-trip to see their phrase
+  expiresAt: number; // epoch ms — the link's real server-side expiry (LINK_EXPIRY_HOURS); the creator keeps its private key until then
 }
 
 export interface DropSummary {
