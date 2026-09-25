@@ -87,6 +87,19 @@ describe("DELETE /api/account", () => {
     expect(await prisma.user.findUnique({ where: { id: otherUser.id } })).not.toBeNull();
   });
 
+  it("rejects an object-typed authKey with 400 (not 500) via the route's JSON-schema body validation", async () => {
+    const server = await buildTestServer(userId);
+    const response = await server.inject({
+      method: "DELETE",
+      url: "/api/account",
+      payload: { authKey: {} },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(cascadeDeleteUserLinks).not.toHaveBeenCalled();
+    expect(await prisma.user.findUnique({ where: { id: userId } })).not.toBeNull();
+  });
+
   it("rejects deletion with the wrong authKey and leaves the account intact", async () => {
     const server = await buildTestServer(userId);
     const response = await server.inject({

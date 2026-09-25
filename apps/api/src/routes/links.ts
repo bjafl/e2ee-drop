@@ -20,23 +20,37 @@ import { resolveLocale, deriveCodewords, CODEWORD_MAX_COUNT } from "../lib/codew
 import { env } from "../env";
 
 export function registerLinkRoutes(server: FastifyInstance): void {
-  server.post<{ Body: CreateLinkRequest }>("/api/links", async (request, reply) => {
-    const { recipientPublicKey, locale } = request.body;
-    if (!recipientPublicKey) {
-      return reply.status(400).send({ error: "Missing recipientPublicKey" });
+  server.post<{ Body: CreateLinkRequest }>(
+    "/api/links",
+    {
+      schema: {
+        body: {
+          type: "object",
+          properties: {
+            recipientPublicKey: { type: "string" },
+            locale: { type: ["string", "null"] },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { recipientPublicKey, locale } = request.body;
+      if (!recipientPublicKey) {
+        return reply.status(400).send({ error: "Missing recipientPublicKey" });
+      }
+      const link = await createOneTimeLink(recipientPublicKey, locale);
+      // One-time links always have an expiry (createOneTimeLink sets it); only
+      // permanent links, which this route doesn't create, have a null expiresAt.
+      if (!link.expiresAt) throw new Error("one-time link created without expiresAt");
+      const body: CreateLinkResponse = {
+        linkId: link.id,
+        slug: link.slug,
+        codewords: deriveCodewords(link.recipientPublicKey, resolveLocale(link.codewordLocale), CODEWORD_MAX_COUNT),
+        expiresAt: link.expiresAt.getTime(),
+      };
+      return reply.send(body);
     }
-    const link = await createOneTimeLink(recipientPublicKey, locale);
-    // One-time links always have an expiry (createOneTimeLink sets it); only
-    // permanent links, which this route doesn't create, have a null expiresAt.
-    if (!link.expiresAt) throw new Error("one-time link created without expiresAt");
-    const body: CreateLinkResponse = {
-      linkId: link.id,
-      slug: link.slug,
-      codewords: deriveCodewords(link.recipientPublicKey, resolveLocale(link.codewordLocale), CODEWORD_MAX_COUNT),
-      expiresAt: link.expiresAt.getTime(),
-    };
-    return reply.send(body);
-  });
+  );
 
   const SLUG_PATTERN = /^[a-z0-9-]{3,32}$/;
   const MAX_RETENTION_DAYS = 2_147_483_647; // Link.retentionDays is a Postgres int4
@@ -47,7 +61,20 @@ export function registerLinkRoutes(server: FastifyInstance): void {
   // so it must be validated and its uniqueness enforced explicitly.
   server.post<{ Body: CreateCustomLinkRequest }>(
     "/api/links/custom",
-    { preHandler: server.requireAuth },
+    {
+      preHandler: server.requireAuth,
+      schema: {
+        body: {
+          type: "object",
+          properties: {
+            slug: { type: "string" },
+            mode: { type: "string" },
+            visibility: { type: ["string", "null"] },
+            retentionDays: { type: ["integer", "null"] },
+          },
+        },
+      },
+    },
     async (request, reply) => {
       const { slug, mode, visibility, retentionDays } = request.body;
       if (!slug || !SLUG_PATTERN.test(slug)) {

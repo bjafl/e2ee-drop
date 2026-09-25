@@ -72,7 +72,28 @@ async function uploadUrlRateLimit(request: FastifyRequest, reply: FastifyReply):
 export function registerUploadRoutes(server: FastifyInstance): void {
   server.post<{ Params: { slug: string }; Body: RequestUploadUrlRequest }>(
     "/api/links/:slug/upload-url",
-    { preHandler: uploadUrlRateLimit },
+    {
+      preHandler: uploadUrlRateLimit,
+      schema: {
+        body: {
+          type: "object",
+          properties: {
+            senderPublicKey: { type: "string" },
+            message: { type: ["string", "null"] },
+            metadata: {
+              type: "object",
+              properties: {
+                fileName: { type: "string" },
+                fileSize: { type: "integer" },
+                nonce: { type: "string" },
+                mimeType: { type: "string" },
+                contentMD5: { type: "string" },
+              },
+            },
+          },
+        },
+      },
+    },
     async (request, reply) => {
       const link = await getLinkBySlug(request.params.slug);
       if (!link) return reply.status(404).send({ error: "Link not found" });

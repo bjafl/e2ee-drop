@@ -93,6 +93,20 @@ describe("upload routes", () => {
     expect(body.uploadUrl).toContain("http");
   });
 
+  it("rejects a numeric senderPublicKey with 400 (not 500) via the route's JSON-schema body validation", async () => {
+    const server = buildServer();
+    const slug = await createLink(server);
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+      payload: { senderPublicKey: 12345, metadata: validMetadata },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(await prisma.drop.count({ where: { link: { slug } } })).toBe(0);
+  });
+
   it("signs the upload url for exactly the NaCl box ciphertext length (fileSize + 16)", async () => {
     const server = buildServer();
     const slug = await createLink(server);

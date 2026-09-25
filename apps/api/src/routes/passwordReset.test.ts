@@ -362,6 +362,16 @@ describe("password reset routes", () => {
     }
   });
 
+  it("rejects a numeric newAuthKey on /complete with 400 (not 500) via the route's JSON-schema body validation", async () => {
+    const server = buildServer();
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/auth/password-reset/complete",
+      payload: { ...completePayload, token: "x", newAuthKey: 12345 },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
   it("/complete revokes sessions and consumes the token BEFORE mutating credentials (failure injected mid-reset)", async () => {
     const server = buildServer();
     const { userId } = await registerUser(server);

@@ -55,6 +55,27 @@ describe("POST /api/auth/register", () => {
     expect(link?.ownerId).toBe(body.userId);
   });
 
+  it("rejects a numeric email with 400 (not 500) via the route's JSON-schema body validation", async () => {
+    const server = buildServer();
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: {
+        email: 12345,
+        username: "numericemail",
+        name: "Numeric",
+        authKey: "p",
+        passwordSalt: "s",
+        passwordWrappedPrivateKey: "w",
+        recoveryWrappedPrivateKey: "r",
+        publicKey: "k",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(await prisma.user.findUnique({ where: { username: "numericemail" } })).toBeNull();
+  });
+
   it("returns 409 (not 500) and leaves no orphaned user when the username equals an existing anonymous link's slug", async () => {
     const server = buildServer();
     // An anonymous one-time link, created the real way; its random slug is a

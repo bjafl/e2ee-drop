@@ -217,4 +217,17 @@ describe("contact routes", () => {
     expect(response.json()).toEqual({ error: "Internal server error" });
     expect(response.body).not.toMatch(/prisma|findUnique|\.ts|\/home\/|invocation/i);
   });
+
+  it("rejects a numeric username with 400 (not a Prisma crash) via the route's JSON-schema body validation", async () => {
+    const server = buildServer();
+    const alice = await registerAndGetCookie(server, "alice6");
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/contacts",
+      payload: { username: 12345 },
+      cookies: alice.cookies,
+    });
+    expect(response.statusCode).toBe(400);
+  });
 });

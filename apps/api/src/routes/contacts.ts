@@ -14,7 +14,17 @@ import {
 export function registerContactRoutes(server: FastifyInstance): void {
   server.post<{ Body: { username: string } }>(
     "/api/contacts",
-    { preHandler: server.requireAuth },
+    {
+      preHandler: server.requireAuth,
+      schema: {
+        body: {
+          type: "object",
+          properties: {
+            username: { type: "string" },
+          },
+        },
+      },
+    },
     async (request, reply) => {
       const contact = await sendContactRequest(request.user!.id, request.body.username);
       return reply.send(contact);

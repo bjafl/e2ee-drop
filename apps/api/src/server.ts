@@ -52,6 +52,16 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const server = Fastify({
     logger: true,
     trustProxy: createTrustProxyFn(options.trustProxyHops ?? env.TRUST_PROXY_HOPS),
+    // CQ1 (request-validation sweep): Fastify's default Ajv compiler sets
+    // coerceTypes: 'array', which silently converts a wrong-typed body field
+    // to match its schema type (e.g. a numeric `email: 12345` becomes the
+    // string "12345", and a string `fileSize: "1000"` becomes the number
+    // 1000) *before* both schema validation and the handler ever see it.
+    // That defeats the entire point of adding `schema: { body: {...} }` to
+    // routes below — the very scenario the sweep exists to reject would
+    // instead silently coerce and proceed. Disabling coercion here makes
+    // Ajv reject a mismatched type with 400 instead of rewriting it.
+    ajv: { customOptions: { coerceTypes: false } },
   });
 
   // Thrown, unhandled errors must never leak their message/stack to the

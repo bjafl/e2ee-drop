@@ -139,124 +139,173 @@ async function registerRateLimit(request: FastifyRequest, reply: FastifyReply): 
 }
 
 export function registerAuthRoutes(server: FastifyInstance): void {
-  server.post<{ Body: RegisterRequest }>("/api/auth/register", { preHandler: registerRateLimit }, async (request, reply) => {
-    if (!env.ALLOW_REGISTRATION) {
-      return reply.status(403).send({ error: "Registration is disabled on this instance" });
-    }
-
-    const {
-      email,
-      username,
-      name,
-      authKey,
-      passwordSalt,
-      passwordWrappedPrivateKey,
-      recoveryWrappedPrivateKey,
-      publicKey,
-    } = request.body;
-    if (
-      !email ||
-      !username ||
-      !name ||
-      !authKey ||
-      !passwordSalt ||
-      !passwordWrappedPrivateKey ||
-      !recoveryWrappedPrivateKey ||
-      !publicKey
-    ) {
-      return reply.status(400).send({ error: "Missing required fields" });
-    }
-
-    if (!isValidUsername(username)) {
-      return reply.status(400).send({
-        error:
-          "Username must be 3-32 characters, lowercase letters/numbers/hyphens/underscores only, and not a reserved name",
-      });
-    }
-
-    // authKey (not the password) is what gets Argon2id-hashed and stored —
-    // see RegisterRequest.authKey for why the server never sees the password.
-    // That is also why there is NO password-length check here: authKey is a
-    // fixed-size Argon2id output regardless of the password behind it, so the
-    // minimum-length policy can only be enforced client-side (see
-    // apps/web/src/lib/passwordPolicy.ts for the full reasoning). The same
-    // applies to both password-reset completion routes.
-    const passwordHash = await hashPassword(authKey);
-
-    // User + default Link in one transaction: if the link insert fails, the
-    // user row is rolled back too, rather than leaving an account with no
-    // default link whose email/username would then 409 on every retry.
-    let user;
-    let defaultLink;
-    try {
-      ({ user, defaultLink } = await prisma.$transaction(async (tx) => {
-        const created = await tx.user.create({
-          data: {
-            email,
-            username,
-            name,
-            passwordHash,
-            passwordSalt,
-            passwordWrappedPrivateKey,
-            recoveryWrappedPrivateKey,
-            publicKey,
-            storageQuotaBytes: env.DEFAULT_STORAGE_QUOTA_BYTES,
+  server.post<{ Body: RegisterRequest }>(
+    "/api/auth/register",
+    {
+      preHandler: registerRateLimit,
+      schema: {
+        body: {
+          type: "object",
+          properties: {
+            email: { type: "string" },
+            username: { type: "string" },
+            name: { type: "string" },
+            authKey: { type: "string" },
+            passwordSalt: { type: "string" },
+            passwordWrappedPrivateKey: { type: "string" },
+            recoveryWrappedPrivateKey: { type: "string" },
+            publicKey: { type: "string" },
           },
-        });
-        const link = await createDefaultLinkForUser(created.id, created.username, created.publicKey, tx);
-        return { user: created, defaultLink: link };
-      }));
-    } catch (error: unknown) {
-      // P2002 (unique constraint violation) covers every collision here
-      // without inspecting error.meta.target: `email` and `username` are
-      // each @unique on User, and Link.slug (= username for the default
-      // link) is globally unique, so a username equal to an existing
-      // anonymous link's slug also lands here. All are "already in use".
-      //
-      // KNOWN, ACCEPTED TRADE-OFF (security review SEC11): unlike /prelogin
-      // and /password-reset/request, this 409 is an email-registered oracle.
-      // The message doesn't name the field, but usernames are public by
-      // design (GET /api/links/<username>), so a caller who pairs a target
-      // email with a known-free username learns the email is registered.
-      // Accepted because: the only real fix is "always claim success", which
-      // is unworkable here — /register logs the user in and hands them a
-      // recovery code, and on a no-SMTP instance nobody could ever be told
-      // why a "successful" registration can't log in; a negative probe
-      // actually creates an account for the probed email (noisy, and it
-      // burns the per-IP registerRateLimiter); and ALLOW_REGISTRATION=false
-      // closes the oracle on instances that need to. Response timing adds no
-      // signal: hashPassword above runs before the insert on both outcomes.
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-        return reply.status(409).send({ error: "Email or username already in use" });
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!env.ALLOW_REGISTRATION) {
+        return reply.status(403).send({ error: "Registration is disabled on this instance" });
       }
-      throw error;
+
+      const {
+        email,
+        username,
+        name,
+        authKey,
+        passwordSalt,
+        passwordWrappedPrivateKey,
+        recoveryWrappedPrivateKey,
+        publicKey,
+      } = request.body;
+      if (
+        !email ||
+        !username ||
+        !name ||
+        !authKey ||
+        !passwordSalt ||
+        !passwordWrappedPrivateKey ||
+        !recoveryWrappedPrivateKey ||
+        !publicKey
+      ) {
+        return reply.status(400).send({ error: "Missing required fields" });
+      }
+
+      if (!isValidUsername(username)) {
+        return reply.status(400).send({
+          error:
+            "Username must be 3-32 characters, lowercase letters/numbers/hyphens/underscores only, and not a reserved name",
+        });
+      }
+
+      // authKey (not the password) is what gets Argon2id-hashed and stored —
+      // see RegisterRequest.authKey for why the server never sees the password.
+      // That is also why there is NO password-length check here: authKey is a
+      // fixed-size Argon2id output regardless of the password behind it, so the
+      // minimum-length policy can only be enforced client-side (see
+      // apps/web/src/lib/passwordPolicy.ts for the full reasoning). The same
+      // applies to both password-reset completion routes.
+      const passwordHash = await hashPassword(authKey);
+
+      // User + default Link in one transaction: if the link insert fails, the
+      // user row is rolled back too, rather than leaving an account with no
+      // default link whose email/username would then 409 on every retry.
+      let user;
+      let defaultLink;
+      try {
+        ({ user, defaultLink } = await prisma.$transaction(async (tx) => {
+          const created = await tx.user.create({
+            data: {
+              email,
+              username,
+              name,
+              passwordHash,
+              passwordSalt,
+              passwordWrappedPrivateKey,
+              recoveryWrappedPrivateKey,
+              publicKey,
+              storageQuotaBytes: env.DEFAULT_STORAGE_QUOTA_BYTES,
+            },
+          });
+          const link = await createDefaultLinkForUser(created.id, created.username, created.publicKey, tx);
+          return { user: created, defaultLink: link };
+        }));
+      } catch (error: unknown) {
+        // P2002 (unique constraint violation) covers every collision here
+        // without inspecting error.meta.target: `email` and `username` are
+        // each @unique on User, and Link.slug (= username for the default
+        // link) is globally unique, so a username equal to an existing
+        // anonymous link's slug also lands here. All are "already in use".
+        //
+        // KNOWN, ACCEPTED TRADE-OFF (security review SEC11): unlike /prelogin
+        // and /password-reset/request, this 409 is an email-registered oracle.
+        // The message doesn't name the field, but usernames are public by
+        // design (GET /api/links/<username>), so a caller who pairs a target
+        // email with a known-free username learns the email is registered.
+        // Accepted because: the only real fix is "always claim success", which
+        // is unworkable here — /register logs the user in and hands them a
+        // recovery code, and on a no-SMTP instance nobody could ever be told
+        // why a "successful" registration can't log in; a negative probe
+        // actually creates an account for the probed email (noisy, and it
+        // burns the per-IP registerRateLimiter); and ALLOW_REGISTRATION=false
+        // closes the oracle on instances that need to. Response timing adds no
+        // signal: hashPassword above runs before the insert on both outcomes.
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+          return reply.status(409).send({ error: "Email or username already in use" });
+        }
+        throw error;
+      }
+
+      const session = await createSession(user.id);
+
+      reply.setCookie(SESSION_COOKIE_NAME, session.id, {
+        ...sessionCookieAttributes(),
+        signed: true,
+        expires: session.expiresAt,
+      });
+
+      const body: RegisterResponse = { userId: user.id, username: user.username, defaultLinkSlug: defaultLink.slug };
+      return reply.send(body);
     }
-
-    const session = await createSession(user.id);
-
-    reply.setCookie(SESSION_COOKIE_NAME, session.id, {
-      ...sessionCookieAttributes(),
-      signed: true,
-      expires: session.expiresAt,
-    });
-
-    const body: RegisterResponse = { userId: user.id, username: user.username, defaultLinkSlug: defaultLink.slug };
-    return reply.send(body);
-  });
+  );
 
   // Step one of login: the client needs passwordSalt before it can derive the
   // authKey it sends to /login. Unregistered emails get a same-shaped,
   // deterministic fake salt (see fakePasswordSaltForEmail) instead of an
   // error, so this endpoint cannot be used to enumerate accounts.
-  server.post<{ Body: PreloginRequest }>("/api/auth/prelogin", async (request, reply) => {
-    const email = request.body?.email;
-    if (!email || typeof email !== "string") return reply.status(400).send({ error: "Missing email" });
-    const user = await prisma.user.findUnique({ where: { email }, select: { passwordSalt: true } });
-    const body: PreloginResponse = { passwordSalt: user?.passwordSalt ?? fakePasswordSaltForEmail(email) };
-    return reply.send(body);
-  });
+  server.post<{ Body: PreloginRequest }>(
+    "/api/auth/prelogin",
+    {
+      schema: {
+        body: {
+          type: "object",
+          properties: {
+            email: { type: "string" },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const email = request.body?.email;
+      if (!email || typeof email !== "string") return reply.status(400).send({ error: "Missing email" });
+      const user = await prisma.user.findUnique({ where: { email }, select: { passwordSalt: true } });
+      const body: PreloginResponse = { passwordSalt: user?.passwordSalt ?? fakePasswordSaltForEmail(email) };
+      return reply.send(body);
+    }
+  );
 
-  server.post<{ Body: LoginRequest }>("/api/auth/login", { preHandler: loginRateLimit }, async (request, reply) => {
+  server.post<{ Body: LoginRequest }>(
+    "/api/auth/login",
+    {
+      preHandler: loginRateLimit,
+      schema: {
+        body: {
+          type: "object",
+          properties: {
+            email: { type: "string" },
+            authKey: { type: "string" },
+            totpCode: { type: "string" },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
     const { email, authKey, totpCode } = request.body;
     if (!email || !authKey) return reply.status(400).send({ error: "Missing email or authKey" });
 

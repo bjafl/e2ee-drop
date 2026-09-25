@@ -17,7 +17,17 @@ async function accountDeletionRateLimit(request: FastifyRequest, reply: FastifyR
 export function registerAccountRoutes(server: FastifyInstance): void {
   server.delete<{ Body: { authKey: string } }>(
     "/api/account",
-    { preHandler: [server.requireAuth, accountDeletionRateLimit] },
+    {
+      preHandler: [server.requireAuth, accountDeletionRateLimit],
+      schema: {
+        body: {
+          type: "object",
+          properties: {
+            authKey: { type: "string" },
+          },
+        },
+      },
+    },
     async (request, reply) => {
       // apps/api/src/plugins/auth.ts decorates the request as
       // `request.user: { id: string } | null`; requireAuth (the preHandler

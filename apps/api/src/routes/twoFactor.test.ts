@@ -37,6 +37,22 @@ describe("2FA routes", () => {
     expect(response.statusCode).toBe(403);
   });
 
+  it("rejects a numeric code on /2fa/enable with 400 (not 500) via the route's JSON-schema body validation", async () => {
+    const server = buildServer();
+    const { cookieValue } = await registerAndGetCookie(server);
+    const cookies = { e2ee_drop_session: cookieValue };
+
+    await server.inject({ method: "POST", url: "/api/auth/2fa/setup", cookies });
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/auth/2fa/enable",
+      cookies,
+      payload: { code: 123456 },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
   it("sets up, enables with a valid code, and disables 2FA with a fresh valid code", async () => {
     const server = buildServer();
     const { userId, cookieValue } = await registerAndGetCookie(server);

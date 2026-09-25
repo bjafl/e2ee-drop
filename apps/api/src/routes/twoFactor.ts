@@ -66,7 +66,17 @@ export function registerTwoFactorRoutes(server: FastifyInstance): void {
 
   server.post<{ Body: TotpEnableRequest }>(
     "/api/auth/2fa/enable",
-    { preHandler: [server.requireAuth, twoFactorRateLimit] },
+    {
+      preHandler: [server.requireAuth, twoFactorRateLimit],
+      schema: {
+        body: {
+          type: "object",
+          properties: {
+            code: { type: "string" },
+          },
+        },
+      },
+    },
     async (request, reply) => {
       const alreadyEnabled = { error: "2FA is already enabled. Disable it first to set up a new authenticator." };
       const user = await prisma.user.findUniqueOrThrow({ where: { id: request.user!.id } });
@@ -104,7 +114,28 @@ export function registerTwoFactorRoutes(server: FastifyInstance): void {
   // rationale and the alternative considered.
   server.post<{ Body: TotpEnableRequest }>(
     "/api/auth/2fa/disable",
-    { preHandler: [server.requireAuth, twoFactorRateLimit] },
+    {
+      preHandler: [server.requireAuth, twoFactorRateLimit],
+      schema: {
+        body: {
+          // Deviation from the brief's literal schema (`type: "object"`):
+          // twoFactor.test.ts's "rejects disabling 2FA without a valid TOTP
+          // code" test calls this route with NO body at all (not even `{}`).
+          // Fastify substitutes `null` for a wholly absent body before Ajv
+          // sees it (lib/validation.js's validateParam), so a strict
+          // `type: "object"` schema would reject that call with 400 before
+          // the handler's own `if (!code) return 401` ever ran — turning
+          // that test's expected 401 into a 400. Allowing "null" here is
+          // safe: the handler already reads the field via `request.body?.code`
+          // (optional chaining), never destructures `request.body` directly,
+          // so a null body cannot crash it.
+          type: ["object", "null"],
+          properties: {
+            code: { type: "string" },
+          },
+        },
+      },
+    },
     async (request, reply) => {
       const user = await prisma.user.findUniqueOrThrow({ where: { id: request.user!.id } });
       if (!user.totpEnabled || !user.totpSecretEncrypted) {

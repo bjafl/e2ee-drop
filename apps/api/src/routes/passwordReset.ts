@@ -132,7 +132,17 @@ async function passwordResetRequestRateLimit(request: FastifyRequest, reply: Fas
 export function registerPasswordResetRoutes(server: FastifyInstance): void {
   server.post<{ Body: PasswordResetRequestRequest }>(
     "/api/auth/password-reset/request",
-    { preHandler: passwordResetRequestRateLimit },
+    {
+      preHandler: passwordResetRequestRateLimit,
+      schema: {
+        body: {
+          type: "object",
+          properties: {
+            email: { type: "string" },
+          },
+        },
+      },
+    },
     async (request, reply) => {
       const { email } = request.body;
       const user = email ? await prisma.user.findUnique({ where: { email } }) : null;
@@ -157,18 +167,31 @@ export function registerPasswordResetRoutes(server: FastifyInstance): void {
     }
   );
 
-  server.post<{ Body: { token: string } }>("/api/auth/password-reset/verify-token", async (request, reply) => {
-    const record = await findValidResetToken(request.body.token);
-    if (!record) return reply.status(400).send({ error: "Invalid or expired reset token" });
-    const user = await prisma.user.findUniqueOrThrow({ where: { id: record.userId } });
-    const body: PasswordResetVerifyTokenResponse = {
-      email: user.email,
-      passwordSalt: user.passwordSalt,
-      recoveryWrappedPrivateKey: user.recoveryWrappedPrivateKey,
-      totpEnabled: user.totpEnabled,
-    };
-    return reply.send(body);
-  });
+  server.post<{ Body: { token: string } }>(
+    "/api/auth/password-reset/verify-token",
+    {
+      schema: {
+        body: {
+          type: "object",
+          properties: {
+            token: { type: "string" },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const record = await findValidResetToken(request.body.token);
+      if (!record) return reply.status(400).send({ error: "Invalid or expired reset token" });
+      const user = await prisma.user.findUniqueOrThrow({ where: { id: record.userId } });
+      const body: PasswordResetVerifyTokenResponse = {
+        email: user.email,
+        passwordSalt: user.passwordSalt,
+        recoveryWrappedPrivateKey: user.recoveryWrappedPrivateKey,
+        totpEnabled: user.totpEnabled,
+      };
+      return reply.send(body);
+    }
+  );
 
   // Recovery-code path: the client re-derived the wrapping key from the
   // user's recovery code and re-wrapped the SAME private key under a new
@@ -181,6 +204,30 @@ export function registerPasswordResetRoutes(server: FastifyInstance): void {
   // other destroys and recreates it.
   server.post<{ Body: PasswordResetCompleteRequest }>(
     "/api/auth/password-reset/complete",
+    {
+      schema: {
+        body: {
+          type: "object",
+          properties: {
+            token: { type: "string" },
+            newAuthKey: { type: "string" },
+            newPasswordSalt: { type: "string" },
+            newPasswordWrappedPrivateKey: { type: "string" },
+            // Deviation from the brief's literal schema
+            // (`type: ["string", "null"]`): passwordReset.test.ts's
+            // "rejects a missing or wrong code with 401 requiresTotp" test
+            // deliberately sends `totpCode: 123456` (a number) and asserts
+            // 401 requiresTotp — checkResetTotp already treats any
+            // non-string totpCode as "code required" via its own
+            // `typeof totpCode !== "string"` check. A schema-level type
+            // constraint here would intercept that value as a 400 before
+            // checkResetTotp ever ran. Left unconstrained so every value
+            // reaches the handler's existing (already-correct) type check.
+            totpCode: {},
+          },
+        },
+      },
+    },
     async (request, reply) => {
       const { token, newAuthKey, newPasswordSalt, newPasswordWrappedPrivateKey, totpCode } = (request.body ??
         {}) as Partial<PasswordResetCompleteRequest>;
@@ -217,6 +264,23 @@ export function registerPasswordResetRoutes(server: FastifyInstance): void {
   // followed by a fresh default link under the new public key.
   server.post<{ Body: PasswordResetCompleteFreshRequest }>(
     "/api/auth/password-reset/complete-fresh",
+    {
+      schema: {
+        body: {
+          type: "object",
+          properties: {
+            token: { type: "string" },
+            newAuthKey: { type: "string" },
+            newPasswordSalt: { type: "string" },
+            newPasswordWrappedPrivateKey: { type: "string" },
+            newRecoveryWrappedPrivateKey: { type: "string" },
+            newPublicKey: { type: "string" },
+            // See the matching deviation comment on /complete's schema above.
+            totpCode: {},
+          },
+        },
+      },
+    },
     async (request, reply) => {
       const {
         token,

@@ -100,6 +100,16 @@ describe("link routes", () => {
     expect(response.statusCode).toBe(404);
   });
 
+  it("rejects a numeric recipientPublicKey on POST /api/links with 400 (not 500) via the route's JSON-schema body validation", async () => {
+    const server = buildServer();
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/links",
+      payload: { recipientPublicKey: 12345 },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
   it("deletes a link", async () => {
     const server = buildServer();
     const createResponse = await server.inject({
