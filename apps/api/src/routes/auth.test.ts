@@ -2,6 +2,8 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { buildServer } from "../server";
 import { prisma } from "@e2ee-drop/db";
+import { encryptTotpSecret, generateTotpSecret } from "../lib/totp";
+import { TOTP, Secret } from "otpauth";
 
 describe("POST /api/auth/register", () => {
   beforeEach(async () => {
@@ -186,5 +188,118 @@ describe("POST /api/auth/register", () => {
     expect(response.json().error).toMatch(/3-32/);
     const user = await prisma.user.findFirst({ where: { email: "ab@example.com" } });
     expect(user).toBeNull();
+  });
+});
+
+describe("POST /api/auth/login, /api/auth/logout, GET /api/auth/me", () => {
+  beforeEach(async () => {
+    await prisma.session.deleteMany();
+    await prisma.drop.deleteMany();
+    await prisma.link.deleteMany();
+    await prisma.user.deleteMany();
+  });
+
+  async function register(server: ReturnType<typeof buildServer>, overrides: Record<string, unknown> = {}) {
+    return server.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: {
+        email: "carol@example.com",
+        username: "carol",
+        name: "Carol",
+        password: "correct horse battery staple",
+        passwordSalt: "c2FsdA==",
+        passwordWrappedPrivateKey: "d3JhcHBlZA==",
+        recoveryWrappedPrivateKey: "cmVjb3Zlcnk=",
+        publicKey: "cHVia2V5",
+        ...overrides,
+      },
+    });
+  }
+
+  it("logs in with the correct password and returns key-wrapping material", async () => {
+    const server = buildServer();
+    await register(server);
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { email: "carol@example.com", password: "correct horse battery staple" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.passwordWrappedPrivateKey).toBe("d3JhcHBlZA==");
+    expect(body.passwordSalt).toBe("c2FsdA==");
+  });
+
+  it("rejects the wrong password", async () => {
+    const server = buildServer();
+    await register(server);
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { email: "carol@example.com", password: "wrong password" },
+    });
+
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("requires a TOTP code when 2FA is enabled, accepts a valid one, and rejects replaying it", async () => {
+    const server = buildServer();
+    await register(server);
+    const secret = generateTotpSecret();
+    await prisma.user.update({
+      where: { email: "carol@example.com" },
+      data: { totpEnabled: true, totpSecretEncrypted: encryptTotpSecret(secret) },
+    });
+
+    const withoutCode = await server.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { email: "carol@example.com", password: "correct horse battery staple" },
+    });
+    expect(withoutCode.statusCode).toBe(401);
+    expect(withoutCode.json().requiresTotp).toBe(true);
+
+    const totp = new TOTP({ secret: Secret.fromBase32(secret) });
+    const code = totp.generate();
+
+    const withCode = await server.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { email: "carol@example.com", password: "correct horse battery staple", totpCode: code },
+    });
+    expect(withCode.statusCode).toBe(200);
+
+    const replay = await server.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { email: "carol@example.com", password: "correct horse battery staple", totpCode: code },
+    });
+    expect(replay.statusCode).toBe(401);
+  });
+
+  it("logs out and clears the session so /me subsequently 403s", async () => {
+    const server = buildServer();
+    const registerResponse = await register(server);
+    const cookie = registerResponse.cookies.find((c: { name: string }) => c.name === "e2ee_drop_session")!;
+
+    const meBefore = await server.inject({
+      method: "GET",
+      url: "/api/auth/me",
+      cookies: { e2ee_drop_session: cookie.value },
+    });
+    expect(meBefore.statusCode).toBe(200);
+
+    await server.inject({ method: "POST", url: "/api/auth/logout", cookies: { e2ee_drop_session: cookie.value } });
+
+    const meAfter = await server.inject({
+      method: "GET",
+      url: "/api/auth/me",
+      cookies: { e2ee_drop_session: cookie.value },
+    });
+    expect(meAfter.statusCode).toBe(403);
   });
 });

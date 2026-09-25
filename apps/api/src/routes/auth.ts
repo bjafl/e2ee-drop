@@ -1,10 +1,12 @@
 // apps/api/src/routes/auth.ts
 import type { FastifyInstance } from "fastify";
 import { prisma, Prisma } from "@e2ee-drop/db";
-import type { RegisterRequest, RegisterResponse } from "@e2ee-drop/shared";
-import { hashPassword } from "../lib/passwordAuth";
+import type { RegisterRequest, RegisterResponse, LoginRequest, LoginResponse, MeResponse } from "@e2ee-drop/shared";
+import { hashPassword, verifyPassword } from "../lib/passwordAuth";
+import { decryptTotpSecret, verifyTotpCode } from "../lib/totp";
 import { createDefaultLinkForUser } from "../lib/links";
-import { createSession } from "../lib/sessions";
+import { createSession, deleteSession } from "../lib/sessions";
+import { getUsedCodesForUser } from "../lib/totpReplayGuard";
 import { env } from "../env";
 import { SESSION_COOKIE_NAME } from "../plugins/auth";
 
@@ -67,6 +69,16 @@ function isValidUsername(username: string): boolean {
     USERNAME_CHARSET_PATTERN.test(username) &&
     !RESERVED_USERNAMES.has(username)
   );
+}
+
+// Lazily computed once per process and cached — see the comment at its call
+// site in the login route (timing-attack mitigation for email enumeration).
+let dummyPasswordHashPromise: Promise<string> | null = null;
+function getDummyPasswordHash(): Promise<string> {
+  if (!dummyPasswordHashPromise) {
+    dummyPasswordHashPromise = hashPassword("dummy-password-for-timing-equalization-only");
+  }
+  return dummyPasswordHashPromise;
 }
 
 export function registerAuthRoutes(server: FastifyInstance): void {
@@ -145,6 +157,87 @@ export function registerAuthRoutes(server: FastifyInstance): void {
     });
 
     const body: RegisterResponse = { userId: user.id, username: user.username, defaultLinkSlug: defaultLink.slug };
+    return reply.send(body);
+  });
+
+  server.post<{ Body: LoginRequest }>("/api/auth/login", async (request, reply) => {
+    const { email, password, totpCode } = request.body;
+    if (!email || !password) return reply.status(400).send({ error: "Missing email or password" });
+
+    const user = await prisma.user.findUnique({ where: { email } });
+    // Always run a password verification, even when no user was found —
+    // `verifyPassword` (Argon2id) is deliberately slow, and skipping it
+    // entirely on the "unknown email" branch would make that branch return
+    // measurably faster than "known email, wrong password". Both branches
+    // already return the identical error message and status code; without
+    // this, a network-timing attacker could still distinguish them and
+    // enumerate registered emails. `getDummyPasswordHash()` hashes a fixed,
+    // meaningless password once (lazily, cached for the process lifetime)
+    // purely so this branch pays a comparable Argon2id cost — its result is
+    // never used for anything but timing.
+    const passwordHash = user?.passwordHash ?? (await getDummyPasswordHash());
+    const passwordValid = await verifyPassword(password, passwordHash);
+    if (!user || !passwordValid) {
+      return reply.status(401).send({ error: "Invalid email or password" });
+    }
+
+    if (user.totpEnabled) {
+      if (!totpCode) {
+        return reply.status(401).send({ error: "TOTP code required", requiresTotp: true });
+      }
+      const secret = decryptTotpSecret(user.totpSecretEncrypted!);
+      if (!verifyTotpCode(secret, totpCode, getUsedCodesForUser(user.id))) {
+        return reply.status(401).send({ error: "Invalid TOTP code" });
+      }
+    }
+
+    const session = await createSession(user.id);
+    reply.setCookie(SESSION_COOKIE_NAME, session.id, {
+      signed: true,
+      httpOnly: true,
+      sameSite: "lax",
+      path: "/",
+      expires: session.expiresAt,
+    });
+
+    const body: LoginResponse = {
+      userId: user.id,
+      username: user.username,
+      name: user.name,
+      email: user.email,
+      emailVerified: user.emailVerified,
+      publicKey: user.publicKey,
+      passwordSalt: user.passwordSalt,
+      passwordWrappedPrivateKey: user.passwordWrappedPrivateKey,
+      totpEnabled: user.totpEnabled,
+    };
+    return reply.send(body);
+  });
+
+  server.post("/api/auth/logout", async (request, reply) => {
+    const raw = request.cookies[SESSION_COOKIE_NAME];
+    if (raw) {
+      const unsigned = request.unsignCookie(raw);
+      if (unsigned.valid && unsigned.value) await deleteSession(unsigned.value);
+    }
+    reply.clearCookie(SESSION_COOKIE_NAME, { path: "/" });
+    return reply.send({ loggedOut: true });
+  });
+
+  server.get("/api/auth/me", { preHandler: server.requireAuth }, async (request, reply) => {
+    const user = await prisma.user.findUnique({ where: { id: request.user!.id } });
+    if (!user) return reply.status(404).send({ error: "User not found" });
+    const body: MeResponse = {
+      userId: user.id,
+      username: user.username,
+      name: user.name,
+      email: user.email,
+      emailVerified: user.emailVerified,
+      publicKey: user.publicKey,
+      passwordSalt: user.passwordSalt,
+      passwordWrappedPrivateKey: user.passwordWrappedPrivateKey,
+      totpEnabled: user.totpEnabled,
+    };
     return reply.send(body);
   });
 }
