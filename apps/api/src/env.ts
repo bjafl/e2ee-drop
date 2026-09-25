@@ -10,6 +10,11 @@ function int(name: string, fallback: number): number {
   return value ? parseInt(value, 10) : fallback;
 }
 
+function bool(name: string, fallback: boolean): boolean {
+  const value = process.env[name];
+  return value === undefined ? fallback : value === "true";
+}
+
 export const env = {
   DATABASE_URL: required("DATABASE_URL"),
   PORT: int("PORT", 3000),
@@ -26,4 +31,14 @@ export const env = {
   MINIO_BUCKET: required("MINIO_BUCKET"),
   MINIO_ACCESS_KEY: required("MINIO_ACCESS_KEY"),
   MINIO_SECRET_KEY: required("MINIO_SECRET_KEY"),
+  SESSION_SECRET: required("SESSION_SECRET"),
+  APP_SECRET_KEY: required("APP_SECRET_KEY"),
+  ALLOW_REGISTRATION: bool("ALLOW_REGISTRATION", true),
+  DEFAULT_STORAGE_QUOTA_BYTES: int("DEFAULT_STORAGE_QUOTA_BYTES", 5 * 1024 * 1024 * 1024),
+  APP_URL: process.env.APP_URL ?? "http://localhost:8080",
+  SMTP_HOST: process.env.SMTP_HOST,
+  SMTP_PORT: process.env.SMTP_PORT ? parseInt(process.env.SMTP_PORT, 10) : undefined,
+  SMTP_USER: process.env.SMTP_USER,
+  SMTP_PASS: process.env.SMTP_PASS,
+  SMTP_FROM: process.env.SMTP_FROM,
 };
