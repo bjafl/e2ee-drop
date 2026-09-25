@@ -112,6 +112,13 @@ model Drop {
   message         String?
   status          String   @default("uploading")
   createdAt       DateTime @default(now())
+  // Opaque per-sender-network tag (keyed hash of the sender's IPv4 address or
+  // IPv6 /64, see apps/api/src/lib/senderKey.ts), set only while an OWNED
+  // link's drop is an in-flight quota reservation, so upload-url can cap how
+  // much of one owner's quota a single sender may hold in reservations (see
+  // assertWithinSenderShare in apps/api/src/lib/quota.ts). Cleared when the
+  // drop completes; never included in any API response.
+  reservationSenderKey String?
 
   @@index([linkId])
 }
