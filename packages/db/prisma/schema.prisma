@@ -7,9 +7,65 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model User {
+  id                        String    @id @default(cuid())
+  email                     String    @unique
+  emailVerified             Boolean   @default(false)
+  username                  String    @unique
+  name                      String
+  passwordHash              String
+  passwordSalt              String
+  passwordWrappedPrivateKey String
+  recoveryWrappedPrivateKey String
+  publicKey                 String
+  totpSecretEncrypted       String?
+  totpEnabled               Boolean   @default(false)
+  storageQuotaBytes         Int
+  storageUsedBytes          Int       @default(0)
+  createdAt                 DateTime  @default(now())
+
+  links               Link[]
+  sentDrops           Drop[]
+  sessions            Session[]
+  passwordResetTokens PasswordResetToken[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model Contact {
+  id            String   @id @default(cuid())
+  userId        String
+  contactUserId String
+  status        String   @default("pending")
+  createdAt     DateTime @default(now())
+
+  @@unique([userId, contactUserId])
+  @@index([userId])
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
 model Link {
   id                 String    @id @default(cuid())
   ownerId            String?
+  owner              User?     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   slug               String
   mode               String
   visibility         String    @default("public")
@@ -32,6 +88,7 @@ model Drop {
   link            Link     @relation(fields: [linkId], references: [id], onDelete: Cascade)
   senderPublicKey String
   senderUserId    String?
+  senderUser      User?    @relation(fields: [senderUserId], references: [id], onDelete: SetNull)
   s3Key           String
   nonce           String
   fileName        String
