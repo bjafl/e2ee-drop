@@ -123,6 +123,49 @@ describe("upload routes", () => {
     expect(drops).toHaveLength(1);
   });
 
+  it("allows a second upload-url request on a permanent link (queueing)", async () => {
+    const server = buildServer();
+    const link = await prisma.link.create({
+      data: { slug: "permanent-queue-test", mode: "permanent", recipientPublicKey: "cmVjaXBpZW50" },
+    });
+
+    const first = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/upload-url`,
+      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+    });
+    expect(first.statusCode).toBe(200);
+
+    const second = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/upload-url`,
+      payload: { senderPublicKey: "c2VuZGVyMg==", metadata: validMetadata },
+    });
+    expect(second.statusCode).toBe(200);
+
+    const drops = await prisma.drop.findMany({ where: { linkId: link.id } });
+    expect(drops).toHaveLength(2);
+  });
+
+  it("still rejects a second upload-url request on a one-time link", async () => {
+    const server = buildServer();
+    const slug = await createLink(server);
+
+    const first = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+    });
+    expect(first.statusCode).toBe(200);
+
+    const second = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+      payload: { senderPublicKey: "c2VuZGVyMg==", metadata: validMetadata },
+    });
+    expect(second.statusCode).toBe(409);
+  });
+
   it("allows only one of two concurrent upload-url requests on the same link to succeed", async () => {
     // server.inject() simulates requests in-process and does not reliably interleave two
     // concurrent calls (Fastify/light-my-request tends to resolve one fully before the next

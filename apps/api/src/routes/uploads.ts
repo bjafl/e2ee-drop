@@ -45,7 +45,7 @@ export function registerUploadRoutes(server: FastifyInstance): void {
       // Fast path only: avoids opening a transaction for the common case where we
       // already know from this same fetch that a drop exists. Not relied on for
       // correctness — the transaction below re-checks authoritatively.
-      if (link.drops.length > 0) {
+      if (link.mode === "one-time" && link.drops.length > 0) {
         return reply.status(409).send({ error: "Link already has a pending or completed drop" });
       }
 
@@ -80,7 +80,7 @@ export function registerUploadRoutes(server: FastifyInstance): void {
         await prisma.$transaction(
           async (tx) => {
             const existingDropCount = await tx.drop.count({ where: { linkId: link.id } });
-            if (existingDropCount > 0) {
+            if (link.mode === "one-time" && existingDropCount > 0) {
               throw new DropAlreadyExistsError();
             }
             await tx.drop.create({
