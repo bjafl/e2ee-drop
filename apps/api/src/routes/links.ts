@@ -63,7 +63,9 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       if (visibility !== undefined && visibility !== "public" && visibility !== "contacts-only") {
         return reply.status(400).send({ error: "Invalid visibility" });
       }
-      // Omitted/null means "no retention limit". Otherwise a whole number of
+      // Omitted/null means "use the global DROP_RETENTION_DAYS default" (see
+      // sweepExpiredDrops in jobs/cleanup.ts) — there is no "keep forever"
+      // option. Otherwise a whole number of
       // days, at least 1, and within Postgres's 32-bit Int column range so an
       // oversized value is a 400 rather than a database error.
       if (

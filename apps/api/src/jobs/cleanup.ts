@@ -42,6 +42,13 @@ export async function sweepExpiredDrops(): Promise<{ deletedDrops: number }> {
   return { deletedDrops };
 }
 
+// Password-reset tokens are single-use and short-lived, but an unused one
+// is never deleted by the reset flow itself, so expired rows are pruned here.
+export async function pruneExpiredPasswordResetTokens(): Promise<{ deletedTokens: number }> {
+  const result = await prisma.passwordResetToken.deleteMany({ where: { expiresAt: { lt: new Date() } } });
+  return { deletedTokens: result.count };
+}
+
 async function main() {
   const INTERVAL_MS = 15 * 60 * 1000;
   // eslint-disable-next-line no-constant-condition
@@ -49,8 +56,10 @@ async function main() {
     try {
       const linkResult = await runCleanup();
       const dropResult = await sweepExpiredDrops();
+      const tokenResult = await pruneExpiredPasswordResetTokens();
       console.log(
-        `[cleanup] removed ${linkResult.deletedLinks} expired link(s), ${dropResult.deletedDrops} expired drop(s)`
+        `[cleanup] removed ${linkResult.deletedLinks} expired link(s), ${dropResult.deletedDrops} expired drop(s), ` +
+          `${tokenResult.deletedTokens} expired password-reset token(s)`
       );
     } catch (error) {
       console.error("[cleanup] sweep failed", error);

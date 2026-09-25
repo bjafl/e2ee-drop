@@ -4,7 +4,7 @@ import { prisma } from "@e2ee-drop/db";
 
 vi.mock("../lib/storage", () => ({ deleteObject: vi.fn().mockResolvedValue(undefined) }));
 
-import { runCleanup, sweepExpiredDrops } from "./cleanup";
+import { runCleanup, sweepExpiredDrops, pruneExpiredPasswordResetTokens } from "./cleanup";
 
 describe("runCleanup", () => {
   beforeEach(async () => {
@@ -110,5 +110,40 @@ describe("sweepExpiredDrops", () => {
 
     expect(result.deletedDrops).toBe(1);
     expect(await prisma.drop.findUnique({ where: { id: drop.id } })).toBeNull();
+  });
+});
+
+describe("pruneExpiredPasswordResetTokens", () => {
+  beforeEach(async () => {
+    await prisma.passwordResetToken.deleteMany();
+    await prisma.user.deleteMany({ where: { username: "reset-token-owner" } });
+  });
+
+  it("deletes expired password-reset tokens and keeps unexpired ones", async () => {
+    const user = await prisma.user.create({
+      data: {
+        email: "reset-token-owner@example.com",
+        username: "reset-token-owner",
+        name: "T",
+        passwordHash: "h",
+        passwordSalt: "s",
+        passwordWrappedPrivateKey: "w",
+        recoveryWrappedPrivateKey: "r",
+        publicKey: "k",
+        storageQuotaBytes: 1000,
+      },
+    });
+    const expired = await prisma.passwordResetToken.create({
+      data: { userId: user.id, tokenHash: "expired-hash", expiresAt: new Date(Date.now() - 1000) },
+    });
+    const fresh = await prisma.passwordResetToken.create({
+      data: { userId: user.id, tokenHash: "fresh-hash", expiresAt: new Date(Date.now() + 60_000) },
+    });
+
+    const result = await pruneExpiredPasswordResetTokens();
+
+    expect(result.deletedTokens).toBe(1);
+    expect(await prisma.passwordResetToken.findUnique({ where: { id: expired.id } })).toBeNull();
+    expect(await prisma.passwordResetToken.findUnique({ where: { id: fresh.id } })).not.toBeNull();
   });
 });
