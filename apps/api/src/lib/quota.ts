@@ -15,7 +15,9 @@
 //   User row  ->  Link row  ->  Drop row(s)
 // - upload-url (owned):  locks User FOR UPDATE, then inserts a Drop (which
 //   takes a KEY SHARE lock on its Link via the foreign key).
-// - /complete (owned):   locks User FOR UPDATE, then CAS-updates the Drop.
+// - /complete (owned):   locks User FOR UPDATE, then CAS-updates the Drop
+//   (status "uploading" AND createdAt inside the reservation window, as one
+//   atomic UPDATE ... WHERE).
 // - link deletion:       locks User, then Link FOR UPDATE, then deletes Drops.
 // - single-drop sweep:   locks User, then deletes the Drop.
 import { prisma, Prisma } from "@e2ee-drop/db";
@@ -31,7 +33,20 @@ export const NACL_BOX_OVERHEAD_BYTES = 16;
 // (getSignedUploadUrl's 600s default) plus a long transfer that started just
 // before that URL expired. After this, an abandoned upload stops blocking the
 // owner's quota; the drop row itself is later removed by the cleanup job.
+//
+// The window is also a hard deadline for /complete on an owned link: a drop
+// created at or before reservationCutoff() is no longer counted by
+// assertWithinQuota, so its capacity may already have been handed to another
+// sender, and charging it late could overshoot the quota. Such a drop stays
+// "uploading" (uncharged) forever and is left to the cleanup job. Both sides
+// use reservationCutoff() so "still reserved" and "may still complete" can
+// never disagree.
 export const UPLOAD_RESERVATION_WINDOW_MS = 60 * 60 * 1000;
+
+// Drops created strictly after this instant still hold a reservation.
+export function reservationCutoff(): Date {
+  return new Date(Date.now() - UPLOAD_RESERVATION_WINDOW_MS);
+}
 
 // Interactive transactions here can queue behind one another on the owner's
 // row lock (that queueing is the point), so allow more than Prisma's 2s/5s
@@ -72,7 +87,7 @@ async function reservedUploadBytes(tx: Prisma.TransactionClient, userId: string)
   const { _sum, _count } = await tx.drop.aggregate({
     where: {
       status: "uploading",
-      createdAt: { gt: new Date(Date.now() - UPLOAD_RESERVATION_WINDOW_MS) },
+      createdAt: { gt: reservationCutoff() },
       link: { ownerId: userId },
     },
     _sum: { fileSize: true },

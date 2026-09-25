@@ -249,6 +249,85 @@ describe("storage quota", () => {
     });
   });
 
+  describe("/complete reservation window", () => {
+    const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
+
+    async function backdate(dropIds: string[], ageMs: number) {
+      await prisma.drop.updateMany({
+        where: { id: { in: dropIds } },
+        data: { createdAt: new Date(Date.now() - ageMs) },
+      });
+    }
+
+    it("rejects completing a drop whose reservation window has passed, without charging it", async () => {
+      const server = buildServer();
+      const owner = await createOwner(1_000_000);
+      await createOwnedLink(owner.id, "stale-complete");
+      const { dropId } = (await requestUpload(server, "stale-complete")).json();
+      await backdate([dropId], TWO_HOURS_MS);
+
+      const response = await complete(server, "stale-complete", dropId);
+
+      expect(response.statusCode).toBe(410);
+      expect(response.json().error).toMatch(/expired/i);
+      expect(await usedBytes(owner.id)).toBe(0n);
+      const drop = await prisma.drop.findUniqueOrThrow({ where: { id: dropId } });
+      expect(drop.status).toBe("uploading");
+    });
+
+    it("still completes (and charges exactly once) a slow upload that finishes inside the window", async () => {
+      const server = buildServer();
+      const owner = await createOwner(1_000_000);
+      await createOwnedLink(owner.id, "slow-complete");
+      const { dropId } = (await requestUpload(server, "slow-complete")).json();
+      // Past the presigned URL's 600s validity, still well inside the window.
+      await backdate([dropId], 15 * 60 * 1000);
+
+      expect((await complete(server, "slow-complete", dropId)).statusCode).toBe(200);
+      expect((await complete(server, "slow-complete", dropId)).statusCode).toBe(404);
+      expect(await usedBytes(owner.id)).toBe(BigInt(CHARGE));
+    });
+
+    it("keeps an unknown drop id a 404, distinct from an expired reservation", async () => {
+      const server = buildServer();
+      const owner = await createOwner(1_000_000);
+      await createOwnedLink(owner.id, "unknown-drop");
+
+      expect((await complete(server, "unknown-drop", "no-such-drop")).statusCode).toBe(404);
+    });
+
+    it("blocks the reviewer's repro: late completion of backdated reservations cannot overshoot the quota", async () => {
+      const server = buildServer();
+      const BATCH = 4;
+      const owner = await createOwner(BATCH * CHARGE);
+      await createOwnedLink(owner.id, "overshoot");
+
+      const reserve = async () => {
+        const ids: string[] = [];
+        for (let i = 0; i < BATCH; i++) {
+          const response = await requestUpload(server, "overshoot");
+          expect(response.statusCode).toBe(200);
+          ids.push(response.json().dropId);
+        }
+        return ids;
+      };
+
+      const firstBatch = await reserve();
+      await backdate(firstBatch, TWO_HOURS_MS);
+      // The stale reservations no longer count, so a full new batch fits.
+      const secondBatch = await reserve();
+
+      for (const dropId of firstBatch) {
+        expect((await complete(server, "overshoot", dropId)).statusCode).toBe(410);
+      }
+      for (const dropId of secondBatch) {
+        expect((await complete(server, "overshoot", dropId)).statusCode).toBe(200);
+      }
+
+      expect(await usedBytes(owner.id)).toBe(BigInt(BATCH * CHARGE));
+    });
+  });
+
   describe("anonymous links (regression guard)", () => {
     it("never touches any user's quota and is not subject to quota checks", async () => {
       const server = buildServer();

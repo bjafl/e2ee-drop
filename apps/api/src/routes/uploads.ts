@@ -14,6 +14,7 @@ import {
   assertWithinQuota,
   chargedBytes,
   lockOwnerQuota,
+  reservationCutoff,
 } from "../lib/quota";
 import { env } from "../env";
 
@@ -210,10 +211,34 @@ export function registerUploadRoutes(server: FastifyInstance): void {
         // first to keep the lock order (User -> Drop) consistent with the
         // deletion paths in lib/quota.ts; the charge itself is an atomic
         // increment, never read-then-write.
-        updated = await prisma.$transaction(async (tx) => {
-          if (!(await lockOwnerQuota(tx, ownerId))) return false;
-          const won = await transitionDropStatus(request.params.dropId, link.id, ["uploading"], "uploaded", tx);
-          if (!won) return false;
+        //
+        // The CAS also requires the drop to still be inside its upload
+        // reservation window (lib/quota.ts). Once it falls out, upload-url no
+        // longer counts it, so its capacity may already have been reserved by
+        // another sender; charging it now could push usage past the quota.
+        // The age condition sits in the same UPDATE ... WHERE as the status
+        // condition, so there is no check-then-act gap, and the cutoff is taken
+        // after the owner lock, so it is never earlier than the cutoff any
+        // upload-url that ran before us (also under this lock) used.
+        const outcome = await prisma.$transaction(async (tx) => {
+          if (!(await lockOwnerQuota(tx, ownerId))) return "not-found" as const;
+          const { count } = await tx.drop.updateMany({
+            where: {
+              id: request.params.dropId,
+              linkId: link.id,
+              status: "uploading",
+              createdAt: { gt: reservationCutoff() },
+            },
+            data: { status: "uploaded" },
+          });
+          if (count !== 1) {
+            // Lost the CAS. Only to choose the error message: a drop that is
+            // still "uploading" here failed on age alone. Nothing is written.
+            const stale = await tx.drop.count({
+              where: { id: request.params.dropId, linkId: link.id, status: "uploading" },
+            });
+            return stale > 0 ? ("expired" as const) : ("not-found" as const);
+          }
           const { fileSize } = await tx.drop.findUniqueOrThrow({
             where: { id: request.params.dropId },
             select: { fileSize: true },
@@ -222,8 +247,14 @@ export function registerUploadRoutes(server: FastifyInstance): void {
             where: { id: ownerId },
             data: { storageUsedBytes: { increment: chargedBytes(fileSize) } },
           });
-          return true;
+          return "completed" as const;
         }, QUOTA_TX_OPTIONS);
+        // 410 rather than 404: the drop exists, but the upload window it was
+        // granted has closed for good; the sender must start a new upload.
+        if (outcome === "expired") {
+          return reply.status(410).send({ error: "Upload window expired; please start the upload again" });
+        }
+        updated = outcome === "completed";
       }
       if (!updated) return reply.status(404).send({ error: "Drop not found" });
       // Only emitted when this call actually won the CAS. The drop was created
