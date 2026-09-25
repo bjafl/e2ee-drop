@@ -1,5 +1,6 @@
 // apps/web/src/components/AccountPage.tsx
-import { Navigate, useNavigate } from "react-router-dom";
+import { useState } from "react";
+import { Navigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DeleteAccountDialog } from "@/components/DeleteAccountDialog";
@@ -14,8 +15,11 @@ i18n.addResourceBundle("nb", "account", accountNb, true, false);
 export function AccountPage() {
   const { t } = useTranslation("account");
   const { user, loading, logout } = useAuth();
-  const navigate = useNavigate();
+  const [deleted, setDeleted] = useState(false);
 
+  // Checked before the logged-out guard: logout() below sets user to null,
+  // and without this the re-render would hit `!user` and land on /login.
+  if (deleted) return <Navigate to="/" replace />;
   // Wait for the initial session restore before deciding the visitor is
   // logged out, so a hard refresh of /account doesn't bounce to /login.
   if (loading) return null;
@@ -23,13 +27,11 @@ export function AccountPage() {
 
   // The server has already deleted the account and its session row, but
   // logout() still matters: it clears the cookie and — more importantly —
-  // drops the in-memory user, including the decrypted private key.
-  const handleDeleted = async () => {
-    try {
-      await logout();
-    } finally {
-      navigate("/", { replace: true });
-    }
+  // drops the in-memory user, including the decrypted private key (logout()
+  // clears local state even if its request fails, so the error is ignored).
+  const handleDeleted = () => {
+    setDeleted(true);
+    void logout().catch(() => undefined);
   };
 
   return (

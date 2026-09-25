@@ -72,15 +72,17 @@ describe("AccountPage", () => {
     expect(screen.getByTestId("delete-account-dialog")).toBeInTheDocument();
   });
 
-  it("logs out and navigates home once the account is deleted", async () => {
+  // This mock's logout() never clears `user`, so it can't catch the
+  // "guard redirects to /login first" regression — that end-to-end behavior
+  // is covered with the real AuthProvider in AccountPage.integration.test.tsx.
+  it("calls logout once the account is deleted", async () => {
     authState.user = { id: "u1", username: "alice", email: "alice@example.com" };
 
     renderAt("/account");
     await userEvent.click(screen.getByTestId("delete-account-dialog"));
 
     await waitFor(() => {
-      expect(screen.getByText("home page")).toBeInTheDocument();
+      expect(logout).toHaveBeenCalledTimes(1);
     });
-    expect(logout).toHaveBeenCalledTimes(1);
   });
 });
