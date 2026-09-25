@@ -11,6 +11,7 @@ vi.mock("../lib/storage", async (importOriginal) => {
 });
 
 import { buildServer } from "../server";
+import { subscribeToLink, type DropEvent } from "../lib/dropEvents";
 
 const validMetadata = {
   fileName: "report.pdf",
@@ -362,5 +363,36 @@ describe("upload routes", () => {
     expect(res.statusCode).toBe(404);
     const drop = await prisma.drop.findUnique({ where: { id: dropId } });
     expect(drop?.status).toBe("uploading");
+  });
+
+  it("emits drop-created on upload-url and drop-updated(uploaded) on a successful complete only", async () => {
+    const server = buildServer();
+    const slug = await createLink(server);
+    const link = (await prisma.link.findUnique({ where: { slug } }))!;
+    const events: DropEvent[] = [];
+    const unsubscribe = subscribeToLink(link.id, (event) => events.push(event));
+
+    const uploadRes = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+    });
+    const { dropId } = uploadRes.json();
+    await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/complete` });
+    // A second complete loses the CAS (already "uploaded") and must not emit.
+    await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/complete` });
+    // A rejected second upload on a one-time link must not emit either.
+    await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+    });
+    unsubscribe();
+
+    expect(events.map((e) => [e.type, e.drop.id, e.drop.status])).toEqual([
+      ["drop-created", dropId, "uploading"],
+      ["drop-updated", dropId, "uploaded"],
+    ]);
+    expect(events[0].drop.fileName).toBe(validMetadata.fileName);
   });
 });

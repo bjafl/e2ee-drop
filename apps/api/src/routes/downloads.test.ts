@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { buildServer } from "../server";
 import { prisma } from "@e2ee-drop/db";
+import { subscribeToLink, type DropEvent } from "../lib/dropEvents";
 
 const validMetadata = {
   fileName: "report.pdf",
@@ -240,5 +241,176 @@ describe("download routes", () => {
 
     expect(first.statusCode).toBe(200);
     expect(second.statusCode).toBe(404);
+  });
+});
+
+// Owned-link access control and queue selection (Plan 3 Task 7). Authenticated
+// requests use a REAL registered user's session cookie (see links.test.ts /
+// contacts.test.ts for the established pattern) — there is no fake
+// user-id header in this codebase's auth plugin.
+async function registerAndGetCookie(server: ReturnType<typeof buildServer>, username: string) {
+  const response = await server.inject({
+    method: "POST",
+    url: "/api/auth/register",
+    payload: {
+      email: `${username}@example.com`,
+      username,
+      name: username,
+      authKey: "p",
+      passwordSalt: "s",
+      passwordWrappedPrivateKey: "w",
+      recoveryWrappedPrivateKey: "r",
+      publicKey: `${username}-pubkey`,
+    },
+  });
+  const cookie = response.cookies.find((c: { name: string }) => c.name === "e2ee_drop_session")!;
+  return {
+    userId: response.json().userId as string,
+    cookies: { e2ee_drop_session: cookie.value },
+  };
+}
+
+async function createQueuedDrop(linkId: string, fileName: string, status = "uploaded") {
+  return prisma.drop.create({
+    data: {
+      linkId,
+      senderPublicKey: "c2VuZGVy",
+      s3Key: `${linkId}/${fileName}`,
+      nonce: "bm9uY2U=",
+      fileName,
+      fileSize: 1,
+      mimeType: "text/plain",
+      contentMD5: "bWQ1",
+      status,
+    },
+  });
+}
+
+// Registration creates the owner's default permanent link with slug === username.
+async function ownedLinkWithQueue(server: ReturnType<typeof buildServer>, username: string) {
+  const owner = await registerAndGetCookie(server, username);
+  const link = (await prisma.link.findUnique({ where: { slug: username } }))!;
+  const first = await createQueuedDrop(link.id, "first.txt");
+  const second = await createQueuedDrop(link.id, "second.txt");
+  return { owner, link, first, second };
+}
+
+describe("owned-link download routes", () => {
+  beforeEach(async () => {
+    await prisma.contact.deleteMany();
+    await prisma.session.deleteMany();
+    await prisma.drop.deleteMany();
+    await prisma.link.deleteMany();
+    await prisma.user.deleteMany();
+  });
+
+  it("rejects an unauthenticated download-url request for an owned link", async () => {
+    const server = buildServer();
+    const { link } = await ownedLinkWithQueue(server, "dlowner");
+
+    const response = await server.inject({ method: "GET", url: `/api/links/${link.slug}/download-url` });
+
+    expect(response.statusCode).toBe(403);
+  });
+
+  it("rejects another authenticated user even with a correct dropId, without touching drop status", async () => {
+    const server = buildServer();
+    const { link, second } = await ownedLinkWithQueue(server, "dlowner");
+    const intruder = await registerAndGetCookie(server, "intruder");
+
+    const response = await server.inject({
+      method: "GET",
+      url: `/api/links/${link.slug}/download-url?dropId=${second.id}`,
+      cookies: intruder.cookies,
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect((await prisma.drop.findUnique({ where: { id: second.id } }))?.status).toBe("uploaded");
+  });
+
+  it("selects the drop matching an explicit dropId out of a queue, leaving other queued drops untouched", async () => {
+    const server = buildServer();
+    const { owner, link, first, second } = await ownedLinkWithQueue(server, "dlowner");
+
+    const response = await server.inject({
+      method: "GET",
+      url: `/api/links/${link.slug}/download-url?dropId=${second.id}`,
+      cookies: owner.cookies,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().fileName).toBe("second.txt");
+    expect((await prisma.drop.findUnique({ where: { id: second.id } }))?.status).toBe("downloading");
+    expect((await prisma.drop.findUnique({ where: { id: first.id } }))?.status).toBe("uploaded");
+  });
+
+  it("returns 404 for a dropId that does not belong to the requested link", async () => {
+    const server = buildServer();
+    const { owner, link } = await ownedLinkWithQueue(server, "dlowner");
+    const other = await ownedLinkWithQueue(server, "otherowner");
+
+    const response = await server.inject({
+      method: "GET",
+      url: `/api/links/${link.slug}/download-url?dropId=${other.first.id}`,
+      cookies: owner.cookies,
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect((await prisma.drop.findUnique({ where: { id: other.first.id } }))?.status).toBe("uploaded");
+  });
+
+  it("rejects a non-owner marking an owned link's drop as downloaded", async () => {
+    const server = buildServer();
+    const { link, first } = await ownedLinkWithQueue(server, "dlowner");
+    const intruder = await registerAndGetCookie(server, "intruder");
+    const url = `/api/links/${link.slug}/drops/${first.id}/downloaded`;
+
+    const anonymous = await server.inject({ method: "POST", url });
+    const otherUser = await server.inject({ method: "POST", url, cookies: intruder.cookies });
+
+    expect(anonymous.statusCode).toBe(403);
+    expect(otherUser.statusCode).toBe(403);
+    expect((await prisma.drop.findUnique({ where: { id: first.id } }))?.status).toBe("uploaded");
+  });
+
+  it("lets the owner mark one queued drop downloaded without affecting the others", async () => {
+    const server = buildServer();
+    const { owner, link, first, second } = await ownedLinkWithQueue(server, "dlowner");
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/drops/${first.id}/downloaded`,
+      cookies: owner.cookies,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect((await prisma.drop.findUnique({ where: { id: first.id } }))?.status).toBe("downloaded");
+    expect((await prisma.drop.findUnique({ where: { id: second.id } }))?.status).toBe("uploaded");
+  });
+});
+
+describe("download route drop events", () => {
+  beforeEach(async () => {
+    await prisma.drop.deleteMany();
+    await prisma.link.deleteMany();
+  });
+
+  it("emits drop-updated(downloading) only when download-url actually wins the uploaded->downloading CAS", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithDrop(server, "uploaded");
+    const link = (await prisma.link.findUnique({ where: { slug } }))!;
+    const events: DropEvent[] = [];
+    const unsubscribe = subscribeToLink(link.id, (event) => events.push(event));
+
+    await server.inject({ method: "GET", url: `/api/links/${slug}/download-url` });
+    // Re-issuance: the CAS matches no row (already "downloading"), so no second event.
+    await server.inject({ method: "GET", url: `/api/links/${slug}/download-url` });
+    await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/downloaded` });
+    unsubscribe();
+
+    expect(events.map((e) => [e.type, e.drop.id, e.drop.status])).toEqual([
+      ["drop-updated", dropId, "downloading"],
+      ["drop-updated", dropId, "downloaded"],
+    ]);
   });
 });

@@ -1,10 +1,11 @@
 // apps/api/src/routes/uploads.ts
 import type { FastifyInstance } from "fastify";
 import { nanoid } from "nanoid";
-import { prisma, Prisma } from "@e2ee-drop/db";
+import { prisma, Prisma, type Drop } from "@e2ee-drop/db";
 import type { RequestUploadUrlRequest, RequestUploadUrlResponse } from "@e2ee-drop/shared";
-import { getLinkBySlug, isLinkExpired, transitionDropStatus } from "../lib/links";
+import { getLinkBySlug, isLinkExpired, toDropSummary, transitionDropStatus } from "../lib/links";
 import { getSignedUploadUrl } from "../lib/storage";
+import { emitDropEvent } from "../lib/dropEvents";
 import { env } from "../env";
 
 const MAX_MESSAGE_LENGTH = 500;
@@ -69,6 +70,7 @@ export function registerUploadRoutes(server: FastifyInstance): void {
       const dropId = nanoid();
       const s3Key = `${link.id}/${dropId}`;
 
+      let created: Drop;
       try {
         // Serializable isolation makes Postgres detect the phantom-read/write-skew
         // pattern here (transaction A's count sees zero rows, transaction B then
@@ -77,13 +79,13 @@ export function registerUploadRoutes(server: FastifyInstance): void {
         // row level. Re-fetch the count *inside* the transaction rather than reusing
         // `link.drops` from the fetch above, which is a stale snapshot from before
         // this transaction started.
-        await prisma.$transaction(
+        created = await prisma.$transaction(
           async (tx) => {
             const existingDropCount = await tx.drop.count({ where: { linkId: link.id } });
             if (link.mode === "one-time" && existingDropCount > 0) {
               throw new DropAlreadyExistsError();
             }
-            await tx.drop.create({
+            return tx.drop.create({
               data: {
                 id: dropId,
                 linkId: link.id,
@@ -110,6 +112,9 @@ export function registerUploadRoutes(server: FastifyInstance): void {
         }
         throw err;
       }
+      // Emitted only after the Serializable transaction has committed, so
+      // subscribers never hear about a drop that a lost race rolled back.
+      emitDropEvent(link.id, { type: "drop-created", drop: toDropSummary(created) });
 
       const uploadUrl = await getSignedUploadUrl(s3Key, metadata.fileSize + NACL_BOX_OVERHEAD_BYTES);
       const body: RequestUploadUrlResponse = { dropId, uploadUrl };
@@ -128,6 +133,12 @@ export function registerUploadRoutes(server: FastifyInstance): void {
       // or flip an already-"downloaded" drop back to "uploaded".
       const updated = await transitionDropStatus(request.params.dropId, link.id, ["uploading"], "uploaded");
       if (!updated) return reply.status(404).send({ error: "Drop not found" });
+      // Only emitted when this call actually won the CAS. The drop was created
+      // (as "uploading") before this request fetched `link`, so it's in the snapshot.
+      const drop = link.drops.find((candidate) => candidate.id === request.params.dropId);
+      if (drop) {
+        emitDropEvent(link.id, { type: "drop-updated", drop: toDropSummary({ ...drop, status: "uploaded" }) });
+      }
       return reply.send({ updated: true });
     }
   );

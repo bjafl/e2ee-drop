@@ -17,3 +17,9 @@ export function subscribeToLink(linkId: string, listener: (event: DropEvent) => 
   emitter.on(linkId, listener);
   return () => emitter.off(linkId, listener);
 }
+
+// Number of live subscribers for a link — lets tests (and any future
+// diagnostics) verify SSE connections unsubscribe on close instead of leaking.
+export function linkListenerCount(linkId: string): number {
+  return emitter.listenerCount(linkId);
+}

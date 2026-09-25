@@ -9,6 +9,7 @@ import { registerUploadRoutes } from "./routes/uploads";
 import { registerDownloadRoutes } from "./routes/downloads";
 import { registerTwoFactorRoutes } from "./routes/twoFactor";
 import { registerContactRoutes } from "./routes/contacts";
+import { registerEventRoutes } from "./routes/events";
 import { env } from "./env";
 
 export function buildServer(): FastifyInstance {
@@ -37,6 +38,7 @@ export function buildServer(): FastifyInstance {
   registerDownloadRoutes(server);
   registerTwoFactorRoutes(server);
   registerContactRoutes(server);
+  registerEventRoutes(server);
 
   return server;
 }
