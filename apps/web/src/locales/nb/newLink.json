@@ -1,0 +1,13 @@
+{
+  "title": "Opprett en navngitt lenke",
+  "slugLabel": "Lenkenavn (bokstaver, tall, bindestrek)",
+  "modeLabel": "Type",
+  "modePermanent": "Permanent (tar imot flere filer over tid)",
+  "modeOneTime": "Engangs (utløper etter én fil)",
+  "visibilityLabel": "Hvem som kan sende til den",
+  "visibilityPublic": "Alle med lenken",
+  "visibilityContactsOnly": "Kun mine godkjente kontakter",
+  "createButton": "Opprett lenke",
+  "success": "Lenke opprettet:",
+  "errors": { "createFailed": "Kunne ikke opprette lenken. Navnet kan allerede være i bruk." }
+}

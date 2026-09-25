@@ -1,0 +1,13 @@
+{
+  "title": "Create a named link",
+  "slugLabel": "Link name (letters, digits, hyphens)",
+  "modeLabel": "Type",
+  "modePermanent": "Permanent (accepts multiple files over time)",
+  "modeOneTime": "One-time (expires after one file)",
+  "visibilityLabel": "Who can send to it",
+  "visibilityPublic": "Anyone with the link",
+  "visibilityContactsOnly": "Only my accepted contacts",
+  "createButton": "Create link",
+  "success": "Link created:",
+  "errors": { "createFailed": "Could not create that link. The name might already be taken." }
+}
