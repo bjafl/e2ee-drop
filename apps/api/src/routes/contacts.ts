@@ -7,21 +7,17 @@ import {
   rejectContactRequest,
 } from "../lib/contacts";
 
-interface ErrorWithStatus extends Error {
-  statusCode?: number;
-}
-
+// Errors from lib/contacts.ts are not caught here. Intended, user-facing
+// failures are thrown as HttpError (lib/httpErrors.ts) and the global error
+// handler returns their status + message; anything else (e.g. a Prisma
+// error) is logged and reported to the client as a generic 500.
 export function registerContactRoutes(server: FastifyInstance): void {
   server.post<{ Body: { username: string } }>(
     "/api/contacts",
     { preHandler: server.requireAuth },
     async (request, reply) => {
-      try {
-        const contact = await sendContactRequest(request.user!.id, request.body.username);
-        return reply.send(contact);
-      } catch (error) {
-        return reply.status(400).send({ error: (error as Error).message });
-      }
+      const contact = await sendContactRequest(request.user!.id, request.body.username);
+      return reply.send(contact);
     }
   );
 
@@ -34,13 +30,8 @@ export function registerContactRoutes(server: FastifyInstance): void {
     "/api/contacts/:id/accept",
     { preHandler: server.requireAuth },
     async (request, reply) => {
-      try {
-        const contact = await acceptContactRequest(request.user!.id, request.params.id);
-        return reply.send(contact);
-      } catch (error) {
-        const err = error as ErrorWithStatus;
-        return reply.status(err.statusCode ?? 400).send({ error: err.message });
-      }
+      const contact = await acceptContactRequest(request.user!.id, request.params.id);
+      return reply.send(contact);
     }
   );
 
@@ -48,13 +39,8 @@ export function registerContactRoutes(server: FastifyInstance): void {
     "/api/contacts/:id/reject",
     { preHandler: server.requireAuth },
     async (request, reply) => {
-      try {
-        await rejectContactRequest(request.user!.id, request.params.id);
-        return reply.send({ deleted: true });
-      } catch (error) {
-        const err = error as ErrorWithStatus;
-        return reply.status(err.statusCode ?? 400).send({ error: err.message });
-      }
+      await rejectContactRequest(request.user!.id, request.params.id);
+      return reply.send({ deleted: true });
     }
   );
 }

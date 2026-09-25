@@ -1,5 +1,6 @@
 // apps/api/src/lib/contacts.ts
 import { prisma, type Contact } from "@e2ee-drop/db";
+import { HttpError } from "./httpErrors";
 
 export interface ContactSummary {
   id: string;
@@ -11,8 +12,8 @@ export interface ContactSummary {
 
 export async function sendContactRequest(userId: string, targetUsername: string): Promise<Contact> {
   const target = await prisma.user.findUnique({ where: { username: targetUsername } });
-  if (!target) throw new Error("User not found");
-  if (target.id === userId) throw new Error("Cannot add yourself as a contact");
+  if (!target) throw new HttpError(400, "User not found");
+  if (target.id === userId) throw new HttpError(400, "Cannot add yourself as a contact");
 
   const existing = await prisma.contact.findFirst({
     where: {
@@ -22,7 +23,7 @@ export async function sendContactRequest(userId: string, targetUsername: string)
       ],
     },
   });
-  if (existing) throw new Error("A contact relationship already exists");
+  if (existing) throw new HttpError(400, "A contact relationship already exists");
 
   return prisma.contact.create({ data: { userId, contactUserId: target.id, status: "pending" } });
 }
@@ -57,18 +58,18 @@ export async function listContacts(
 
 export async function acceptContactRequest(userId: string, contactId: string): Promise<Contact> {
   const row = await prisma.contact.findUnique({ where: { id: contactId } });
-  if (!row) throw Object.assign(new Error("Contact request not found"), { statusCode: 404 });
+  if (!row) throw new HttpError(404, "Contact request not found");
   if (row.contactUserId !== userId) {
-    throw Object.assign(new Error("Only the request's recipient can accept it"), { statusCode: 403 });
+    throw new HttpError(403, "Only the request's recipient can accept it");
   }
   return prisma.contact.update({ where: { id: contactId }, data: { status: "accepted" } });
 }
 
 export async function rejectContactRequest(userId: string, contactId: string): Promise<void> {
   const row = await prisma.contact.findUnique({ where: { id: contactId } });
-  if (!row) throw Object.assign(new Error("Contact request not found"), { statusCode: 404 });
+  if (!row) throw new HttpError(404, "Contact request not found");
   if (row.userId !== userId && row.contactUserId !== userId) {
-    throw Object.assign(new Error("Not part of this contact relationship"), { statusCode: 403 });
+    throw new HttpError(403, "Not part of this contact relationship");
   }
   await prisma.contact.delete({ where: { id: contactId } });
 }

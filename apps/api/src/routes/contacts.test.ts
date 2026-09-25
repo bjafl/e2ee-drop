@@ -151,4 +151,70 @@ describe("contact routes", () => {
     });
     expect(noSessionSend.statusCode).toBe(403);
   });
+  it("returns the intended user-facing message and status for known validation errors", async () => {
+    const server = buildServer();
+    const alice = await registerAndGetCookie(server, "alice4");
+    await registerAndGetCookie(server, "bob4");
+
+    const self = await server.inject({
+      method: "POST",
+      url: "/api/contacts",
+      payload: { username: "alice4" },
+      cookies: alice.cookies,
+    });
+    expect(self.statusCode).toBe(400);
+    expect(self.json()).toEqual({ error: "Cannot add yourself as a contact" });
+
+    const unknown = await server.inject({
+      method: "POST",
+      url: "/api/contacts",
+      payload: { username: "nobody-by-this-name" },
+      cookies: alice.cookies,
+    });
+    expect(unknown.statusCode).toBe(400);
+    expect(unknown.json()).toEqual({ error: "User not found" });
+
+    const first = await server.inject({
+      method: "POST",
+      url: "/api/contacts",
+      payload: { username: "bob4" },
+      cookies: alice.cookies,
+    });
+    expect(first.statusCode).toBe(200);
+    const duplicate = await server.inject({
+      method: "POST",
+      url: "/api/contacts",
+      payload: { username: "bob4" },
+      cookies: alice.cookies,
+    });
+    expect(duplicate.statusCode).toBe(400);
+    expect(duplicate.json()).toEqual({ error: "A contact relationship already exists" });
+
+    const missing = await server.inject({
+      method: "POST",
+      url: "/api/contacts/no-such-contact-id/accept",
+      cookies: alice.cookies,
+    });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toEqual({ error: "Contact request not found" });
+  });
+
+  it("does not leak internal error details when an unexpected (Prisma) error is thrown", async () => {
+    const server = buildServer();
+    const alice = await registerAndGetCookie(server, "alice5");
+
+    // No `username` in the body: the handler passes `undefined` straight into
+    // prisma.user.findUnique, which throws a PrismaClientValidationError whose
+    // message includes the source file path, line number and query snippet.
+    // Before the global error handler this was echoed to the client verbatim.
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/contacts",
+      payload: {},
+      cookies: alice.cookies,
+    });
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toEqual({ error: "Internal server error" });
+    expect(response.body).not.toMatch(/prisma|findUnique|\.ts|\/home\/|invocation/i);
+  });
 });

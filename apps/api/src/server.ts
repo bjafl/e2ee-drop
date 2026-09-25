@@ -13,6 +13,7 @@ import { registerEventRoutes } from "./routes/events";
 import { registerAccountRoutes } from "./routes/account";
 import { env } from "./env";
 import { createTrustProxyFn } from "./lib/trustProxy";
+import { errorHandler } from "./lib/httpErrors";
 
 export interface BuildServerOptions {
   /** Overrides env.TRUST_PROXY_HOPS (used by tests). */
@@ -52,6 +53,12 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     logger: true,
     trustProxy: createTrustProxyFn(options.trustProxyHops ?? env.TRUST_PROXY_HOPS),
   });
+
+  // Thrown, unhandled errors must never leak their message/stack to the
+  // client (Fastify's default handler sends error.message, which for Prisma
+  // errors includes file paths, query snippets and argument dumps). See
+  // lib/httpErrors.ts for what is and isn't passed through.
+  server.setErrorHandler(errorHandler);
 
   // Must be registered before authPlugin(server): the auth plugin's
   // onRequest hook reads request.cookies (populated by this plugin's own
