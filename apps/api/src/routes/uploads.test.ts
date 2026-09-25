@@ -1,7 +1,16 @@
 // apps/api/src/routes/uploads.test.ts
-import { describe, it, expect, beforeEach } from "vitest";
-import { buildServer } from "../server";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { prisma } from "@e2ee-drop/db";
+
+const { getSignedUploadUrlSpy } = vi.hoisted(() => ({ getSignedUploadUrlSpy: vi.fn() }));
+
+vi.mock("../lib/storage", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../lib/storage")>();
+  getSignedUploadUrlSpy.mockImplementation(original.getSignedUploadUrl);
+  return { ...original, getSignedUploadUrl: getSignedUploadUrlSpy };
+});
+
+import { buildServer } from "../server";
 
 const validMetadata = {
   fileName: "report.pdf",
@@ -40,6 +49,40 @@ describe("upload routes", () => {
     const body = response.json();
     expect(body.dropId).toBeTruthy();
     expect(body.uploadUrl).toContain("http");
+  });
+
+  it("signs the upload url for exactly the NaCl box ciphertext length (fileSize + 16)", async () => {
+    const server = buildServer();
+    const slug = await createLink(server);
+    getSignedUploadUrlSpy.mockClear();
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(getSignedUploadUrlSpy).toHaveBeenCalledTimes(1);
+    expect(getSignedUploadUrlSpy.mock.calls[0][1]).toBe(validMetadata.fileSize + 16);
+  });
+
+  it.each([
+    ["a numeric string", "1024"],
+    ["a fraction", 10.5],
+    ["a negative number", -5],
+  ])("rejects a fileSize that is %s with 400 (it's used to sign the upload's content-length)", async (_label, fileSize) => {
+    const server = buildServer();
+    const slug = await createLink(server);
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+      payload: { senderPublicKey: "c2VuZGVy", metadata: { ...validMetadata, fileSize } },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(await prisma.drop.count({ where: { link: { slug } } })).toBe(0);
   });
 
   it("rejects a file larger than MAX_FILE_SIZE_BYTES with 413", async () => {

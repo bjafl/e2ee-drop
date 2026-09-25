@@ -9,6 +9,13 @@ import { env } from "../env";
 
 const MAX_MESSAGE_LENGTH = 500;
 
+// Clients encrypt the whole file with a single NaCl `box` (tweetnacl), whose
+// ciphertext is always exactly plaintext length + this fixed Poly1305 tag overhead
+// (nacl.box.overhead). The server therefore knows the exact byte count the upload
+// must have from the declared plaintext `fileSize` alone, and signs it into the
+// presigned PUT so storage enforces it.
+const NACL_BOX_OVERHEAD_BYTES = 16;
+
 // Postgres error code Prisma surfaces when a Serializable transaction loses a write
 // conflict/read-write dependency to a concurrent transaction ("could not serialize
 // access due to read/write dependencies among transactions").
@@ -48,6 +55,12 @@ export function registerUploadRoutes(server: FastifyInstance): void {
       const { senderPublicKey, message, metadata } = request.body;
       if (!senderPublicKey || !metadata?.fileName || !metadata?.nonce || !metadata?.mimeType || !metadata?.contentMD5 || !metadata?.fileSize) {
         return reply.status(400).send({ error: "Missing metadata" });
+      }
+      // fileSize determines the signed Content-Length of the upload, so it must be a
+      // real byte count — not a string ("10" + 16 would be "1016"), fraction or
+      // negative number that slips past the size check below.
+      if (!Number.isSafeInteger(metadata.fileSize) || metadata.fileSize <= 0) {
+        return reply.status(400).send({ error: "Invalid fileSize" });
       }
       if (metadata.fileSize > env.MAX_FILE_SIZE_BYTES) {
         return reply.status(413).send({ error: `File too large (max ${env.MAX_FILE_SIZE_BYTES} bytes)` });
@@ -98,7 +111,7 @@ export function registerUploadRoutes(server: FastifyInstance): void {
         throw err;
       }
 
-      const uploadUrl = await getSignedUploadUrl(s3Key);
+      const uploadUrl = await getSignedUploadUrl(s3Key, metadata.fileSize + NACL_BOX_OVERHEAD_BYTES);
       const body: RequestUploadUrlResponse = { dropId, uploadUrl };
       return reply.send(body);
     }

@@ -104,8 +104,15 @@ export async function ensureBucket(): Promise<void> {
   }
 }
 
-export async function getSignedUploadUrl(s3Key: string, expiresIn = 600): Promise<string> {
-  const command = new PutObjectCommand({ Bucket: env.MINIO_BUCKET, Key: s3Key });
+// `contentLength` is the exact number of bytes the upload must contain. It becomes a
+// signed header (X-Amz-SignedHeaders=content-length;host), so the storage backend
+// rejects any PUT whose actual body size differs (SignatureDoesNotMatch) — that's
+// what enforces the server's size limit at the storage layer, rather than trusting
+// the client-declared size the API checked when issuing the URL. Browsers set
+// Content-Length from the body automatically, so clients need no changes as long as
+// they upload exactly the declared bytes.
+export async function getSignedUploadUrl(s3Key: string, contentLength: number, expiresIn = 600): Promise<string> {
+  const command = new PutObjectCommand({ Bucket: env.MINIO_BUCKET, Key: s3Key, ContentLength: contentLength });
   return presign(command, expiresIn);
 }
 

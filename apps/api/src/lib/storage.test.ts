@@ -14,7 +14,7 @@ import { getSignedUploadUrl, getSignedDownloadUrl } from "./storage";
 
 describe("storage", () => {
   it("produces a presigned PUT url pointing at the configured bucket/key", async () => {
-    const url = await getSignedUploadUrl("links/abc/drop1");
+    const url = await getSignedUploadUrl("links/abc/drop1", 1040);
     expect(url).toContain("test-bucket");
     expect(url).toContain("links/abc/drop1");
   });

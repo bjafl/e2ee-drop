@@ -15,14 +15,20 @@ import { getSignedUploadUrl, getSignedDownloadUrl } from "./storage";
 
 describe("storage with a public endpoint behind a path-prefix proxy", () => {
   it("builds presigned PUT urls on the public endpoint, not the internal one", async () => {
-    const url = new URL(await getSignedUploadUrl("links/abc/drop1"));
+    const url = new URL(await getSignedUploadUrl("links/abc/drop1", 1040));
     expect(url.host).toBe("localhost:8080");
     expect(url.pathname).toBe("/s3/test-bucket/links/abc/drop1");
-    expect(url.searchParams.get("X-Amz-SignedHeaders")).toBe("host");
+  });
+
+  it("signs content-length into presigned PUT urls so storage rejects bodies of any other size", async () => {
+    const url = new URL(await getSignedUploadUrl("links/abc/drop1", 1040));
+    // Only host and content-length: anything else signed would have to be sent
+    // verbatim by the browser, and content-type in particular is left unsigned.
+    expect(url.searchParams.get("X-Amz-SignedHeaders")).toBe("content-length;host");
   });
 
   it("does not bake a checksum of an empty body into presigned PUT urls", async () => {
-    const url = new URL(await getSignedUploadUrl("links/abc/drop1"));
+    const url = new URL(await getSignedUploadUrl("links/abc/drop1", 1040));
     const checksumParams = [...url.searchParams.keys()].filter((k) =>
       k.toLowerCase().startsWith("x-amz-checksum") || k.toLowerCase() === "x-amz-sdk-checksum-algorithm"
     );
