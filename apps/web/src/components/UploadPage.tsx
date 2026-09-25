@@ -44,13 +44,7 @@ export function UploadPage() {
       })
       .then((data) => {
         if (cancelled) return;
-        setLink({
-          recipientPublicKey: data.recipientPublicKey,
-          isAnonymous: data.isAnonymous,
-          recipientName: data.recipientName,
-          recipientEmailVerified: data.recipientEmailVerified,
-          codewords: data.codewords,
-        });
+        setLink(data);
       })
       .catch(() => {
         if (!cancelled) setError(t("errors.linkNotFound"));
