@@ -212,6 +212,20 @@ export function registerAuthRoutes(server: FastifyInstance): void {
       // each @unique on User, and Link.slug (= username for the default
       // link) is globally unique, so a username equal to an existing
       // anonymous link's slug also lands here. All are "already in use".
+      //
+      // KNOWN, ACCEPTED TRADE-OFF (security review SEC11): unlike /prelogin
+      // and /password-reset/request, this 409 is an email-registered oracle.
+      // The message doesn't name the field, but usernames are public by
+      // design (GET /api/links/<username>), so a caller who pairs a target
+      // email with a known-free username learns the email is registered.
+      // Accepted because: the only real fix is "always claim success", which
+      // is unworkable here — /register logs the user in and hands them a
+      // recovery code, and on a no-SMTP instance nobody could ever be told
+      // why a "successful" registration can't log in; a negative probe
+      // actually creates an account for the probed email (noisy, and it
+      // burns the per-IP registerRateLimiter); and ALLOW_REGISTRATION=false
+      // closes the oracle on instances that need to. Response timing adds no
+      // signal: hashPassword above runs before the insert on both outcomes.
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
         return reply.status(409).send({ error: "Email or username already in use" });
       }
