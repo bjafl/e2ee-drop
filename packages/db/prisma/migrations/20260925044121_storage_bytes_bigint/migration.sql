@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "User" ALTER COLUMN "storageQuotaBytes" SET DATA TYPE BIGINT,
+ALTER COLUMN "storageUsedBytes" SET DATA TYPE BIGINT;

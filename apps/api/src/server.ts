@@ -2,6 +2,7 @@
 import Fastify, { FastifyInstance } from "fastify";
 import cookie from "@fastify/cookie";
 import authPlugin from "./plugins/auth";
+import { registerAuthRoutes } from "./routes/auth";
 import { registerLinkRoutes } from "./routes/links";
 import { registerUploadRoutes } from "./routes/uploads";
 import { registerDownloadRoutes } from "./routes/downloads";
@@ -26,6 +27,7 @@ export function buildServer(): FastifyInstance {
   authPlugin(server);
 
   server.get("/api/health", async () => ({ status: "ok" }));
+  registerAuthRoutes(server);
   registerLinkRoutes(server);
   registerUploadRoutes(server);
   registerDownloadRoutes(server);

@@ -83,6 +83,19 @@ export function toDropSummary(drop: Drop): DropSummary {
   };
 }
 
+export async function createDefaultLinkForUser(userId: string, username: string, publicKey: string): Promise<Link> {
+  return prisma.link.create({
+    data: {
+      ownerId: userId,
+      slug: username,
+      mode: "permanent",
+      visibility: "public",
+      recipientPublicKey: publicKey,
+      isDefault: true,
+    },
+  });
+}
+
 export function toLinkStatusResponse(link: Link & { drops: Drop[] }): LinkStatusResponse {
   const activeDrop = link.drops[0] ?? null;
   return {

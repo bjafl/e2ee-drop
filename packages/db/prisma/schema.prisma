@@ -20,8 +20,13 @@ model User {
   publicKey                 String
   totpSecretEncrypted       String?
   totpEnabled               Boolean   @default(false)
-  storageQuotaBytes         Int
-  storageUsedBytes          Int       @default(0)
+  // BigInt, not Int: Int is Postgres INTEGER (32-bit, max ~2.1GB), which
+  // cannot hold DEFAULT_STORAGE_QUOTA_BYTES's own default of 5GB (see
+  // apps/api/src/env.ts) — every registration with the default config
+  // would overflow this column and 500. See migration
+  // 20260925044121_storage_bytes_bigint.
+  storageQuotaBytes         BigInt
+  storageUsedBytes          BigInt    @default(0)
   createdAt                 DateTime  @default(now())
 
   links               Link[]
