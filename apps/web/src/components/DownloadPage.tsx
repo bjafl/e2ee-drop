@@ -189,11 +189,20 @@ function DownloadPageForLink() {
     };
   }, [slug, storedPrivateKey, userPublicKey]);
 
-  // Snapshot + live status. The EventSource is opened first, so no event can
-  // fall into the gap between the snapshot and the subscription; the
-  // monotonic-status merge makes their arrival order irrelevant. An
-  // EventSource reconnects on its own after a dropped connection, but events
-  // sent while disconnected are lost, so each *re*-open re-fetches the snapshot.
+  // Snapshot + live status. The snapshot is loaded from `onopen`, on every open
+  // (the first one and each automatic reconnect), never alongside constructing
+  // the EventSource: constructing it doesn't mean the server has subscribed
+  // yet, so a snapshot fetched straight away could be answered before the
+  // subscription exists and an event emitted in between would reach nobody.
+  // The server subscribes in the same synchronous tick as it writes the stream's
+  // first bytes (routes/events.ts), so by the time `onopen` fires every later
+  // change is either already in the snapshot or will arrive as an event. The
+  // monotonic-status merge makes their relative arrival order irrelevant.
+  //
+  // If the stream can't be opened at all (e.g. the events route answers 404
+  // for an expired link, which makes the browser give up with readyState
+  // CLOSED instead of retrying), load the snapshot anyway so the page still
+  // shows the link's real state — including the "link not found" message.
   useEffect(() => {
     if (!slug || (mode !== "anonymous" && mode !== "owned")) return;
     let cancelled = false;
@@ -230,10 +239,11 @@ function DownloadPageForLink() {
     }
 
     const source = new EventSource(`/api/links/${slug}/events`);
-    let openedBefore = false;
     source.onopen = () => {
-      if (openedBefore) loadSnapshot();
-      openedBefore = true;
+      loadSnapshot();
+    };
+    source.onerror = () => {
+      if (source.readyState === EventSource.CLOSED) loadSnapshot();
     };
     source.onmessage = (event: MessageEvent) => {
       try {
@@ -244,8 +254,6 @@ function DownloadPageForLink() {
         // Ignore malformed events; the next snapshot/event will correct state.
       }
     };
-
-    loadSnapshot();
 
     return () => {
       cancelled = true;

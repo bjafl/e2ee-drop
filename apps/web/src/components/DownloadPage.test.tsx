@@ -38,9 +38,18 @@ vi.mock("@/hooks/useAuth", () => ({
 import { DownloadPage } from "./DownloadPage";
 
 // Minimal controllable EventSource: tests push SSE messages with emit().
+// Like a real browser EventSource, it opens asynchronously some time after
+// construction (never synchronously inside the constructor). Tests that need
+// to control *when* it opens set `FakeEventSource.autoOpen = false` and call
+// open() / fail() themselves.
 class FakeEventSource {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSED = 2;
   static instances: FakeEventSource[] = [];
+  static autoOpen = true;
   url: string;
+  readyState = FakeEventSource.CONNECTING;
   onmessage: ((event: MessageEvent) => void) | null = null;
   onopen: ((event: Event) => void) | null = null;
   onerror: ((event: Event) => void) | null = null;
@@ -48,9 +57,23 @@ class FakeEventSource {
   constructor(url: string) {
     this.url = url;
     FakeEventSource.instances.push(this);
+    if (FakeEventSource.autoOpen) setTimeout(() => this.open(), 0);
+  }
+  // The connection (re-)opened: the server has answered and subscribed.
+  open() {
+    if (this.closed) return;
+    this.readyState = FakeEventSource.OPEN;
+    this.onopen?.(new Event("open"));
+  }
+  // The connection failed. `permanently` mirrors a non-retryable failure
+  // (e.g. an HTTP 404), after which the browser stops reconnecting.
+  fail({ permanently }: { permanently: boolean }) {
+    this.readyState = permanently ? FakeEventSource.CLOSED : FakeEventSource.CONNECTING;
+    this.onerror?.(new Event("error"));
   }
   close() {
     this.closed = true;
+    this.readyState = FakeEventSource.CLOSED;
   }
   emit(payload: unknown) {
     this.onmessage?.({ data: JSON.stringify(payload) } as MessageEvent);
@@ -124,6 +147,7 @@ beforeEach(() => {
   setKeyPairMock.mockReset();
   authState.user = null;
   FakeEventSource.instances = [];
+  FakeEventSource.autoOpen = true;
   vi.stubGlobal("EventSource", FakeEventSource);
   // jsdom does not implement URL.createObjectURL/revokeObjectURL.
   vi.stubGlobal("URL", {
@@ -242,7 +266,7 @@ describe("DownloadPage", () => {
     );
 
     renderAt("abc123");
-    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
 
     act(() => {
       latestEventSource().emit({ type: "drop-updated", drop: UPLOADED_RESPONSE.drop });
@@ -256,6 +280,64 @@ describe("DownloadPage", () => {
 
     expect(screen.getByText(/download and decrypt/i)).toBeInTheDocument();
     expect(screen.queryByText(/waiting/i)).not.toBeInTheDocument();
+  });
+
+  it("loads the snapshot only once the SSE stream is open, so a change made before the server subscribed is not lost", async () => {
+    FakeEventSource.autoOpen = false;
+    // Server-side state of the drop. The fetch mock answers from it at call time.
+    let serverDrop: Record<string, unknown> = { ...UPLOADED_RESPONSE.drop, status: "uploading" };
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ ...UPLOADED_RESPONSE, drop: serverDrop }) }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAt("abc123");
+    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
+    // Constructed but not yet open: the server may not have subscribed, so no
+    // snapshot is fetched yet.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // The upload finishes in the gap. The server hasn't subscribed this
+    // client yet, so the drop-updated event goes to nobody (no emit()).
+    serverDrop = UPLOADED_RESPONSE.drop;
+
+    act(() => latestEventSource().open());
+
+    await waitFor(() => expect(screen.getByText(/download and decrypt/i)).toBeInTheDocument());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-fetches the snapshot every time the stream re-opens after a dropped connection", async () => {
+    FakeEventSource.autoOpen = false;
+    let serverDrop: Record<string, unknown> = { ...UPLOADED_RESPONSE.drop, status: "uploading" };
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ ...UPLOADED_RESPONSE, drop: serverDrop }) }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAt("abc123");
+    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
+    act(() => latestEventSource().open());
+    await waitFor(() => expect(screen.getByText(/waiting/i)).toBeInTheDocument());
+
+    // Connection drops (the browser will retry); the upload finishes meanwhile.
+    act(() => latestEventSource().fail({ permanently: false }));
+    serverDrop = UPLOADED_RESPONSE.drop;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    act(() => latestEventSource().open());
+    await waitFor(() => expect(screen.getByText(/download and decrypt/i)).toBeInTheDocument());
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("still loads the snapshot (and shows link-not-found) when the stream can't be opened at all", async () => {
+    FakeEventSource.autoOpen = false;
+    const fetchMock = vi.fn(async () => ({ ok: false, json: async () => ({ error: "Link not found" }) }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAt("abc123");
+    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
+    act(() => latestEventSource().fail({ permanently: true }));
+
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+    expect(calledUrls(fetchMock)).toEqual(["/api/links/abc123"]);
   });
 
   it("closes the SSE connection on unmount", async () => {
