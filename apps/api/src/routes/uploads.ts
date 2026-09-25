@@ -138,8 +138,8 @@ export function registerUploadRoutes(server: FastifyInstance): void {
       const link = await getLinkBySlug(request.params.slug);
       if (!link || isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
       // Compare-and-swap: only "uploading" -> "uploaded", and only for a drop that
-      // belongs to this link. Drop ids are visible to anyone holding the link, so a
-      // blind update would let them flip a drop to "uploaded" before its bytes exist,
+      // belongs to this link. An anonymous link's drop id is visible to anyone
+      // holding the link (GET /api/links/:slug), so a blind update would let them flip a drop to "uploaded" before its bytes exist,
       // or flip an already-"downloaded" drop back to "uploaded".
       const updated = await transitionDropStatus(request.params.dropId, link.id, ["uploading"], "uploaded");
       if (!updated) return reply.status(404).send({ error: "Drop not found" });

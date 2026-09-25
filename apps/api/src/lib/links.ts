@@ -52,9 +52,11 @@ export async function deleteLinkIfExists(id: string): Promise<void> {
 // handler's `updateMany` in routes/downloads.ts — a single conditional UPDATE, so
 // a concurrent request can't slip in between a read and a blind write.
 //
-// Scoping by linkId matters because drop ids are not secret (GET /api/links/:slug
-// returns them), so a drop id alone must never authorize a transition on some
-// other link's drop. Returns true iff exactly the intended transition happened;
+// Scoping by linkId matters because drop ids are not secret to a link holder
+// (GET /api/links/:slug returns an anonymous link's drop to anyone with its slug),
+// so a drop id alone must never authorize a transition on some other link's drop.
+// Owned links' drop ids are only ever returned to their sender (upload-url) and
+// to the owner (owner-gated /drops and /events), never by that public route. Returns true iff exactly the intended transition happened;
 // callers map false to 404 (unknown drop, wrong link, or wrong prior status are
 // deliberately indistinguishable).
 export async function transitionDropStatus(
@@ -108,7 +110,15 @@ export async function createDefaultLinkForUser(
 export async function toLinkStatusResponse(
   link: Link & { drops: Drop[] }
 ): Promise<LinkStatusResponse> {
-  const activeDrop = link.drops[0] ?? null;
+  // This response is served unauthenticated (GET /api/links/:slug). For an
+  // anonymous link that's fine: its random slug IS the capability, and Plan 1's
+  // anonymous flow reads `drop` from here. An owned link's slug is public (the
+  // default one is the owner's username), so exposing its drop here would hand
+  // any stranger a queued drop's id, fileName, message and status — and the id
+  // is what the /complete route acts on. Owned links never report a drop here;
+  // the owner reads their queue from the owner-gated GET /api/links/:slug/drops
+  // and GET /api/links/:slug/events instead.
+  const activeDrop = link.ownerId === null ? (link.drops[0] ?? null) : null;
   const base: LinkStatusResponse = {
     slug: link.slug,
     mode: link.mode as LinkStatusResponse["mode"],

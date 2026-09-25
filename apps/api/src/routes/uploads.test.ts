@@ -509,6 +509,48 @@ describe("upload routes", () => {
     expect(response.statusCode).toBe(200);
   });
 
+  it("gives a stranger no drop id to hijack an accepted contact's in-progress upload on an owned link", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "hijackvictim");
+    const friend = await registerAndGetCookie(server, "hijackfriend");
+    await prisma.contact.create({ data: { userId: owner.userId, contactUserId: friend.userId, status: "accepted" } });
+    const link = await prisma.link.create({
+      data: {
+        ownerId: owner.userId, slug: "hijack-test", mode: "permanent",
+        visibility: "contacts-only", recipientPublicKey: "hijackvictim-pubkey",
+      },
+    });
+
+    const upload = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/upload-url`,
+      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+      cookies: friend.cookies,
+    });
+    expect(upload.statusCode).toBe(200);
+    const { dropId } = upload.json();
+
+    // The stranger's only view of the link: it must not reveal the drop id.
+    const status = await server.inject({ method: "GET", url: `/api/links/${link.slug}` });
+    expect(status.json().drop).toBeNull();
+    expect(status.body).not.toContain(dropId);
+
+    // Without the id, a complete call can only name some other id, which the
+    // link-scoped CAS rejects; the in-progress drop is untouched.
+    const attack = await server.inject({ method: "POST", url: `/api/links/${link.slug}/drops/not-the-real-id/complete` });
+    expect(attack.statusCode).toBe(404);
+    expect((await prisma.drop.findUnique({ where: { id: dropId } }))?.status).toBe("uploading");
+
+    // The real sender's own complete still succeeds.
+    const complete = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/drops/${dropId}/complete`,
+      cookies: friend.cookies,
+    });
+    expect(complete.statusCode).toBe(200);
+    expect((await prisma.drop.findUnique({ where: { id: dropId } }))?.status).toBe("uploaded");
+  });
+
   it("still allows an anonymous sender on a public permanent link", async () => {
     const server = buildServer();
     const owner = await registerAndGetCookie(server, "coowner4");

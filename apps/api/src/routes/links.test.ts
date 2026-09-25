@@ -387,4 +387,115 @@ describe("link routes", () => {
 
     expect(response.statusCode).toBe(403);
   });
+
+  describe("GET /api/links/:slug never leaks an owned link's drop", () => {
+    async function createOwnedLinkWithDrop(
+      ownerId: string,
+      slug: string,
+      visibility: "public" | "contacts-only",
+      status: "uploading" | "uploaded"
+    ) {
+      const link = await prisma.link.create({
+        data: { ownerId, slug, mode: "permanent", visibility, recipientPublicKey: `${slug}-pubkey` },
+      });
+      const drop = await prisma.drop.create({
+        data: {
+          linkId: link.id,
+          senderPublicKey: "c2VuZGVy",
+          s3Key: `${link.id}/secret-drop`,
+          nonce: "bm9uY2U=",
+          fileName: "salary-2026.pdf",
+          fileSize: 1024,
+          mimeType: "application/pdf",
+          contentMD5: "bWQ1",
+          message: "secret plaintext note",
+          status,
+        },
+      });
+      return { link, drop };
+    }
+
+    function expectNoLeak(body: string, drop: { id: string }) {
+      expect(body).not.toContain(drop.id);
+      expect(body).not.toContain("salary-2026.pdf");
+      expect(body).not.toContain("secret plaintext note");
+    }
+
+    it("returns drop: null to an anonymous stranger on a contacts-only owned link with an in-progress drop", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "leakvictim");
+      const { link, drop } = await createOwnedLinkWithDrop(owner.userId, "leak-contacts", "contacts-only", "uploading");
+
+      const response = await server.inject({ method: "GET", url: `/api/links/${link.slug}` });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().drop).toBeNull();
+      expectNoLeak(response.body, drop);
+    });
+
+    it("returns drop: null on a public owned link with an uploaded drop, including to a logged-in non-owner", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "leakvictim2");
+      const stranger = await registerAndGetCookie(server, "leakstranger");
+      const { link, drop } = await createOwnedLinkWithDrop(owner.userId, "leak-public", "public", "uploaded");
+
+      const anon = await server.inject({ method: "GET", url: `/api/links/${link.slug}` });
+      expect(anon.json().drop).toBeNull();
+      expectNoLeak(anon.body, drop);
+
+      const loggedIn = await server.inject({ method: "GET", url: `/api/links/${link.slug}`, cookies: stranger.cookies });
+      expect(loggedIn.json().drop).toBeNull();
+      expectNoLeak(loggedIn.body, drop);
+    });
+
+    it("returns drop: null on a user's default link (slug = username)", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "leakvictim3");
+      const link = await prisma.link.findFirstOrThrow({ where: { ownerId: owner.userId, isDefault: true } });
+      const drop = await prisma.drop.create({
+        data: {
+          linkId: link.id,
+          senderPublicKey: "c2VuZGVy",
+          s3Key: `${link.id}/secret-drop`,
+          nonce: "bm9uY2U=",
+          fileName: "salary-2026.pdf",
+          fileSize: 1024,
+          mimeType: "application/pdf",
+          contentMD5: "bWQ1",
+          message: "secret plaintext note",
+          status: "uploading",
+        },
+      });
+
+      const response = await server.inject({ method: "GET", url: `/api/links/leakvictim3` });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().drop).toBeNull();
+      expectNoLeak(response.body, drop);
+    });
+
+    it("returns drop: null on an owned link with no drops (unchanged)", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "leakvictim4");
+      const link = await prisma.link.create({
+        data: { ownerId: owner.userId, slug: "leak-empty", mode: "permanent", recipientPublicKey: "k" },
+      });
+
+      const response = await server.inject({ method: "GET", url: `/api/links/${link.slug}` });
+
+      expect(response.json().drop).toBeNull();
+    });
+
+    it("still returns the real drop for an anonymous link (Plan 1 regression guard)", async () => {
+      const server = buildServer();
+      const { link, drop } = await createLinkWithDrop("anon-with-drop", new Date(Date.now() + 60_000));
+
+      const response = await server.inject({ method: "GET", url: `/api/links/${link.slug}` });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.isAnonymous).toBe(true);
+      expect(body.drop).toMatchObject({ id: drop.id, status: "uploaded", fileName: "report.pdf" });
+    });
+  });
 });
