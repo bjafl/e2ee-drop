@@ -1,0 +1,14 @@
+{
+  "title": "Contacts",
+  "addPlaceholder": "Username to add",
+  "addButton": "Send request",
+  "pendingHeading": "Pending",
+  "acceptedHeading": "Contacts",
+  "acceptButton": "Accept",
+  "rejectButton": "Reject",
+  "cancelButton": "Cancel",
+  "sendFileButton": "Send a file",
+  "incoming": "wants to connect",
+  "outgoing": "request sent",
+  "errors": { "addFailed": "Could not send that request." }
+}

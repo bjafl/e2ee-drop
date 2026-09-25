@@ -1,0 +1,14 @@
+{
+  "title": "Kontakter",
+  "addPlaceholder": "Brukernavn å legge til",
+  "addButton": "Send forespørsel",
+  "pendingHeading": "Ventende",
+  "acceptedHeading": "Kontakter",
+  "acceptButton": "Godta",
+  "rejectButton": "Avvis",
+  "cancelButton": "Avbryt",
+  "sendFileButton": "Send en fil",
+  "incoming": "ønsker kontakt",
+  "outgoing": "forespørsel sendt",
+  "errors": { "addFailed": "Kunne ikke sende forespørselen." }
+}
