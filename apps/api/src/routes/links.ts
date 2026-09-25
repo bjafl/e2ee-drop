@@ -44,6 +44,15 @@ export function registerLinkRoutes(server: FastifyInstance): void {
   server.delete<{ Params: { slug: string } }>("/api/links/:slug", async (request, reply) => {
     const link = await getLinkBySlug(request.params.slug);
     if (!link) return reply.status(404).send({ error: "Link not found" });
+    // This route is unauthenticated: knowing an anonymous link's random slug is
+    // the only capability it checks, which is what Plan 1 designed it for. An
+    // owned link's slug is NOT a secret (a user's default link slug is their
+    // username), so the slug alone must never authorize deleting it — owned
+    // links, and default links in particular (spec §5: non-deletable), can
+    // only ever be removed through an authenticated owner path (Plan 3).
+    if (link.ownerId !== null) {
+      return reply.status(403).send({ error: "Owned links cannot be deleted through this endpoint" });
+    }
     // Same order as runCleanup (jobs/cleanup.ts): storage objects first, then the
     // row. If a storage delete throws, the row (and thus the s3Key) survives, so the
     // delete can be retried or the cleanup job can still find it once expired.

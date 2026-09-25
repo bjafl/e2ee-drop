@@ -149,4 +149,33 @@ describe("link routes", () => {
     expect(response.statusCode).toBe(500);
     expect(await prisma.link.findUnique({ where: { id: link.id } })).not.toBeNull();
   });
+
+  it("refuses to delete a registered user's default link by slug (unauthenticated)", async () => {
+    await prisma.session.deleteMany();
+    await prisma.user.deleteMany();
+    const server = buildServer();
+    const register = await server.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: {
+        email: "victim@example.com",
+        username: "victim",
+        name: "Victim",
+        authKey: "k",
+        passwordSalt: "s",
+        passwordWrappedPrivateKey: "w",
+        recoveryWrappedPrivateKey: "r",
+        publicKey: "cHVia2V5",
+      },
+    });
+    expect(register.statusCode).toBe(200);
+    const { defaultLinkSlug } = register.json();
+    const link = await prisma.link.findFirstOrThrow({ where: { slug: defaultLinkSlug } });
+
+    const response = await server.inject({ method: "DELETE", url: `/api/links/${defaultLinkSlug}` });
+
+    expect(response.statusCode).toBe(403);
+    expect(await prisma.link.findUnique({ where: { id: link.id } })).not.toBeNull();
+    expect(deleteObjectMock).not.toHaveBeenCalled();
+  });
 });
