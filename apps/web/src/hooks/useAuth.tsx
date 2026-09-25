@@ -33,6 +33,10 @@ export interface RegisterInput {
 
 interface AuthContextValue {
   user: AuthUser | null;
+  // True until the initial GET /api/auth/me session restore settles. Pages
+  // that redirect logged-out visitors must wait for this, or a hard refresh
+  // of a protected page bounces to /login before the session is restored.
+  loading: boolean;
   login: (email: string, password: string, totpCode?: string) => Promise<{ requiresTotp: boolean }>;
   logout: () => Promise<void>;
   register: (input: RegisterInput) => Promise<{ recoveryCode: string }>;
@@ -42,6 +46,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetch("/api/auth/me")
@@ -59,7 +64,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           keyPair: null,
         });
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => setLoading(false));
   }, []);
 
   const register = useCallback(async (input: RegisterInput): Promise<{ recoveryCode: string }> => {
@@ -161,11 +167,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const logout = useCallback(async () => {
-    await fetch("/api/auth/logout", { method: "POST" });
-    setUser(null);
+    // Clear local state even if the request fails: the decrypted private key
+    // in `user.keyPair` must not outlive a logout (or an account deletion).
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } finally {
+      setUser(null);
+    }
   }, []);
 
-  return <AuthContext.Provider value={{ user, login, logout, register }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ user, loading, login, logout, register }}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth(): AuthContextValue {

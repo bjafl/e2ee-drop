@@ -1,0 +1,6 @@
+{
+  "title": "Your account",
+  "signedInAs": "Signed in as {{username}}",
+  "email": "Email: {{email}}",
+  "dangerZone": "Danger zone"
+}

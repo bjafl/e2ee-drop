@@ -9,6 +9,7 @@ import { RequestPasswordResetPage } from "@/components/RequestPasswordResetPage"
 import { ConfirmPasswordResetPage } from "@/components/ConfirmPasswordResetPage";
 import { ContactsPage } from "@/components/ContactsPage";
 import { NewLinkPage } from "@/components/NewLinkPage";
+import { AccountPage } from "@/components/AccountPage";
 import { AuthProvider } from "@/hooks/useAuth";
 
 export default function App() {
@@ -21,6 +22,7 @@ export default function App() {
         <Route path="/download/:slug" element={<DownloadPage />} />
         <Route path="/contacts" element={<ContactsPage />} />
         <Route path="/links/new" element={<NewLinkPage />} />
+        <Route path="/account" element={<AccountPage />} />
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/reset-password" element={<RequestPasswordResetPage />} />
