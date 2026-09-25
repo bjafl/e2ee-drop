@@ -39,6 +39,7 @@ export function registerLinkRoutes(server: FastifyInstance): void {
   });
 
   const SLUG_PATTERN = /^[a-z0-9-]{3,32}$/;
+  const MAX_RETENTION_DAYS = 2_147_483_647; // Link.retentionDays is a Postgres int4
 
   // Lets a logged-in user create an additional named link beyond their
   // default one (Plan 3, Task 5). Unlike the default link created at
@@ -54,6 +55,23 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       }
       if (mode !== "permanent" && mode !== "one-time") {
         return reply.status(400).send({ error: "Invalid mode" });
+      }
+      // Link.visibility is a free String column and the upload route only
+      // restricts senders when it is exactly "contacts-only", so an unchecked
+      // typo ("contacts_only") would silently create a public link — failing
+      // open. Only the two known values are accepted; omitted means public.
+      if (visibility !== undefined && visibility !== "public" && visibility !== "contacts-only") {
+        return reply.status(400).send({ error: "Invalid visibility" });
+      }
+      // Omitted/null means "no retention limit". Otherwise a whole number of
+      // days, at least 1, and within Postgres's 32-bit Int column range so an
+      // oversized value is a 400 rather than a database error.
+      if (
+        retentionDays !== undefined &&
+        retentionDays !== null &&
+        !(Number.isSafeInteger(retentionDays) && retentionDays >= 1 && retentionDays <= MAX_RETENTION_DAYS)
+      ) {
+        return reply.status(400).send({ error: "Invalid retentionDays" });
       }
 
       const owner = await prisma.user.findUnique({ where: { id: request.user!.id } });

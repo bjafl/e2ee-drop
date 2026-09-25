@@ -393,6 +393,71 @@ describe("link routes", () => {
     expect(response.statusCode).toBe(403);
   });
 
+  describe("POST /api/links/custom input validation", () => {
+    it("rejects an unknown visibility (e.g. the typo contacts_only) with 400 instead of failing open to public", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "visowner");
+
+      const response = await server.inject({
+        method: "POST",
+        url: "/api/links/custom",
+        payload: { slug: "typo-link", mode: "permanent", visibility: "contacts_only" },
+        cookies: owner.cookies,
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(await prisma.link.findUnique({ where: { slug: "typo-link" } })).toBeNull();
+    });
+
+    it("accepts contacts-only and defaults an omitted visibility to public", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "visowner2");
+
+      const contactsOnly = await server.inject({
+        method: "POST",
+        url: "/api/links/custom",
+        payload: { slug: "friends-only", mode: "permanent", visibility: "contacts-only", retentionDays: 30 },
+        cookies: owner.cookies,
+      });
+      expect(contactsOnly.statusCode).toBe(200);
+      const created = await prisma.link.findUniqueOrThrow({ where: { slug: "friends-only" } });
+      expect(created.visibility).toBe("contacts-only");
+      expect(created.retentionDays).toBe(30);
+
+      const omitted = await server.inject({
+        method: "POST",
+        url: "/api/links/custom",
+        payload: { slug: "no-visibility", mode: "permanent" },
+        cookies: owner.cookies,
+      });
+      expect(omitted.statusCode).toBe(200);
+      const defaulted = await prisma.link.findUniqueOrThrow({ where: { slug: "no-visibility" } });
+      expect(defaulted.visibility).toBe("public");
+      expect(defaulted.retentionDays).toBeNull();
+    });
+
+    it.each([
+      ["negative", -1],
+      ["zero", 0],
+      ["fractional", 1.5],
+      ["string-typed", "30"],
+      ["beyond-int4", 2_147_483_648],
+    ])("rejects a %s retentionDays with 400", async (_label, retentionDays) => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "retowner");
+
+      const response = await server.inject({
+        method: "POST",
+        url: "/api/links/custom",
+        payload: { slug: "bad-retention", mode: "permanent", retentionDays },
+        cookies: owner.cookies,
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(await prisma.link.findUnique({ where: { slug: "bad-retention" } })).toBeNull();
+    });
+  });
+
   describe("GET /api/links/:slug never leaks an owned link's drop", () => {
     async function createOwnedLinkWithDrop(
       ownerId: string,
