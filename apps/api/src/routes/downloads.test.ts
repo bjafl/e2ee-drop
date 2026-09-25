@@ -174,5 +174,71 @@ describe("download routes", () => {
     const response = await server.inject({ method: "GET", url: `/api/links/${link.slug}/download-url` });
 
     expect(response.statusCode).toBe(404);
+    // Deletion is cleanup's job: deleting the row here would lose the drop's s3Key
+    // and orphan the uploaded object in storage forever.
+    expect(await prisma.link.findUnique({ where: { id: link.id } })).not.toBeNull();
+    expect(await prisma.drop.count({ where: { linkId: link.id } })).toBe(1);
+  });
+
+  it("returns 404 when marking a drop downloaded via a link it does not belong to", async () => {
+    const server = buildServer();
+    const { dropId } = await createLinkWithDrop(server, "uploaded");
+    const otherRes = await server.inject({
+      method: "POST",
+      url: "/api/links",
+      payload: { recipientPublicKey: "cmVjaXBpZW50" },
+    });
+    const otherSlug = otherRes.json().slug;
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${otherSlug}/drops/${dropId}/downloaded`,
+    });
+
+    expect(response.statusCode).toBe(404);
+    const drop = await prisma.drop.findUnique({ where: { id: dropId } });
+    expect(drop?.status).toBe("uploaded");
+  });
+
+  it("returns 404 when marking a still-uploading drop as downloaded (can't defeat the not-ready check)", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithDrop(server, "uploading");
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/${dropId}/downloaded`,
+    });
+
+    expect(response.statusCode).toBe(404);
+    const drop = await prisma.drop.findUnique({ where: { id: dropId } });
+    expect(drop?.status).toBe("uploading");
+    const downloadUrl = await server.inject({ method: "GET", url: `/api/links/${slug}/download-url` });
+    expect(downloadUrl.statusCode).toBe(403);
+  });
+
+  it("marks an uploaded (not yet downloading) drop as downloaded", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithDrop(server, "uploaded");
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/${dropId}/downloaded`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    const drop = await prisma.drop.findUnique({ where: { id: dropId } });
+    expect(drop?.status).toBe("downloaded");
+  });
+
+  it("returns 404 when marking an already-downloaded drop as downloaded again", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithDrop(server, "uploaded");
+    const url = `/api/links/${slug}/drops/${dropId}/downloaded`;
+
+    const first = await server.inject({ method: "POST", url });
+    const second = await server.inject({ method: "POST", url });
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(404);
   });
 });

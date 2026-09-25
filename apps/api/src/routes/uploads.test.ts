@@ -177,6 +177,9 @@ describe("upload routes", () => {
     });
 
     expect(response.statusCode).toBe(404);
+    // Deletion is cleanup's job: deleting the row here would lose the s3Key and
+    // orphan any storage object belonging to the link.
+    expect(await prisma.link.findUnique({ where: { id: link.id } })).not.toBeNull();
   });
 
   it("truncates a message longer than 500 characters and strips control characters", async () => {
@@ -214,5 +217,64 @@ describe("upload routes", () => {
 
     const drop = await prisma.drop.findUnique({ where: { id: dropId } });
     expect(drop?.status).toBe("uploaded");
+  });
+
+  async function createLinkWithUploadingDrop(server: ReturnType<typeof buildServer>) {
+    const slug = await createLink(server);
+    const uploadRes = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+    });
+    return { slug, dropId: uploadRes.json().dropId as string };
+  }
+
+  it("returns 404 when completing a drop via a link it does not belong to", async () => {
+    const server = buildServer();
+    const { dropId } = await createLinkWithUploadingDrop(server);
+    const otherSlug = await createLink(server);
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${otherSlug}/drops/${dropId}/complete`,
+    });
+
+    expect(res.statusCode).toBe(404);
+    const drop = await prisma.drop.findUnique({ where: { id: dropId } });
+    expect(drop?.status).toBe("uploading");
+  });
+
+  it("returns 404 when completing a drop that is not in the uploading state", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithUploadingDrop(server);
+    const first = await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/complete` });
+    expect(first.statusCode).toBe(200);
+
+    const second = await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/complete` });
+    expect(second.statusCode).toBe(404);
+  });
+
+  it("does not regress a downloaded drop back to uploaded on a late complete call", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithUploadingDrop(server);
+    await prisma.drop.update({ where: { id: dropId }, data: { status: "downloaded" } });
+
+    const res = await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/complete` });
+
+    expect(res.statusCode).toBe(404);
+    const drop = await prisma.drop.findUnique({ where: { id: dropId } });
+    expect(drop?.status).toBe("downloaded");
+  });
+
+  it("returns 404 when completing a drop on an expired link", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithUploadingDrop(server);
+    await prisma.link.updateMany({ where: { slug }, data: { expiresAt: new Date(Date.now() - 1000) } });
+
+    const res = await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/complete` });
+
+    expect(res.statusCode).toBe(404);
+    const drop = await prisma.drop.findUnique({ where: { id: dropId } });
+    expect(drop?.status).toBe("uploading");
   });
 });

@@ -99,6 +99,46 @@ describe("DownloadPage", () => {
     });
   });
 
+  it.each(["downloading", "downloaded"])(
+    "shows the download button (not the waiting message) for a drop already in %s status, e.g. after a reload",
+    async (status) => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ ...UPLOADED_RESPONSE, drop: { ...UPLOADED_RESPONSE.drop, status } }),
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderAt("abc123");
+
+      await waitFor(() => {
+        expect(screen.getByText(/download and decrypt/i)).toBeInTheDocument();
+      });
+      expect(screen.queryByText(/waiting/i)).not.toBeInTheDocument();
+      // The backend re-issues download URLs for these states, so there's nothing
+      // left to wait for: polling must have stopped after the first response.
+      await new Promise((resolve) => setTimeout(resolve, 3500));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+    10_000
+  );
+
+  it("keeps showing the waiting message while the drop is still uploading", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ ...UPLOADED_RESPONSE, drop: { ...UPLOADED_RESPONSE.drop, status: "uploading" } }),
+      })
+    );
+
+    renderAt("abc123");
+
+    await waitFor(() => {
+      expect(screen.getByText(/waiting/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/download and decrypt/i)).not.toBeInTheDocument();
+  });
+
   it("keeps the download button usable after a failed download, and lets the recipient retry", async () => {
     const fetchMock = vi.fn();
     fetchMock

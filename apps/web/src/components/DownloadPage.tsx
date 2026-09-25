@@ -19,6 +19,15 @@ i18n.addResourceBundle("nb", "download", downloadNb, true, false);
 
 const POLL_INTERVAL_MS = 3000;
 
+// Mirrors the backend's download-url gate (routes/downloads.ts): once the upload
+// has finished, a download URL can be (re-)issued for "uploaded", "downloading" and
+// "downloaded" alike. Gating on "uploaded" only would strand a recipient who
+// reloads, or whose first attempt failed after the status moved to "downloading",
+// on the waiting message forever.
+function isReadyForDownload(drop: DropSummary | null): drop is DropSummary {
+  return drop !== null && drop.status !== "uploading";
+}
+
 export function DownloadPage() {
   const { t } = useTranslation("download");
   const { slug } = useParams<{ slug: string }>();
@@ -83,7 +92,7 @@ export function DownloadPage() {
         if (cancelled) return;
         setDrop(data.drop);
         setCodewords(data.codewords ?? []);
-        if (data.drop?.status === "uploaded" && pollRef.current) {
+        if (isReadyForDownload(data.drop) && pollRef.current) {
           clearInterval(pollRef.current);
         }
       } catch {
@@ -165,8 +174,8 @@ export function DownloadPage() {
             <AlertDescription>{t("errors.downloadFailed")}</AlertDescription>
           </Alert>
         )}
-        {(!drop || drop.status !== "uploaded") && !downloaded && <p>{t("waitingForFile")}</p>}
-        {drop && drop.status === "uploaded" && !downloaded && (
+        {!isReadyForDownload(drop) && !downloaded && <p>{t("waitingForFile")}</p>}
+        {isReadyForDownload(drop) && !downloaded && (
           <>
             <p>{drop.fileName}</p>
             {drop.message && <p className="italic">{drop.message}</p>}

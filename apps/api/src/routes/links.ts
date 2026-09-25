@@ -1,6 +1,5 @@
 // apps/api/src/routes/links.ts
 import type { FastifyInstance } from "fastify";
-import { prisma } from "@e2ee-drop/db";
 import type { CreateLinkRequest, CreateLinkResponse } from "@e2ee-drop/shared";
 import {
   createOneTimeLink,
@@ -9,6 +8,7 @@ import {
   isLinkExpired,
   toLinkStatusResponse,
 } from "../lib/links";
+import { deleteObject } from "../lib/storage";
 import { resolveLocale, deriveCodewords, CODEWORD_MAX_COUNT } from "../lib/codewords";
 
 export function registerLinkRoutes(server: FastifyInstance): void {
@@ -29,17 +29,24 @@ export function registerLinkRoutes(server: FastifyInstance): void {
   server.get<{ Params: { slug: string } }>("/api/links/:slug", async (request, reply) => {
     const link = await getLinkBySlug(request.params.slug);
     if (!link) return reply.status(404).send({ error: "Link not found" });
-    if (isLinkExpired(link)) {
-      await deleteLinkIfExists(link.id);
-      return reply.status(404).send({ error: "Link not found" });
-    }
+    // Expired links are treated as gone but deliberately NOT deleted here: the
+    // cleanup job is the only place that deletes expired links, because it deletes
+    // each drop's storage object before the row. Deleting the row lazily here would
+    // lose the s3Key and orphan the object in storage forever.
+    if (isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
     return reply.send(toLinkStatusResponse(link));
   });
 
   server.delete<{ Params: { slug: string } }>("/api/links/:slug", async (request, reply) => {
     const link = await getLinkBySlug(request.params.slug);
     if (!link) return reply.status(404).send({ error: "Link not found" });
-    await prisma.link.delete({ where: { id: link.id } });
+    // Same order as runCleanup (jobs/cleanup.ts): storage objects first, then the
+    // row. If a storage delete throws, the row (and thus the s3Key) survives, so the
+    // delete can be retried or the cleanup job can still find it once expired.
+    for (const drop of link.drops) {
+      await deleteObject(drop.s3Key);
+    }
+    await deleteLinkIfExists(link.id);
     return reply.send({ deleted: true });
   });
 }

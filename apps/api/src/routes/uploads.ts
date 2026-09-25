@@ -3,7 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { nanoid } from "nanoid";
 import { prisma, Prisma } from "@e2ee-drop/db";
 import type { RequestUploadUrlRequest, RequestUploadUrlResponse } from "@e2ee-drop/shared";
-import { deleteLinkIfExists, getLinkBySlug, isLinkExpired } from "../lib/links";
+import { getLinkBySlug, isLinkExpired, transitionDropStatus } from "../lib/links";
 import { getSignedUploadUrl } from "../lib/storage";
 import { env } from "../env";
 
@@ -32,10 +32,9 @@ export function registerUploadRoutes(server: FastifyInstance): void {
     async (request, reply) => {
       const link = await getLinkBySlug(request.params.slug);
       if (!link) return reply.status(404).send({ error: "Link not found" });
-      if (isLinkExpired(link)) {
-        await deleteLinkIfExists(link.id);
-        return reply.status(404).send({ error: "Link not found" });
-      }
+      // Not deleted here — see the GET /api/links/:slug handler: only the cleanup
+      // job deletes expired links, so storage objects are never orphaned.
+      if (isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
       // Fast path only: avoids opening a transaction for the common case where we
       // already know from this same fetch that a drop exists. Not relied on for
       // correctness — the transaction below re-checks authoritatively.
@@ -108,9 +107,14 @@ export function registerUploadRoutes(server: FastifyInstance): void {
   server.post<{ Params: { slug: string; dropId: string } }>(
     "/api/links/:slug/drops/:dropId/complete",
     async (request, reply) => {
-      const drop = await prisma.drop.findUnique({ where: { id: request.params.dropId } });
-      if (!drop) return reply.status(404).send({ error: "Drop not found" });
-      await prisma.drop.update({ where: { id: drop.id }, data: { status: "uploaded" } });
+      const link = await getLinkBySlug(request.params.slug);
+      if (!link || isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+      // Compare-and-swap: only "uploading" -> "uploaded", and only for a drop that
+      // belongs to this link. Drop ids are visible to anyone holding the link, so a
+      // blind update would let them flip a drop to "uploaded" before its bytes exist,
+      // or flip an already-"downloaded" drop back to "uploaded".
+      const updated = await transitionDropStatus(request.params.dropId, link.id, ["uploading"], "uploaded");
+      if (!updated) return reply.status(404).send({ error: "Drop not found" });
       return reply.send({ updated: true });
     }
   );

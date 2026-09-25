@@ -1,11 +1,40 @@
 // apps/api/src/routes/links.test.ts
-import { describe, it, expect, beforeEach } from "vitest";
-import { buildServer } from "../server";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { prisma } from "@e2ee-drop/db";
-import { registerLinkRoutes } from "./links";
+
+const { deleteObjectMock } = vi.hoisted(() => ({ deleteObjectMock: vi.fn() }));
+
+vi.mock("../lib/storage", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/storage")>()),
+  deleteObject: deleteObjectMock,
+}));
+
+import { buildServer } from "../server";
+
+async function createLinkWithDrop(slug: string, expiresAt: Date) {
+  const link = await prisma.link.create({
+    data: { slug, mode: "one-time", recipientPublicKey: "x", expiresAt },
+  });
+  const drop = await prisma.drop.create({
+    data: {
+      linkId: link.id,
+      senderPublicKey: "c2VuZGVy",
+      s3Key: `${link.id}/drop1`,
+      nonce: "bm9uY2U=",
+      fileName: "report.pdf",
+      fileSize: 1024,
+      mimeType: "application/pdf",
+      contentMD5: "bWQ1",
+      status: "uploaded",
+    },
+  });
+  return { link, drop };
+}
 
 describe("link routes", () => {
   beforeEach(async () => {
+    deleteObjectMock.mockReset();
+    deleteObjectMock.mockResolvedValue(undefined);
     await prisma.drop.deleteMany();
     await prisma.link.deleteMany();
   });
@@ -67,5 +96,41 @@ describe("link routes", () => {
     const body = getResponse.json();
 
     expect(body.codewords).toEqual(createBody.codewords);
+  });
+
+  it("returns 404 for an expired link without deleting it (deletion is cleanup's job, so the object isn't orphaned)", async () => {
+    const server = buildServer();
+    const { link } = await createLinkWithDrop("expired-get-test", new Date(Date.now() - 1000));
+
+    const response = await server.inject({ method: "GET", url: `/api/links/${link.slug}` });
+
+    expect(response.statusCode).toBe(404);
+    // The row (and its drop's s3Key) must survive so runCleanup can still find it
+    // and delete the MinIO object before the row.
+    expect(await prisma.link.findUnique({ where: { id: link.id } })).not.toBeNull();
+    expect(await prisma.drop.count({ where: { linkId: link.id } })).toBe(1);
+    expect(deleteObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("deletes the drop's storage object before deleting the link", async () => {
+    const server = buildServer();
+    const { link, drop } = await createLinkWithDrop("delete-with-drop", new Date(Date.now() + 60_000));
+
+    const response = await server.inject({ method: "DELETE", url: `/api/links/${link.slug}` });
+
+    expect(response.statusCode).toBe(200);
+    expect(deleteObjectMock).toHaveBeenCalledWith(drop.s3Key);
+    expect(await prisma.link.findUnique({ where: { id: link.id } })).toBeNull();
+  });
+
+  it("keeps the link row if deleting the storage object fails, so it can be retried", async () => {
+    const server = buildServer();
+    const { link } = await createLinkWithDrop("delete-storage-fails", new Date(Date.now() + 60_000));
+    deleteObjectMock.mockRejectedValueOnce(new Error("minio down"));
+
+    const response = await server.inject({ method: "DELETE", url: `/api/links/${link.slug}` });
+
+    expect(response.statusCode).toBe(500);
+    expect(await prisma.link.findUnique({ where: { id: link.id } })).not.toBeNull();
   });
 });

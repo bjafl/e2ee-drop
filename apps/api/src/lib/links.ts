@@ -1,7 +1,7 @@
 // apps/api/src/lib/links.ts
 import { customAlphabet } from "nanoid";
 import { prisma, Prisma, type Link, type Drop } from "@e2ee-drop/db";
-import type { DropSummary, LinkStatusResponse } from "@e2ee-drop/shared";
+import type { DropStatus, DropSummary, LinkStatusResponse } from "@e2ee-drop/shared";
 import { env } from "../env";
 import { resolveLocale, deriveCodewords, CODEWORD_MAX_COUNT } from "./codewords";
 
@@ -28,8 +28,8 @@ export function isLinkExpired(link: Link): boolean {
 }
 
 // Deletes a Link by id, tolerating the case where it's already gone. Multiple
-// call sites (route handlers' own expired-link cleanup, the cleanup job's sweep)
-// can independently decide the same link should be deleted and race each other;
+// call sites (the user-initiated DELETE route, the cleanup job's sweep) can
+// independently decide the same link should be deleted and race each other;
 // whichever loses that race would otherwise see Prisma's delete() throw P2025
 // ("record not found"). Since the desired end state — the row is gone — is
 // already true in that case, treat it as success rather than propagating an
@@ -43,6 +43,30 @@ export async function deleteLinkIfExists(id: string): Promise<void> {
     }
     throw error;
   }
+}
+
+// Atomically advances a drop's status, compare-and-swap style: the row is only
+// written if it (a) is this drop, (b) belongs to this link, and (c) is currently
+// in one of `fromStatuses` at write time. Same discipline as the download-url
+// handler's `updateMany` in routes/downloads.ts — a single conditional UPDATE, so
+// a concurrent request can't slip in between a read and a blind write.
+//
+// Scoping by linkId matters because drop ids are not secret (GET /api/links/:slug
+// returns them), so a drop id alone must never authorize a transition on some
+// other link's drop. Returns true iff exactly the intended transition happened;
+// callers map false to 404 (unknown drop, wrong link, or wrong prior status are
+// deliberately indistinguishable).
+export async function transitionDropStatus(
+  dropId: string,
+  linkId: string,
+  fromStatuses: readonly DropStatus[],
+  toStatus: DropStatus
+): Promise<boolean> {
+  const { count } = await prisma.drop.updateMany({
+    where: { id: dropId, linkId, status: { in: [...fromStatuses] } },
+    data: { status: toStatus },
+  });
+  return count === 1;
 }
 
 export function toDropSummary(drop: Drop): DropSummary {

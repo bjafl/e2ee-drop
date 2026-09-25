@@ -2,17 +2,16 @@
 import type { FastifyInstance } from "fastify";
 import { prisma } from "@e2ee-drop/db";
 import type { DownloadUrlResponse } from "@e2ee-drop/shared";
-import { deleteLinkIfExists, getLinkBySlug, isLinkExpired } from "../lib/links";
+import { getLinkBySlug, isLinkExpired, transitionDropStatus } from "../lib/links";
 import { getSignedDownloadUrl } from "../lib/storage";
 
 export function registerDownloadRoutes(server: FastifyInstance): void {
   server.get<{ Params: { slug: string } }>("/api/links/:slug/download-url", async (request, reply) => {
     const link = await getLinkBySlug(request.params.slug);
     if (!link) return reply.status(404).send({ error: "Link not found" });
-    if (isLinkExpired(link)) {
-      await deleteLinkIfExists(link.id);
-      return reply.status(404).send({ error: "Link not found" });
-    }
+    // Not deleted here — see the GET /api/links/:slug handler: only the cleanup
+    // job deletes expired links, so storage objects are never orphaned.
+    if (isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
     const drop = link.drops[0];
     if (!drop) return reply.status(404).send({ error: "No uploaded file for this link" });
     if (drop.status === "uploading") {
@@ -58,9 +57,20 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
   server.post<{ Params: { slug: string; dropId: string } }>(
     "/api/links/:slug/drops/:dropId/downloaded",
     async (request, reply) => {
-      const drop = await prisma.drop.findUnique({ where: { id: request.params.dropId } });
-      if (!drop) return reply.status(404).send({ error: "Drop not found" });
-      await prisma.drop.update({ where: { id: drop.id }, data: { status: "downloaded" } });
+      const link = await getLinkBySlug(request.params.slug);
+      if (!link || isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+      // Compare-and-swap, scoped to this link: only a drop whose upload has finished
+      // ("uploaded", or "downloading" once a download URL was issued) can become
+      // "downloaded". Rejecting "uploading" stops a link holder from marking a drop
+      // downloaded before it exists; drop ids are not secret (GET /api/links/:slug
+      // returns them), so the linkId scoping is what ties the call to this link.
+      const updated = await transitionDropStatus(
+        request.params.dropId,
+        link.id,
+        ["uploaded", "downloading"],
+        "downloaded"
+      );
+      if (!updated) return reply.status(404).send({ error: "Drop not found" });
       return reply.send({ updated: true });
     }
   );
