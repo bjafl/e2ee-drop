@@ -157,6 +157,20 @@ export const registerRateLimiter = createRateLimiter({ windowMs: 15 * 60_000, ma
 // already unusual for a real user, hence stricter than login/register.
 export const passwordResetRequestRateLimiter = createRateLimiter({ windowMs: 15 * 60_000, maxAttempts: 5 });
 
+// TOTP-code guesses on POST /api/auth/password-reset/complete and
+// /complete-fresh (one shared limiter across both routes), keyed by the
+// reset token's user id — NOT by IP or by token. A requiresTotp / wrong-code
+// rejection deliberately does NOT consume the reset token (see
+// routes/passwordReset.ts), so without this cap an attacker holding only the
+// emailed token could brute-force the 6-digit code (~3 of 1,000,000 valid at
+// any moment, per verifyTotpCode's ±1 step) for the token's full hour.
+// Keying by user id means requesting more reset emails, or rotating IPs,
+// buys no extra guesses. Same budget and reasoning as twoFactorRateLimiter:
+// 5 per 15 minutes (~0.14% daily success odds), which a legitimate user
+// mistyping a code once or twice never hits. Only attempts that actually
+// submit a code count; a bare "code required" prompt does not.
+export const passwordResetTotpRateLimiter = createRateLimiter({ windowMs: 15 * 60_000, maxAttempts: 5 });
+
 // POST /api/links/:slug/upload-url, keyed by request.ip (the unauthenticated
 // sender), NOT by the link or its owner: a public inbox is legitimately hit
 // by many different senders, and keying by the target would let one abusive

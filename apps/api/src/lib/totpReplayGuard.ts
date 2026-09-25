@@ -1,10 +1,11 @@
 // apps/api/src/lib/totpReplayGuard.ts
 //
 // In-memory, per-user TOTP replay guard (spec §13: single-instance
-// deployment, no external store required). Two login-adjacent entry points
-// into `verifyTotpCode` (lib/totp.ts) share this one module-level store:
-// POST /api/auth/login (Task 10) and 2FA enable (Task 12) — sharing it
-// means a code accepted by one flow can't be replayed against the other,
+// deployment, no external store required). Every entry point into
+// `verifyTotpCode` (lib/totp.ts) shares this one module-level store:
+// POST /api/auth/login, 2FA enable/disable (routes/twoFactor.ts), and
+// password-reset /complete + /complete-fresh (routes/passwordReset.ts) —
+// sharing it means a code accepted by one flow can't be replayed against another,
 // for the same user, which is the whole point of a *durable* per-user
 // store (verifyTotpCode's own doc comment flags a fresh-Set-per-call as
 // insufficient).

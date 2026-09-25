@@ -78,6 +78,9 @@ export interface PasswordResetVerifyTokenResponse {
   email: string;
   passwordSalt: string;
   recoveryWrappedPrivateKey: string;
+  // When true, /complete and /complete-fresh require a current totpCode —
+  // an emailed reset token alone must not bypass the account's 2FA.
+  totpEnabled: boolean;
 }
 
 export interface PasswordResetCompleteRequest {
@@ -85,6 +88,7 @@ export interface PasswordResetCompleteRequest {
   newAuthKey: string; // deriveAuthKey(newPassword, newPasswordSalt) — never the plaintext password
   newPasswordSalt: string;
   newPasswordWrappedPrivateKey: string;
+  totpCode?: string; // required iff the account has totpEnabled (see PasswordResetVerifyTokenResponse)
 }
 
 export interface PasswordResetCompleteFreshRequest {
@@ -94,6 +98,7 @@ export interface PasswordResetCompleteFreshRequest {
   newPasswordWrappedPrivateKey: string;
   newRecoveryWrappedPrivateKey: string;
   newPublicKey: string;
+  totpCode?: string; // required iff the account has totpEnabled (see PasswordResetVerifyTokenResponse)
 }
 
 export interface TotpSetupResponse {

@@ -15,7 +15,13 @@ import { cascadeDeleteUserLinks } from "../lib/accountDeletion";
 import { createDefaultLinkForUser } from "../lib/links";
 import { hashPassword } from "../lib/passwordAuth";
 import { env } from "../env";
-import { passwordResetRequestRateLimiter, rateLimitExceededBody } from "../lib/rateLimit";
+import {
+  passwordResetRequestRateLimiter,
+  passwordResetTotpRateLimiter,
+  rateLimitExceededBody,
+} from "../lib/rateLimit";
+import { decryptTotpSecret, verifyTotpCode } from "../lib/totp";
+import { getUsedCodesForUser } from "../lib/totpReplayGuard";
 
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 
@@ -53,6 +59,60 @@ async function claimResetTokenAndRevokeSessions(token: string): Promise<string |
   await prisma.passwordResetToken.deleteMany({ where: { userId: record.userId, id: { not: record.id } } });
   await deleteAllUserSessions(record.userId);
   return record.userId;
+}
+
+type ResetTotpRejection = { status: number; body: { error: string; requiresTotp?: true } };
+
+// Enforces the account's 2FA on /complete and /complete-fresh: an emailed
+// reset token alone is a weaker factor than "password + authenticator", so
+// for a totpEnabled account it must be paired with a current TOTP code —
+// the same standard /login applies (routes/auth.ts), using the same
+// verifyTotpCode + per-user replay store, so one code can't be used for
+// both a login and a reset (or for two resets).
+//
+// ORDERING / TOKEN CONSUMPTION — this runs BEFORE
+// claimResetTokenAndRevokeSessions and is strictly read-only apart from the
+// replay store and the guess limiter:
+//   * The token is looked up (not claimed) first, so an invalid/expired
+//     token is rejected with the usual 400 before any TOTP handling —
+//     nobody can probe an account's 2FA without a live token.
+//   * A missing or wrong code returns 401 { requiresTotp: true } and
+//     consumes NOTHING: the token stays valid, sessions stay live, no
+//     credential/link is touched. Like /login's requiresTotp, the user just
+//     resubmits with a (correct) code — they don't need a fresh email for a
+//     typo.
+//   * Because the token survives a wrong guess, guesses are capped by
+//     passwordResetTotpRateLimiter (per user, 5 / 15 min; see rateLimit.ts),
+//     and the token itself still dies at its normal 1-hour expiry.
+//   * Only after the code verifies does the caller run the atomic
+//     compare-and-delete claim, so single-use-on-completion and the
+//     concurrent-submit guarantees are exactly as before. If two requests
+//     race with the same valid code, the replay store lets only one pass
+//     here; with two different valid codes, the claim still lets only one
+//     complete.
+// Returns null when the request may proceed to the claim.
+async function checkResetTotp(token: string, totpCode: unknown): Promise<ResetTotpRejection | null> {
+  const invalidToken: ResetTotpRejection = { status: 400, body: { error: "Invalid or expired reset token" } };
+  const record = await findValidResetToken(token);
+  if (!record) return invalidToken;
+  const user = await prisma.user.findUnique({
+    where: { id: record.userId },
+    select: { id: true, totpEnabled: true, totpSecretEncrypted: true },
+  });
+  if (!user) return invalidToken;
+  if (!user.totpEnabled) return null;
+
+  if (typeof totpCode !== "string" || totpCode === "") {
+    return { status: 401, body: { error: "TOTP code required", requiresTotp: true } };
+  }
+  if (!passwordResetTotpRateLimiter.attempt(user.id)) {
+    return { status: 429, body: rateLimitExceededBody() };
+  }
+  const secret = decryptTotpSecret(user.totpSecretEncrypted!);
+  if (!verifyTotpCode(secret, totpCode, getUsedCodesForUser(user.id))) {
+    return { status: 401, body: { error: "Invalid TOTP code", requiresTotp: true } };
+  }
+  return null;
 }
 
 // Keyed by the caller's IP and checked before the body is even read, so the
@@ -101,6 +161,7 @@ export function registerPasswordResetRoutes(server: FastifyInstance): void {
       email: user.email,
       passwordSalt: user.passwordSalt,
       recoveryWrappedPrivateKey: user.recoveryWrappedPrivateKey,
+      totpEnabled: user.totpEnabled,
     };
     return reply.send(body);
   });
@@ -117,10 +178,15 @@ export function registerPasswordResetRoutes(server: FastifyInstance): void {
   server.post<{ Body: PasswordResetCompleteRequest }>(
     "/api/auth/password-reset/complete",
     async (request, reply) => {
-      const { token, newAuthKey, newPasswordSalt, newPasswordWrappedPrivateKey } = (request.body ?? {}) as Partial<PasswordResetCompleteRequest>;
+      const { token, newAuthKey, newPasswordSalt, newPasswordWrappedPrivateKey, totpCode } = (request.body ??
+        {}) as Partial<PasswordResetCompleteRequest>;
       if (!token || !newAuthKey || !newPasswordSalt || !newPasswordWrappedPrivateKey) {
         return reply.status(400).send({ error: "Missing required fields" });
       }
+      // 2FA gate BEFORE the claim — see checkResetTotp for why a rejection
+      // here must leave the token and every other piece of state untouched.
+      const totpRejection = await checkResetTotp(token, totpCode);
+      if (totpRejection) return reply.status(totpRejection.status).send(totpRejection.body);
       const userId = await claimResetTokenAndRevokeSessions(token);
       if (!userId) return reply.status(400).send({ error: "Invalid or expired reset token" });
 
@@ -155,6 +221,7 @@ export function registerPasswordResetRoutes(server: FastifyInstance): void {
         newPasswordWrappedPrivateKey,
         newRecoveryWrappedPrivateKey,
         newPublicKey,
+        totpCode,
       } = (request.body ?? {}) as Partial<PasswordResetCompleteFreshRequest>;
       if (
         !token ||
@@ -166,6 +233,10 @@ export function registerPasswordResetRoutes(server: FastifyInstance): void {
       ) {
         return reply.status(400).send({ error: "Missing required fields" });
       }
+      // 2FA gate BEFORE the claim — see checkResetTotp for why a rejection
+      // here must leave the token and every other piece of state untouched.
+      const totpRejection = await checkResetTotp(token, totpCode);
+      if (totpRejection) return reply.status(totpRejection.status).send(totpRejection.body);
       const userId = await claimResetTokenAndRevokeSessions(token);
       if (!userId) return reply.status(400).send({ error: "Invalid or expired reset token" });
 
