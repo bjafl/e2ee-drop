@@ -178,4 +178,44 @@ describe("link routes", () => {
     expect(await prisma.link.findUnique({ where: { id: link.id } })).not.toBeNull();
     expect(deleteObjectMock).not.toHaveBeenCalled();
   });
+
+  it("includes recipient name and email-verified status for an owned link, and omits them for an anonymous one", async () => {
+    const server = buildServer();
+
+    const owner = await prisma.user.create({
+      data: {
+        email: "owner@example.com",
+        emailVerified: true,
+        name: "Ada Lovelace",
+        username: "ada",
+        passwordHash: "x",
+        passwordSalt: "x",
+        passwordWrappedPrivateKey: "x",
+        recoveryWrappedPrivateKey: "x",
+        publicKey: "b3duZXJrZXk=",
+        storageQuotaBytes: BigInt(1024 * 1024 * 1024), // 1GB
+      },
+    });
+    const ownedLink = await prisma.link.create({
+      data: { ownerId: owner.id, slug: "ada", mode: "permanent", recipientPublicKey: owner.publicKey },
+    });
+
+    const ownedResponse = await server.inject({ method: "GET", url: `/api/links/${ownedLink.slug}` });
+    const ownedBody = ownedResponse.json();
+    expect(ownedBody.isAnonymous).toBe(false);
+    expect(ownedBody.recipientName).toBe("Ada Lovelace");
+    expect(ownedBody.recipientEmailVerified).toBe(true);
+
+    const anonCreate = await server.inject({
+      method: "POST",
+      url: "/api/links",
+      payload: { recipientPublicKey: "YW5vbg==" },
+    });
+    const { slug: anonSlug } = anonCreate.json();
+    const anonResponse = await server.inject({ method: "GET", url: `/api/links/${anonSlug}` });
+    const anonBody = anonResponse.json();
+    expect(anonBody.isAnonymous).toBe(true);
+    expect(anonBody.recipientName).toBeUndefined();
+    expect(anonBody.recipientEmailVerified).toBeUndefined();
+  });
 });

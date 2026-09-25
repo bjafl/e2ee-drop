@@ -38,7 +38,7 @@ export function registerLinkRoutes(server: FastifyInstance): void {
     // each drop's storage object before the row. Deleting the row lazily here would
     // lose the s3Key and orphan the object in storage forever.
     if (isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
-    return reply.send(toLinkStatusResponse(link));
+    return reply.send(await toLinkStatusResponse(link));
   });
 
   server.delete<{ Params: { slug: string } }>("/api/links/:slug", async (request, reply) => {

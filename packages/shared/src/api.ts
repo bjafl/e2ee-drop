@@ -34,6 +34,8 @@ export interface LinkStatusResponse {
   drop: DropSummary | null;
   isAnonymous: boolean;
   codewords: string[]; // deterministic verification phrase, up to CODEWORD_MAX_COUNT words, in the link's fixed locale
+  recipientName?: string;
+  recipientEmailVerified?: boolean;
 }
 
 export interface RequestUploadUrlRequest {

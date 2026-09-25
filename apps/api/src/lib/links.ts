@@ -105,9 +105,11 @@ export async function createDefaultLinkForUser(
   });
 }
 
-export function toLinkStatusResponse(link: Link & { drops: Drop[] }): LinkStatusResponse {
+export async function toLinkStatusResponse(
+  link: Link & { drops: Drop[] }
+): Promise<LinkStatusResponse> {
   const activeDrop = link.drops[0] ?? null;
-  return {
+  const base: LinkStatusResponse = {
     slug: link.slug,
     mode: link.mode as LinkStatusResponse["mode"],
     recipientPublicKey: link.recipientPublicKey,
@@ -119,4 +121,10 @@ export function toLinkStatusResponse(link: Link & { drops: Drop[] }): LinkStatus
       CODEWORD_MAX_COUNT
     ),
   };
+  if (!link.ownerId) return base;
+
+  const owner = await prisma.user.findUnique({ where: { id: link.ownerId } });
+  if (!owner) return base;
+
+  return { ...base, recipientName: owner.name, recipientEmailVerified: owner.emailVerified };
 }
