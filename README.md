@@ -37,12 +37,12 @@ rest of the services running.
 | `MAX_FILE_SIZE_BYTES` | `524288000` (500 MB) | `api` | Largest file a sender may upload |
 | `LINK_EXPIRY_HOURS` | `24` | `api` | How long an anonymous/one-time link stays valid before it's swept |
 | `DROP_RETENTION_DAYS` | `7` | `api`, `cleanup` | Default max age for an undownloaded drop on a permanent link before it's purged; overridable per link |
-| `SESSION_SECRET` | — (required once accounts are enabled) | `api` | Signs the httpOnly session cookie |
-| `APP_SECRET_KEY` | — (required once accounts are enabled) | `api` | Encrypts stored TOTP secrets at rest |
-| `ALLOW_REGISTRATION` | `true` | `api` | Set to `false` to close self-registration on this instance |
-| `DEFAULT_STORAGE_QUOTA_BYTES` | — | `api` | Default per-account storage quota for new accounts |
-| `APP_URL` | — | `api` | Public base URL, used when building links in emails |
-| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | — (optional) | `api` | Outgoing mail for email verification and password-reset requests; those flows are unavailable if unset |
+| `SESSION_SECRET` | — (required once accounts are enabled) | `api`, `cleanup` | Signs the httpOnly session cookie |
+| `APP_SECRET_KEY` | — (required once accounts are enabled) | `api`, `cleanup` | Encrypts stored TOTP secrets at rest |
+| `ALLOW_REGISTRATION` | `true` | `api`, `cleanup` | Set to `false` to close self-registration on this instance |
+| `DEFAULT_STORAGE_QUOTA_BYTES` | `5368709120` (5 GiB) | `api`, `cleanup` | Default per-account storage quota for new accounts |
+| `APP_URL` | `http://localhost:8080` | `api`, `cleanup` | Public base URL, used when building links in emails |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | — (optional) | `api`, `cleanup` | Outgoing mail for email verification and password-reset requests; those flows are unavailable if unset |
 | `WEB_PORT` | `8080` | `web` | Host port the `web` service (SPA + `/api` + `/s3` proxy) is published on — this is the port you visit in a browser |
 
 ## Fronting with TLS
