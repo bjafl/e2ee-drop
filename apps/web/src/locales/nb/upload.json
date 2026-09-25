@@ -1,0 +1,11 @@
+{
+  "title": "Send en fil",
+  "loading": "Laster lenke…",
+  "anonymousRecipient": "Anonym mottaker (ingen verifisert identitet for denne lenken)",
+  "verifiedRecipient": "Sender til en registrert konto",
+  "codewordsLabel": "Verifiseringsord — be mottakeren bekrefte at disse stemmer",
+  "messagePlaceholder": "Valgfri melding (ikke kryptert)",
+  "messageNotEncryptedWarning": "Denne meldingen er IKKE ende-til-ende-kryptert — i motsetning til filen kan den leses av den som drifter serveren.",
+  "success": "Filen ble sendt.",
+  "errors": { "linkNotFound": "Denne lenken er ugyldig eller utløpt.", "uploadFailed": "Opplasting feilet. Prøv igjen." }
+}

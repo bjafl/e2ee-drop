@@ -1,0 +1,11 @@
+{
+  "title": "Send a file",
+  "loading": "Loading link…",
+  "anonymousRecipient": "Anonymous recipient (no verified identity for this link)",
+  "verifiedRecipient": "Sending to a registered account",
+  "codewordsLabel": "Verification words — ask the recipient to confirm these match",
+  "messagePlaceholder": "Optional message (not encrypted)",
+  "messageNotEncryptedWarning": "This message is NOT end-to-end encrypted — unlike the file, it can be read by whoever operates this server.",
+  "success": "File sent successfully.",
+  "errors": { "linkNotFound": "This link is invalid or has expired.", "uploadFailed": "Upload failed. Please try again." }
+}
