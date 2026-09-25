@@ -31,6 +31,29 @@ export interface RegisterInput {
   password: string;
 }
 
+// Thrown by register() on a non-2xx response, carrying the HTTP status code
+// (and the server's parsed { error } body, when present) instead of a fixed
+// generic message — RegisterPage needs to tell a 409 (already in use — see
+// the SEC11 trade-off comment in apps/api/src/routes/auth.ts, which depends
+// on the frontend actually surfacing this distinctly), 400 (invalid
+// input), 403 (registration disabled) and 429 (rate limited) apart, each
+// with its own message. login()'s existing requiresTotp handling below
+// takes the same approach of inspecting the response body rather than just
+// `.ok`, but resolves entirely inside this hook (it returns a result
+// instead of throwing); register()'s callers need the distinction
+// themselves, so it's carried on the thrown error instead.
+export class RegisterError extends Error {
+  readonly status: number;
+  readonly body?: { error?: string };
+
+  constructor(status: number, body?: { error?: string }) {
+    super(body?.error ?? "Registration failed");
+    this.name = "RegisterError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
 interface AuthContextValue {
   user: AuthUser | null;
   // True until the initial GET /api/auth/me session restore settles. Pages
@@ -94,7 +117,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         publicKey: encodeBase64(keyPair.publicKey),
       }),
     });
-    if (!response.ok) throw new Error("Registration failed");
+    if (!response.ok) {
+      const errorBody = (await response.json().catch(() => undefined)) as { error?: string } | undefined;
+      throw new RegisterError(response.status, errorBody);
+    }
     const body: RegisterResponse = await response.json();
 
     setUser({

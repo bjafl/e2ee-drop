@@ -5,9 +5,16 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 const registerMock = vi.fn().mockResolvedValue({ recoveryCode: "ABCD1234EFGH5678IJKL" });
-vi.mock("@/hooks/useAuth", () => ({ useAuth: () => ({ user: null, register: registerMock, login: vi.fn(), logout: vi.fn() }) }));
+vi.mock("@/hooks/useAuth", async () => {
+  const actual = await vi.importActual<typeof import("@/hooks/useAuth")>("@/hooks/useAuth");
+  return {
+    ...actual,
+    useAuth: () => ({ user: null, register: registerMock, login: vi.fn(), logout: vi.fn() }),
+  };
+});
 
 import { RegisterPage } from "./RegisterPage";
+import { RegisterError } from "@/hooks/useAuth";
 
 describe("RegisterPage", () => {
   beforeEach(() => {
@@ -82,5 +89,78 @@ describe("RegisterPage", () => {
 
     await waitFor(() => expect(registerMock).toHaveBeenCalledTimes(1));
     expect(screen.queryByText(/at least 12 characters long/i)).not.toBeInTheDocument();
+  });
+
+  it("shows the already-in-use message with a login link on a 409, not the generic fallback", async () => {
+    registerMock.mockRejectedValueOnce(new RegisterError(409, { error: "Email or username already in use" }));
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <RegisterPage />
+      </MemoryRouter>
+    );
+    await fillForm(user, "correct horse battery staple");
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/already in use/i);
+    expect(alert).not.toHaveTextContent(/please try again/i);
+    const loginLink = screen.getByRole("link", { name: /log in instead/i });
+    expect(loginLink).toHaveAttribute("href", "/login");
+  });
+
+  it("shows a registration-disabled message on a 403", async () => {
+    registerMock.mockRejectedValueOnce(new RegisterError(403, { error: "Registration is disabled on this instance" }));
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <RegisterPage />
+      </MemoryRouter>
+    );
+    await fillForm(user, "correct horse battery staple");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/registration is currently disabled/i);
+  });
+
+  it("shows a rate-limited message on a 429", async () => {
+    registerMock.mockRejectedValueOnce(new RegisterError(429, { error: "Too many attempts. Please try again later." }));
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <RegisterPage />
+      </MemoryRouter>
+    );
+    await fillForm(user, "correct horse battery staple");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/too many registration attempts/i);
+  });
+
+  it("shows an invalid-username message on a 400", async () => {
+    registerMock.mockRejectedValueOnce(
+      new RegisterError(400, {
+        error: "Username must be 3-32 characters, lowercase letters/numbers/hyphens/underscores only, and not a reserved name",
+      })
+    );
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <RegisterPage />
+      </MemoryRouter>
+    );
+    await fillForm(user, "correct horse battery staple");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/usernames must be 3-32 characters/i);
+  });
+
+  it("falls back to the generic message for an unanticipated error", async () => {
+    registerMock.mockRejectedValueOnce(new Error("network exploded"));
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <RegisterPage />
+      </MemoryRouter>
+    );
+    await fillForm(user, "correct horse battery staple");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/registration failed\. please try again\./i);
   });
 });

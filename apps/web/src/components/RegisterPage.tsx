@@ -1,10 +1,11 @@
 // apps/web/src/components/RegisterPage.tsx
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { useAuth } from "@/hooks/useAuth";
+import { useAuth, RegisterError } from "@/hooks/useAuth";
 import { MIN_PASSWORD_LENGTH, isPasswordLongEnough } from "@/lib/passwordPolicy";
 import i18n from "@/i18n";
 import authEn from "@/locales/en/auth.json";
@@ -22,7 +23,37 @@ export function RegisterPage() {
   const [password, setPassword] = useState("");
   const [recoveryCode, setRecoveryCode] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ReactNode | null>(null);
+
+  // Maps a rejected register() call to a specific, translated message for
+  // each status the server can actually return (see apps/api/src/routes/
+  // auth.ts's /register handler) rather than the single generic fallback
+  // this used to show for every failure. The 409 case is deliberately
+  // field-agnostic — it must not say whether the email or the username was
+  // the one already in use, since that distinction is exactly the
+  // enumeration signal the server's SEC11 trade-off comment says is
+  // accepted, not something to sharpen further — but it does link to
+  // /login, since a real user re-registering their own email is the whole
+  // justification for accepting that trade-off in the first place.
+  const errorMessageFor = (err: unknown): ReactNode => {
+    if (err instanceof RegisterError) {
+      switch (err.status) {
+        case 409:
+          return (
+            <>
+              {t("register.errors.inUse")} <Link to="/login">{t("register.errors.inUseLink")}</Link>
+            </>
+          );
+        case 400:
+          return t("register.errors.invalidUsername");
+        case 403:
+          return t("register.errors.registrationDisabled");
+        case 429:
+          return t("register.errors.rateLimited");
+      }
+    }
+    return t("register.errors.failed");
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -37,8 +68,8 @@ export function RegisterPage() {
     try {
       const { recoveryCode: code } = await register({ email, username, name, password });
       setRecoveryCode(code);
-    } catch {
-      setError(t("register.errors.failed"));
+    } catch (err) {
+      setError(errorMessageFor(err));
     }
   };
 

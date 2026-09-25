@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import nacl from "tweetnacl";
 import { encodeBase64 } from "tweetnacl-util";
 import { generateWrappingSalt, deriveWrappingKey, deriveAuthKey, wrapPrivateKey } from "@/lib/keyWrapping";
-import { AuthProvider, useAuth } from "./useAuth";
+import { AuthProvider, useAuth, RegisterError } from "./useAuth";
 
 function wrapper({ children }: { children: ReactNode }) {
   return <AuthProvider>{children}</AuthProvider>;
@@ -82,6 +82,43 @@ describe("useAuth", () => {
     const registerBody = JSON.parse(captured.find((c) => c.url.includes("/api/auth/register"))!.body);
     expect(registerBody).not.toHaveProperty("password");
     expect(registerBody.authKey).toBe(await deriveAuthKey("frank's password", registerBody.passwordSalt));
+  });
+
+  // RegisterPage needs to tell a 409 (already in use) apart from a 400/403/429
+  // to show a useful message instead of one generic fallback for every
+  // failure (see the SEC11 trade-off comment in apps/api/src/routes/auth.ts:
+  // the accepted email-enumeration cost is only justified if a legitimate
+  // re-registering user actually gets told to log in instead). register()
+  // must therefore preserve the status code and server error body on
+  // rejection rather than discarding them behind a fixed Error message.
+  it("register() rejects with a RegisterError carrying the status and body on a non-2xx response", async () => {
+    spyFetch((url) => {
+      if (url.includes("/api/auth/me")) return new Response(null, { status: 403 });
+      if (url.includes("/api/auth/register")) {
+        return new Response(JSON.stringify({ error: "Email or username already in use" }), { status: 409 });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    let caught: unknown;
+    await act(async () => {
+      try {
+        await result.current.register({
+          email: "frank@example.com",
+          username: "frank",
+          name: "Frank",
+          password: "frank's password",
+        });
+      } catch (err) {
+        caught = err;
+      }
+    });
+
+    expect(caught).toBeInstanceOf(RegisterError);
+    expect((caught as RegisterError).status).toBe(409);
+    expect((caught as RegisterError).body?.error).toBe("Email or username already in use");
   });
 
   it("login() fetches the salt via prelogin, sends authKey (not the password), and unwraps the real private key", async () => {
