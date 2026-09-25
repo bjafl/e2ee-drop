@@ -9,11 +9,12 @@
 // links.test.ts / contacts.test.ts) — there is no fake user-id header.
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { prisma } from "@e2ee-drop/db";
 import type { DropSummary } from "@e2ee-drop/shared";
 import { buildServer } from "../server";
 import { emitDropEvent, linkListenerCount } from "../lib/dropEvents";
+import { SSE_HEARTBEAT_INTERVAL_MS } from "./events";
 
 const drop: DropSummary = {
   id: "drop1",
@@ -49,6 +50,7 @@ async function registerAndGetCookie(server: ReturnType<typeof buildServer>, user
 interface OpenStream {
   statusCode: number;
   contentType: string | undefined;
+  headers: http.IncomingHttpHeaders;
   // Resolves with everything received so far once `text` appears in the stream.
   waitFor: (text: string) => Promise<string>;
   close: () => void;
@@ -79,6 +81,7 @@ function openStream(port: number, path: string, sessionCookie?: string): Promise
         resolve({
           statusCode: res.statusCode ?? 0,
           contentType: res.headers["content-type"],
+          headers: res.headers,
           waitFor: (text) =>
             received.includes(text)
               ? Promise.resolve(received)
@@ -114,6 +117,7 @@ describe("SSE events route", () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     await server.close();
   });
 
@@ -199,5 +203,33 @@ describe("SSE events route", () => {
 
     tabB.close();
     await waitUntil(() => linkListenerCount(link.id) === 0);
+  });
+
+  it("disables proxy buffering and sends heartbeats until the client disconnects", async () => {
+    const createRes = await server.inject({
+      method: "POST",
+      url: "/api/links",
+      payload: { recipientPublicKey: "cmVjaXBpZW50" },
+    });
+    const { slug } = createRes.json();
+    const link = (await prisma.link.findUnique({ where: { slug } }))!;
+    await server.listen({ port: 0, host: "127.0.0.1" });
+    const { port } = server.server.address() as AddressInfo;
+    // Fake only interval timers: sockets and the waitUntil() polling keep
+    // using real time.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+
+    const stream = await openStream(port, `/api/links/${slug}/events`);
+    expect(stream.headers["x-accel-buffering"]).toBe("no");
+    await stream.waitFor(": connected");
+    expect(vi.getTimerCount()).toBe(1);
+
+    vi.advanceTimersByTime(SSE_HEARTBEAT_INTERVAL_MS);
+    const received = await stream.waitFor(": ping");
+    expect(received).toContain(": ping\n\n");
+
+    stream.close();
+    await waitUntil(() => linkListenerCount(link.id) === 0);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

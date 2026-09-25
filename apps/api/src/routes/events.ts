@@ -3,6 +3,12 @@ import type { FastifyInstance } from "fastify";
 import { getLinkBySlug, isLinkExpired } from "../lib/links";
 import { subscribeToLink } from "../lib/dropEvents";
 
+// A comment line written periodically so a reverse proxy never sees the stream
+// idle long enough to time it out (nginx's proxy_read_timeout defaults to 60s,
+// and was observed dropping an idle stream at exactly that point). EventSource
+// ignores comment lines, so clients never see these.
+export const SSE_HEARTBEAT_INTERVAL_MS = 25_000;
+
 export function registerEventRoutes(server: FastifyInstance): void {
   server.get<{ Params: { slug: string } }>("/api/links/:slug/events", async (request, reply) => {
     const link = await getLinkBySlug(request.params.slug);
@@ -21,6 +27,9 @@ export function registerEventRoutes(server: FastifyInstance): void {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
+      // Tells nginx (and compatible proxies) not to buffer this response, so
+      // each event reaches the browser as soon as it's written.
+      "X-Accel-Buffering": "no",
     });
     reply.raw.write(": connected\n\n");
 
@@ -28,9 +37,15 @@ export function registerEventRoutes(server: FastifyInstance): void {
       reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
     });
 
+    const heartbeat = setInterval(() => {
+      reply.raw.write(": ping\n\n");
+    }, SSE_HEARTBEAT_INTERVAL_MS);
+
     // The response's "close" fires when the client disconnects (or the
-    // server shuts down); each connection removes only its own listener.
+    // server shuts down); each connection removes only its own listener and
+    // stops only its own heartbeat.
     reply.raw.on("close", () => {
+      clearInterval(heartbeat);
       unsubscribe();
     });
   });
