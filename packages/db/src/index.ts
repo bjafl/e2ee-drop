@@ -8,5 +8,5 @@ if (process.env.NODE_ENV !== "production") {
   globalForPrisma.prisma = prisma;
 }
 
-export type { Link, Drop } from "@prisma/client";
+export type { Link, Drop, Contact } from "@prisma/client";
 export { Prisma } from "@prisma/client";
