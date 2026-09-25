@@ -3,7 +3,11 @@ export interface RegisterRequest {
   email: string;
   username: string;
   name: string;
-  password: string; // sent once over TLS at registration only, never stored
+  // Argon2id(password, sha256(passwordSalt ++ "e2ee-drop-auth-key-v1")),
+  // computed client-side (deriveAuthKey). Never the plaintext password: the
+  // server must not be able to derive the wrapping key, which uses the same
+  // password with the raw passwordSalt as its Argon2id salt.
+  authKey: string;
   passwordSalt: string; // base64, client-generated wrapping-KDF salt
   passwordWrappedPrivateKey: string; // base64
   recoveryWrappedPrivateKey: string; // base64
@@ -16,9 +20,19 @@ export interface RegisterResponse {
   defaultLinkSlug: string;
 }
 
+export interface PreloginRequest {
+  email: string;
+}
+
+// For an unregistered email, passwordSalt is a deterministic fake of the
+// same shape as a real one, so this endpoint can't enumerate accounts.
+export interface PreloginResponse {
+  passwordSalt: string;
+}
+
 export interface LoginRequest {
   email: string;
-  password: string;
+  authKey: string; // see RegisterRequest.authKey
   totpCode?: string;
 }
 
@@ -59,14 +73,14 @@ export interface PasswordResetVerifyTokenResponse {
 
 export interface PasswordResetCompleteRequest {
   token: string;
-  newPassword: string; // plaintext, sent once over TLS — hashed server-side, same as registration
+  newAuthKey: string; // deriveAuthKey(newPassword, newPasswordSalt) — never the plaintext password
   newPasswordSalt: string;
   newPasswordWrappedPrivateKey: string;
 }
 
 export interface PasswordResetCompleteFreshRequest {
   token: string;
-  newPassword: string; // plaintext, sent once over TLS — hashed server-side, same as registration
+  newAuthKey: string; // deriveAuthKey(newPassword, newPasswordSalt) — never the plaintext password
   newPasswordSalt: string;
   newPasswordWrappedPrivateKey: string;
   newRecoveryWrappedPrivateKey: string;

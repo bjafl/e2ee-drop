@@ -71,14 +71,14 @@ export function registerPasswordResetRoutes(server: FastifyInstance): void {
   server.post<{ Body: PasswordResetCompleteRequest }>(
     "/api/auth/password-reset/complete",
     async (request, reply) => {
-      const { token, newPassword, newPasswordSalt, newPasswordWrappedPrivateKey } = request.body;
+      const { token, newAuthKey, newPasswordSalt, newPasswordWrappedPrivateKey } = request.body;
       const record = await findValidResetToken(token);
       if (!record) return reply.status(400).send({ error: "Invalid or expired reset token" });
 
       await prisma.user.update({
         where: { id: record.userId },
         data: {
-          passwordHash: await hashPassword(newPassword),
+          passwordHash: await hashPassword(newAuthKey),
           passwordSalt: newPasswordSalt,
           passwordWrappedPrivateKey: newPasswordWrappedPrivateKey,
         },
@@ -104,7 +104,7 @@ export function registerPasswordResetRoutes(server: FastifyInstance): void {
     async (request, reply) => {
       const {
         token,
-        newPassword,
+        newAuthKey,
         newPasswordSalt,
         newPasswordWrappedPrivateKey,
         newRecoveryWrappedPrivateKey,
@@ -117,7 +117,7 @@ export function registerPasswordResetRoutes(server: FastifyInstance): void {
       const user = await prisma.user.update({
         where: { id: record.userId },
         data: {
-          passwordHash: await hashPassword(newPassword),
+          passwordHash: await hashPassword(newAuthKey),
           passwordSalt: newPasswordSalt,
           passwordWrappedPrivateKey: newPasswordWrappedPrivateKey,
           recoveryWrappedPrivateKey: newRecoveryWrappedPrivateKey,

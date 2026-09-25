@@ -1,7 +1,16 @@
 // apps/api/src/routes/auth.ts
 import type { FastifyInstance } from "fastify";
 import { prisma, Prisma } from "@e2ee-drop/db";
-import type { RegisterRequest, RegisterResponse, LoginRequest, LoginResponse, MeResponse } from "@e2ee-drop/shared";
+import { createHmac } from "node:crypto";
+import type {
+  RegisterRequest,
+  RegisterResponse,
+  LoginRequest,
+  LoginResponse,
+  MeResponse,
+  PreloginRequest,
+  PreloginResponse,
+} from "@e2ee-drop/shared";
 import { hashPassword, verifyPassword } from "../lib/passwordAuth";
 import { decryptTotpSecret, verifyTotpCode } from "../lib/totp";
 import { createDefaultLinkForUser } from "../lib/links";
@@ -71,6 +80,24 @@ function isValidUsername(username: string): boolean {
   );
 }
 
+// Must match the decoded byte length of the web client's
+// generateWrappingSalt() (apps/web/src/lib/keyWrapping.ts: 16 random bytes,
+// base64-encoded). A fake salt of any other length/encoding would let a
+// caller of /prelogin distinguish registered from unregistered emails.
+const WRAPPING_SALT_BYTES = 16;
+
+// Deterministic per-email fake salt for /prelogin on an unregistered email:
+// HMAC-SHA256 keyed by the server secret, so it is stable across calls (like
+// a real stored salt would be) but unpredictable without APP_SECRET_KEY. The
+// fixed prefix domain-separates this HMAC from any other use of the key.
+function fakePasswordSaltForEmail(email: string): string {
+  return createHmac("sha256", env.APP_SECRET_KEY)
+    .update(`e2ee-drop-prelogin-fake-salt-v1:${email}`)
+    .digest()
+    .subarray(0, WRAPPING_SALT_BYTES)
+    .toString("base64");
+}
+
 // Lazily computed once per process and cached — see the comment at its call
 // site in the login route (timing-attack mitigation for email enumeration).
 let dummyPasswordHashPromise: Promise<string> | null = null;
@@ -91,7 +118,7 @@ export function registerAuthRoutes(server: FastifyInstance): void {
       email,
       username,
       name,
-      password,
+      authKey,
       passwordSalt,
       passwordWrappedPrivateKey,
       recoveryWrappedPrivateKey,
@@ -101,7 +128,7 @@ export function registerAuthRoutes(server: FastifyInstance): void {
       !email ||
       !username ||
       !name ||
-      !password ||
+      !authKey ||
       !passwordSalt ||
       !passwordWrappedPrivateKey ||
       !recoveryWrappedPrivateKey ||
@@ -117,7 +144,9 @@ export function registerAuthRoutes(server: FastifyInstance): void {
       });
     }
 
-    const passwordHash = await hashPassword(password);
+    // authKey (not the password) is what gets Argon2id-hashed and stored —
+    // see RegisterRequest.authKey for why the server never sees the password.
+    const passwordHash = await hashPassword(authKey);
 
     let user;
     try {
@@ -160,12 +189,24 @@ export function registerAuthRoutes(server: FastifyInstance): void {
     return reply.send(body);
   });
 
+  // Step one of login: the client needs passwordSalt before it can derive the
+  // authKey it sends to /login. Unregistered emails get a same-shaped,
+  // deterministic fake salt (see fakePasswordSaltForEmail) instead of an
+  // error, so this endpoint cannot be used to enumerate accounts.
+  server.post<{ Body: PreloginRequest }>("/api/auth/prelogin", async (request, reply) => {
+    const email = request.body?.email;
+    if (!email || typeof email !== "string") return reply.status(400).send({ error: "Missing email" });
+    const user = await prisma.user.findUnique({ where: { email }, select: { passwordSalt: true } });
+    const body: PreloginResponse = { passwordSalt: user?.passwordSalt ?? fakePasswordSaltForEmail(email) };
+    return reply.send(body);
+  });
+
   server.post<{ Body: LoginRequest }>("/api/auth/login", async (request, reply) => {
-    const { email, password, totpCode } = request.body;
-    if (!email || !password) return reply.status(400).send({ error: "Missing email or password" });
+    const { email, authKey, totpCode } = request.body;
+    if (!email || !authKey) return reply.status(400).send({ error: "Missing email or authKey" });
 
     const user = await prisma.user.findUnique({ where: { email } });
-    // Always run a password verification, even when no user was found —
+    // Always run a credential (authKey) verification, even when no user was found —
     // `verifyPassword` (Argon2id) is deliberately slow, and skipping it
     // entirely on the "unknown email" branch would make that branch return
     // measurably faster than "known email, wrong password". Both branches
@@ -176,7 +217,7 @@ export function registerAuthRoutes(server: FastifyInstance): void {
     // purely so this branch pays a comparable Argon2id cost — its result is
     // never used for anything but timing.
     const passwordHash = user?.passwordHash ?? (await getDummyPasswordHash());
-    const passwordValid = await verifyPassword(password, passwordHash);
+    const passwordValid = await verifyPassword(authKey, passwordHash);
     if (!user || !passwordValid) {
       return reply.status(401).send({ error: "Invalid email or password" });
     }

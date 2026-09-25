@@ -1,5 +1,5 @@
 // apps/web/src/lib/keyWrapping.ts
-import { argon2id } from "hash-wasm";
+import { argon2id, createSHA256 } from "hash-wasm";
 import nacl from "tweetnacl";
 import { encodeBase64, decodeBase64 } from "tweetnacl-util";
 
@@ -24,6 +24,38 @@ export async function deriveWrappingKey(password: string, saltB64: string): Prom
     outputType: "binary",
   });
   return new Uint8Array(hash);
+}
+
+const AUTH_KEY_DOMAIN = "e2ee-drop-auth-key-v1";
+
+// The login credential sent to the server in place of the password. It is a
+// SEPARATE Argon2id computation from deriveWrappingKey: same password and
+// same cost parameters, but the Argon2id salt is
+// sha256(decodedPasswordSalt ++ "e2ee-drop-auth-key-v1") instead of the raw
+// passwordSalt. The server knows passwordSalt and receives authKey, but
+// cannot invert authKey back to the password, so it can never compute the
+// wrapping key (and thus never unwrap passwordWrappedPrivateKey).
+export async function deriveAuthKey(password: string, saltB64: string): Promise<string> {
+  const saltBytes = decodeBase64(saltB64);
+  const domainBytes = new Uint8Array(new TextEncoder().encode(AUTH_KEY_DOMAIN));
+  const input = new Uint8Array(saltBytes.length + domainBytes.length);
+  input.set(saltBytes);
+  input.set(domainBytes, saltBytes.length);
+  const hasher = await createSHA256();
+  hasher.init();
+  hasher.update(input);
+  const authSalt = new Uint8Array(hasher.digest("binary"));
+
+  const hash = await argon2id({
+    password,
+    salt: authSalt,
+    iterations: ARGON2_ITERATIONS,
+    memorySize: ARGON2_MEMORY_KIB,
+    parallelism: ARGON2_PARALLELISM,
+    hashLength: ARGON2_HASH_LENGTH,
+    outputType: "binary",
+  });
+  return encodeBase64(new Uint8Array(hash));
 }
 
 export function wrapPrivateKey(privateKey: Uint8Array, wrappingKey: Uint8Array): string {

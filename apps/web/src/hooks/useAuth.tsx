@@ -2,10 +2,11 @@
 import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react";
 import nacl from "tweetnacl";
 import { encodeBase64 } from "tweetnacl-util";
-import type { LoginResponse, MeResponse, RegisterResponse } from "@e2ee-drop/shared";
+import type { LoginResponse, MeResponse, PreloginResponse, RegisterResponse } from "@e2ee-drop/shared";
 import {
   generateWrappingSalt,
   deriveWrappingKey,
+  deriveAuthKey,
   wrapPrivateKey,
   unwrapPrivateKey,
   generateRecoveryCode,
@@ -66,6 +67,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const passwordSalt = generateWrappingSalt();
     const wrappingKey = await deriveWrappingKey(input.password, passwordSalt);
     const passwordWrappedPrivateKey = wrapPrivateKey(keyPair.secretKey, wrappingKey);
+    // Separate, domain-separated Argon2id output used as the login
+    // credential. The plaintext password is never sent to the server.
+    const authKey = await deriveAuthKey(input.password, passwordSalt);
 
     const recoveryCode = generateRecoveryCode();
     const recoveryWrappedPrivateKey = wrapPrivateKey(keyPair.secretKey, deriveRecoveryKey(recoveryCode));
@@ -77,7 +81,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         email: input.email,
         username: input.username,
         name: input.name,
-        password: input.password,
+        authKey,
         passwordSalt,
         passwordWrappedPrivateKey,
         recoveryWrappedPrivateKey,
@@ -103,10 +107,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(
     async (email: string, password: string, totpCode?: string): Promise<{ requiresTotp: boolean }> => {
+      // 1. Fetch passwordSalt first: authKey can't be derived without it,
+      //    and the plaintext password must never be sent. Runs on every
+      //    call, including the TOTP retry (login() is stateless between the
+      //    two submissions, so it just repeats prelogin + derivation).
+      const preloginResponse = await fetch("/api/auth/prelogin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      if (!preloginResponse.ok) throw new Error("Login failed");
+      const { passwordSalt } = (await preloginResponse.json()) as PreloginResponse;
+
+      // 2. Derive both keys locally. The wrapping key stays in the browser;
+      //    only authKey goes to the server.
+      const wrappingKey = await deriveWrappingKey(password, passwordSalt);
+      const authKey = await deriveAuthKey(password, passwordSalt);
+
+      // 3. Submit. A requiresTotp response short-circuits here, before any
+      //    unwrap; the caller re-invokes login() with the TOTP code.
       const response = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password, totpCode }),
+        body: JSON.stringify({ email, authKey, totpCode }),
       });
       const body = await response.json();
       if (!response.ok) {
@@ -114,7 +137,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new Error(body.error ?? "Login failed");
       }
       const loginBody = body as LoginResponse;
-      const wrappingKey = await deriveWrappingKey(password, loginBody.passwordSalt);
+      // The login response's passwordSalt is not used: the wrapping key was
+      // already derived from the prelogin salt, and that same salt is what
+      // authenticated this login (a mismatched salt would have produced a
+      // wrong authKey and a 401), so unwrapping with it is correct.
       const secretKey = unwrapPrivateKey(loginBody.passwordWrappedPrivateKey, wrappingKey);
       const keyPair = nacl.box.keyPair.fromSecretKey(secretKey);
 

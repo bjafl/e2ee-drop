@@ -10,6 +10,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   generateWrappingSalt,
   deriveWrappingKey,
+  deriveAuthKey,
   wrapPrivateKey,
   unwrapPrivateKey,
   deriveRecoveryKey,
@@ -84,13 +85,14 @@ export function ConfirmPasswordResetPage() {
       const newSalt = generateWrappingSalt();
       const newWrappingKey = await deriveWrappingKey(newPassword, newSalt);
       const newPasswordWrappedPrivateKey = wrapPrivateKey(privateKey, newWrappingKey);
+      const newAuthKey = await deriveAuthKey(newPassword, newSalt);
 
       const response = await fetch("/api/auth/password-reset/complete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           token,
-          newPassword,
+          newAuthKey,
           newPasswordSalt: newSalt,
           newPasswordWrappedPrivateKey,
         }),
@@ -109,6 +111,7 @@ export function ConfirmPasswordResetPage() {
     const newSalt = generateWrappingSalt();
     const newWrappingKey = await deriveWrappingKey(newPassword, newSalt);
     const newPasswordWrappedPrivateKey = wrapPrivateKey(keyPair.secretKey, newWrappingKey);
+    const newAuthKey = await deriveAuthKey(newPassword, newSalt);
     const newRecoveryCode = generateRecoveryCode();
     const newRecoveryWrappedPrivateKey = wrapPrivateKey(keyPair.secretKey, deriveRecoveryKey(newRecoveryCode));
 
@@ -117,7 +120,7 @@ export function ConfirmPasswordResetPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         token,
-        newPassword,
+        newAuthKey,
         newPasswordSalt: newSalt,
         newPasswordWrappedPrivateKey,
         newRecoveryWrappedPrivateKey,
