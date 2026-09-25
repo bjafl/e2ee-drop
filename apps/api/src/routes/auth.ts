@@ -306,56 +306,57 @@ export function registerAuthRoutes(server: FastifyInstance): void {
       },
     },
     async (request, reply) => {
-    const { email, authKey, totpCode } = request.body;
-    if (!email || !authKey) return reply.status(400).send({ error: "Missing email or authKey" });
+      const { email, authKey, totpCode } = request.body;
+      if (!email || !authKey) return reply.status(400).send({ error: "Missing email or authKey" });
 
-    const user = await prisma.user.findUnique({ where: { email } });
-    // Always run a credential (authKey) verification, even when no user was found —
-    // `verifyPassword` (Argon2id) is deliberately slow, and skipping it
-    // entirely on the "unknown email" branch would make that branch return
-    // measurably faster than "known email, wrong password". Both branches
-    // already return the identical error message and status code; without
-    // this, a network-timing attacker could still distinguish them and
-    // enumerate registered emails. `getDummyPasswordHash()` hashes a fixed,
-    // meaningless password once (lazily, cached for the process lifetime)
-    // purely so this branch pays a comparable Argon2id cost — its result is
-    // never used for anything but timing.
-    const passwordHash = user?.passwordHash ?? (await getDummyPasswordHash());
-    const passwordValid = await verifyPassword(authKey, passwordHash);
-    if (!user || !passwordValid) {
-      return reply.status(401).send({ error: "Invalid email or password" });
-    }
-
-    if (user.totpEnabled) {
-      if (!totpCode) {
-        return reply.status(401).send({ error: "TOTP code required", requiresTotp: true });
+      const user = await prisma.user.findUnique({ where: { email } });
+      // Always run a credential (authKey) verification, even when no user was found —
+      // `verifyPassword` (Argon2id) is deliberately slow, and skipping it
+      // entirely on the "unknown email" branch would make that branch return
+      // measurably faster than "known email, wrong password". Both branches
+      // already return the identical error message and status code; without
+      // this, a network-timing attacker could still distinguish them and
+      // enumerate registered emails. `getDummyPasswordHash()` hashes a fixed,
+      // meaningless password once (lazily, cached for the process lifetime)
+      // purely so this branch pays a comparable Argon2id cost — its result is
+      // never used for anything but timing.
+      const passwordHash = user?.passwordHash ?? (await getDummyPasswordHash());
+      const passwordValid = await verifyPassword(authKey, passwordHash);
+      if (!user || !passwordValid) {
+        return reply.status(401).send({ error: "Invalid email or password" });
       }
-      const secret = decryptTotpSecret(user.totpSecretEncrypted!);
-      if (!verifyTotpCode(secret, totpCode, getUsedCodesForUser(user.id))) {
-        return reply.status(401).send({ error: "Invalid TOTP code" });
+
+      if (user.totpEnabled) {
+        if (!totpCode) {
+          return reply.status(401).send({ error: "TOTP code required", requiresTotp: true });
+        }
+        const secret = decryptTotpSecret(user.totpSecretEncrypted!);
+        if (!verifyTotpCode(secret, totpCode, getUsedCodesForUser(user.id))) {
+          return reply.status(401).send({ error: "Invalid TOTP code" });
+        }
       }
+
+      const session = await createSession(user.id);
+      reply.setCookie(SESSION_COOKIE_NAME, session.id, {
+        ...sessionCookieAttributes(),
+        signed: true,
+        expires: session.expiresAt,
+      });
+
+      const body: LoginResponse = {
+        userId: user.id,
+        username: user.username,
+        name: user.name,
+        email: user.email,
+        emailVerified: user.emailVerified,
+        publicKey: user.publicKey,
+        passwordSalt: user.passwordSalt,
+        passwordWrappedPrivateKey: user.passwordWrappedPrivateKey,
+        totpEnabled: user.totpEnabled,
+      };
+      return reply.send(body);
     }
-
-    const session = await createSession(user.id);
-    reply.setCookie(SESSION_COOKIE_NAME, session.id, {
-      ...sessionCookieAttributes(),
-      signed: true,
-      expires: session.expiresAt,
-    });
-
-    const body: LoginResponse = {
-      userId: user.id,
-      username: user.username,
-      name: user.name,
-      email: user.email,
-      emailVerified: user.emailVerified,
-      publicKey: user.publicKey,
-      passwordSalt: user.passwordSalt,
-      passwordWrappedPrivateKey: user.passwordWrappedPrivateKey,
-      totpEnabled: user.totpEnabled,
-    };
-    return reply.send(body);
-  });
+  );
 
   server.post("/api/auth/logout", async (request, reply) => {
     const raw = request.cookies[SESSION_COOKIE_NAME];

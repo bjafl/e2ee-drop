@@ -370,6 +370,9 @@ describe("password reset routes", () => {
       payload: { ...completePayload, token: "x", newAuthKey: 12345 },
     });
     expect(response.statusCode).toBe(400);
+    // token: "x" is also an invalid token, which independently 400s — assert the
+    // schema-validation error specifically, so this test can't pass for the wrong reason.
+    expect(response.json().error).toBe("body/newAuthKey must be string");
   });
 
   it("/complete revokes sessions and consumes the token BEFORE mutating credentials (failure injected mid-reset)", async () => {

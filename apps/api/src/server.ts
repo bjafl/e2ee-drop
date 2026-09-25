@@ -61,6 +61,13 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     // routes below — the very scenario the sweep exists to reject would
     // instead silently coerce and proceed. Disabling coercion here makes
     // Ajv reject a mismatched type with 400 instead of rewriting it.
+    //
+    // This is server-wide, not just for `body`: no route defines a
+    // `querystring`/`params` schema today (querystring/param values always
+    // arrive as strings), but if one ever does, an `integer`/`number`/
+    // `boolean` field there would reject every request without coercion —
+    // pass `coerceTypes: true` (or `'array'`, Fastify's own default) on that
+    // specific route's schema rather than reverting this server-wide default.
     ajv: { customOptions: { coerceTypes: false } },
   });
 
