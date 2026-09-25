@@ -10,6 +10,7 @@ vi.mock("../lib/accountDeletion", () => ({
 
 import { cascadeDeleteUserLinks } from "../lib/accountDeletion";
 import { registerAccountRoutes } from "./account";
+import { accountDeletionRateLimiter } from "../lib/rateLimit";
 
 async function buildTestServer(userId: string) {
   const server = Fastify();
@@ -53,6 +54,10 @@ describe("DELETE /api/account", () => {
     await prisma.link.deleteMany();
     await prisma.user.deleteMany();
     vi.mocked(cascadeDeleteUserLinks).mockClear().mockResolvedValue(undefined);
+    // accountDeletionRateLimiter (lib/rateLimit.ts) is a module-level Map
+    // shared across every test in this file — clear it so one test's
+    // attempts can't carry over and spuriously 429 the next.
+    accountDeletionRateLimiter.clear();
 
     const user = await createTestUser("delete-me@example.com", "delete-me");
     userId = user.id;
@@ -93,6 +98,62 @@ describe("DELETE /api/account", () => {
     expect(response.statusCode).toBe(403);
     expect(cascadeDeleteUserLinks).not.toHaveBeenCalled();
     expect(await prisma.user.findUnique({ where: { id: userId } })).not.toBeNull();
+  });
+
+  it("allows legitimate traffic well under the rate limit (regression guard against an overly strict window)", async () => {
+    const server = await buildTestServer(userId);
+
+    // 3 attempts is comfortably under the 5/15min limit (lib/rateLimit.ts).
+    for (let i = 0; i < 3; i++) {
+      const response = await server.inject({
+        method: "DELETE",
+        url: "/api/account",
+        payload: { authKey: "wrong-string" },
+      });
+      expect(response.statusCode).toBe(403);
+    }
+
+    // A final, correct attempt still succeeds.
+    const response = await server.inject({
+      method: "DELETE",
+      url: "/api/account",
+      payload: { authKey: CORRECT_AUTH_KEY },
+    });
+    expect(response.statusCode).toBe(200);
+  });
+
+  it("rate-limits repeated deletion attempts for the same user with 429, without affecting a different user", async () => {
+    const otherUser = await createTestUser("other-victim@example.com", "other-victim");
+
+    const server = await buildTestServer(userId);
+    for (let i = 0; i < 5; i++) {
+      const response = await server.inject({
+        method: "DELETE",
+        url: "/api/account",
+        payload: { authKey: "wrong-string" },
+      });
+      expect(response.statusCode).toBe(403);
+    }
+
+    const blocked = await server.inject({
+      method: "DELETE",
+      url: "/api/account",
+      payload: { authKey: CORRECT_AUTH_KEY },
+    });
+    expect(blocked.statusCode).toBe(429);
+    expect(blocked.json()).toEqual({ error: expect.any(String) });
+    // The rate limit rejected the request before the handler ran at all —
+    // the account must still exist, unaffected by the correct authKey.
+    expect(await prisma.user.findUnique({ where: { id: userId } })).not.toBeNull();
+
+    // A different authenticated user has their own bucket and is unaffected.
+    const otherServer = await buildTestServer(otherUser.id);
+    const otherResponse = await otherServer.inject({
+      method: "DELETE",
+      url: "/api/account",
+      payload: { authKey: "wrong-string" },
+    });
+    expect(otherResponse.statusCode).toBe(403);
   });
 
   it("does not delete the user row if cascadeDeleteUserLinks fails", async () => {

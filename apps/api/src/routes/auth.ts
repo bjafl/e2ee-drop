@@ -1,5 +1,5 @@
 // apps/api/src/routes/auth.ts
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { prisma, Prisma } from "@e2ee-drop/db";
 import { createHmac } from "node:crypto";
 import type {
@@ -16,6 +16,7 @@ import { decryptTotpSecret, verifyTotpCode } from "../lib/totp";
 import { createDefaultLinkForUser } from "../lib/links";
 import { createSession, deleteSession } from "../lib/sessions";
 import { getUsedCodesForUser } from "../lib/totpReplayGuard";
+import { loginRateLimiter, rateLimitExceededBody } from "../lib/rateLimit";
 import { env } from "../env";
 import { SESSION_COOKIE_NAME } from "../plugins/auth";
 
@@ -106,6 +107,16 @@ function getDummyPasswordHash(): Promise<string> {
     dummyPasswordHashPromise = hashPassword("dummy-password-for-timing-equalization-only");
   }
   return dummyPasswordHashPromise;
+}
+
+// Keyed by request.ip — see server.ts's trustProxy comment for why
+// that resolves to the real client IP behind the shipped nginx, not
+// nginx's own address. Rejecting here (before the route handler runs) means
+// a caller who's hit the limit never pays the handler's Argon2id cost.
+async function loginRateLimit(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+  if (!loginRateLimiter.attempt(request.ip)) {
+    reply.status(429).send(rateLimitExceededBody());
+  }
 }
 
 export function registerAuthRoutes(server: FastifyInstance): void {
@@ -209,7 +220,7 @@ export function registerAuthRoutes(server: FastifyInstance): void {
     return reply.send(body);
   });
 
-  server.post<{ Body: LoginRequest }>("/api/auth/login", async (request, reply) => {
+  server.post<{ Body: LoginRequest }>("/api/auth/login", { preHandler: loginRateLimit }, async (request, reply) => {
     const { email, authKey, totpCode } = request.body;
     if (!email || !authKey) return reply.status(400).send({ error: "Missing email or authKey" });
 

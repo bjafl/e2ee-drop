@@ -4,6 +4,18 @@ import { buildServer } from "../server";
 import { prisma } from "@e2ee-drop/db";
 import { encryptTotpSecret, generateTotpSecret } from "../lib/totp";
 import { TOTP, Secret } from "otpauth";
+import { loginRateLimiter } from "../lib/rateLimit";
+
+// The /api/auth/login rate limiter (lib/rateLimit.ts) is a module-level Map
+// shared across every test in this file (and every buildServer() call,
+// since it's imported once per process) — without this, attempts made by
+// one test's login calls would carry over into the next test and could
+// spuriously 429 an otherwise-passing assertion, since light-my-request's
+// default inject() remoteAddress is the same for every call unless a test
+// overrides it.
+beforeEach(() => {
+  loginRateLimiter.clear();
+});
 
 describe("POST /api/auth/register", () => {
   beforeEach(async () => {
@@ -318,6 +330,77 @@ describe("POST /api/auth/login, /api/auth/logout, GET /api/auth/me", () => {
       payload: { email: "carol@example.com", authKey: "correct horse battery staple", totpCode: code },
     });
     expect(replay.statusCode).toBe(401);
+  });
+
+  it("allows legitimate traffic well under the rate limit (regression guard against an overly strict window)", async () => {
+    const server = buildServer();
+    await register(server);
+
+    // 5 attempts is comfortably under the 8/minute limit (lib/rateLimit.ts).
+    for (let i = 0; i < 5; i++) {
+      const response = await server.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        remoteAddress: "10.0.0.1",
+        payload: { email: "carol@example.com", authKey: "correct horse battery staple" },
+      });
+      expect(response.statusCode).toBe(200);
+    }
+  });
+
+  it("rate-limits repeated login attempts from the same IP with 429, without affecting a different IP", async () => {
+    const server = buildServer();
+    await register(server);
+
+    const attempt = (ip: string) =>
+      server.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        remoteAddress: ip,
+        payload: { email: "carol@example.com", authKey: "wrong password" },
+      });
+
+    // Exhaust the 8/minute limit (lib/rateLimit.ts) for one IP.
+    for (let i = 0; i < 8; i++) {
+      const response = await attempt("203.0.113.5");
+      expect(response.statusCode).toBe(401);
+    }
+    const blocked = await attempt("203.0.113.5");
+    expect(blocked.statusCode).toBe(429);
+    expect(blocked.json()).toEqual({ error: expect.any(String) });
+
+    // A different IP has its own bucket and is unaffected.
+    const otherIp = await attempt("198.51.100.9");
+    expect(otherIp.statusCode).toBe(401);
+  });
+
+  it("resets the login rate limit once the window has elapsed", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const server = buildServer();
+      await register(server);
+
+      const attempt = () =>
+        server.inject({
+          method: "POST",
+          url: "/api/auth/login",
+          remoteAddress: "192.0.2.20",
+          payload: { email: "carol@example.com", authKey: "wrong password" },
+        });
+
+      for (let i = 0; i < 8; i++) {
+        const response = await attempt();
+        expect(response.statusCode).toBe(401);
+      }
+      expect((await attempt()).statusCode).toBe(429);
+
+      // Advance past the 1-minute window (lib/rateLimit.ts).
+      vi.setSystemTime(Date.now() + 61_000);
+
+      expect((await attempt()).statusCode).toBe(401);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("logs out and clears the session so /me subsequently 403s", async () => {

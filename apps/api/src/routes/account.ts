@@ -1,13 +1,23 @@
 // apps/api/src/routes/account.ts
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { prisma } from "@e2ee-drop/db";
 import { verifyPassword } from "../lib/passwordAuth";
 import { cascadeDeleteUserLinks } from "../lib/accountDeletion";
+import { accountDeletionRateLimiter, rateLimitExceededBody } from "../lib/rateLimit";
+
+// Keyed by the authenticated user's id, not IP — a shared IP (multiple
+// users behind one NAT/VPN) must not collide. Runs after requireAuth in the
+// preHandler chain below, so request.user is guaranteed non-null here.
+async function accountDeletionRateLimit(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+  if (!accountDeletionRateLimiter.attempt(request.user!.id)) {
+    reply.status(429).send(rateLimitExceededBody());
+  }
+}
 
 export function registerAccountRoutes(server: FastifyInstance): void {
   server.delete<{ Body: { authKey: string } }>(
     "/api/account",
-    { preHandler: server.requireAuth },
+    { preHandler: [server.requireAuth, accountDeletionRateLimit] },
     async (request, reply) => {
       // apps/api/src/plugins/auth.ts decorates the request as
       // `request.user: { id: string } | null`; requireAuth (the preHandler
