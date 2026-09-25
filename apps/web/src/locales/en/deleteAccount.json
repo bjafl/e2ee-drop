@@ -1,0 +1,9 @@
+{
+  "triggerButton": "Delete account",
+  "title": "Delete your account?",
+  "warning": "This permanently deletes your account, all your links, every file waiting in them, and your contacts. This cannot be undone.",
+  "passwordPlaceholder": "Confirm your password",
+  "cancel": "Cancel",
+  "confirmButton": "Permanently delete my account",
+  "errors": { "unknown": "Something went wrong. Please try again." }
+}
