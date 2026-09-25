@@ -59,8 +59,13 @@ async function createLink(server: ReturnType<typeof buildServer>) {
 
 describe("upload routes", () => {
   beforeEach(async () => {
+    // Users too (same order as contacts.test.ts): several tests register
+    // fixed usernames, which would collide on a re-run of this file alone.
+    await prisma.contact.deleteMany();
+    await prisma.session.deleteMany();
     await prisma.drop.deleteMany();
     await prisma.link.deleteMany();
+    await prisma.user.deleteMany();
   });
 
   it("issues an upload url and creates a drop for a fresh link", async () => {
@@ -231,6 +236,41 @@ describe("upload routes", () => {
 
       const drops = await prisma.drop.findMany({ where: { link: { slug } } });
       expect(drops).toHaveLength(1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("accepts every one of many concurrent upload-url requests on the same permanent link", async () => {
+    // Real sockets for the same reason as the one-time race test above: inject()
+    // doesn't reliably overlap handlers, and this needs genuinely concurrent inserts.
+    const server = buildServer();
+    await server.listen({ port: 0, host: "127.0.0.1" });
+    const address = server.server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    try {
+      const link = await prisma.link.create({
+        data: { slug: "permanent-burst-test", mode: "permanent", recipientPublicKey: "cmVjaXBpZW50" },
+      });
+
+      const fire = () =>
+        fetch(`${baseUrl}/api/links/${link.slug}/upload-url`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ senderPublicKey: "c2VuZGVy", metadata: validMetadata }),
+        });
+
+      const CONCURRENT_REQUESTS = 12;
+      const responses = await Promise.all(Array.from({ length: CONCURRENT_REQUESTS }, fire));
+      expect(responses.map((r) => r.status)).toEqual(Array(CONCURRENT_REQUESTS).fill(200));
+
+      const dropIds = await Promise.all(responses.map(async (r) => (await r.json()).dropId as string));
+      expect(new Set(dropIds).size).toBe(CONCURRENT_REQUESTS);
+
+      const drops = await prisma.drop.findMany({ where: { linkId: link.id } });
+      expect(drops).toHaveLength(CONCURRENT_REQUESTS);
     } finally {
       await server.close();
     }

@@ -65,8 +65,13 @@ describe("link routes", () => {
   beforeEach(async () => {
     deleteObjectMock.mockReset();
     deleteObjectMock.mockResolvedValue(undefined);
+    // Users too (same order as contacts.test.ts): several tests register
+    // fixed usernames, which would collide on a re-run of this file alone.
+    await prisma.contact.deleteMany();
+    await prisma.session.deleteMany();
     await prisma.drop.deleteMany();
     await prisma.link.deleteMany();
+    await prisma.user.deleteMany();
   });
 
   it("creates a one-time link and can fetch it by slug", async () => {

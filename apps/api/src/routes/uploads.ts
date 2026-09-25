@@ -80,39 +80,49 @@ export function registerUploadRoutes(server: FastifyInstance): void {
       const dropId = nanoid();
       const s3Key = `${link.id}/${dropId}`;
 
+      const dropData: Prisma.DropUncheckedCreateInput = {
+        id: dropId,
+        linkId: link.id,
+        senderPublicKey,
+        s3Key,
+        nonce: metadata.nonce,
+        fileName: metadata.fileName,
+        fileSize: metadata.fileSize,
+        mimeType: metadata.mimeType,
+        contentMD5: metadata.contentMD5,
+        message: sanitizeMessage(message),
+        status: "uploading",
+      };
+
       let created: Drop;
       try {
-        // Serializable isolation makes Postgres detect the phantom-read/write-skew
-        // pattern here (transaction A's count sees zero rows, transaction B then
-        // inserts a row for the same linkId) and abort one side with P2034, even
-        // though there's no unique constraint on Drop.linkId to enforce this at the
-        // row level. Re-fetch the count *inside* the transaction rather than reusing
-        // `link.drops` from the fetch above, which is a stale snapshot from before
-        // this transaction started.
-        created = await prisma.$transaction(
-          async (tx) => {
-            const existingDropCount = await tx.drop.count({ where: { linkId: link.id } });
-            if (link.mode === "one-time" && existingDropCount > 0) {
-              throw new DropAlreadyExistsError();
-            }
-            return tx.drop.create({
-              data: {
-                id: dropId,
-                linkId: link.id,
-                senderPublicKey,
-                s3Key,
-                nonce: metadata.nonce,
-                fileName: metadata.fileName,
-                fileSize: metadata.fileSize,
-                mimeType: metadata.mimeType,
-                contentMD5: metadata.contentMD5,
-                message: sanitizeMessage(message),
-                status: "uploading",
-              },
-            });
-          },
-          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
-        );
+        if (link.mode === "permanent") {
+          // A permanent link accepts any number of drops, so there is no
+          // one-drop invariant to protect and no reason to pay for Serializable
+          // isolation. Running these inserts in the Serializable transaction
+          // below made concurrent senders abort each other with P2034, which
+          // surfaced as spurious 409s on a link that is supposed to queue them.
+          created = await prisma.drop.create({ data: dropData });
+        } else {
+          // One-time link: at most one drop, ever. Serializable isolation makes
+          // Postgres detect the phantom-read/write-skew pattern here (transaction
+          // A's count sees zero rows, transaction B then inserts a row for the
+          // same linkId) and abort one side with P2034, even though there's no
+          // unique constraint on Drop.linkId to enforce this at the row level.
+          // Re-fetch the count *inside* the transaction rather than reusing
+          // `link.drops` from the fetch above, which is a stale snapshot from
+          // before this transaction started.
+          created = await prisma.$transaction(
+            async (tx) => {
+              const existingDropCount = await tx.drop.count({ where: { linkId: link.id } });
+              if (existingDropCount > 0) {
+                throw new DropAlreadyExistsError();
+              }
+              return tx.drop.create({ data: dropData });
+            },
+            { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+          );
+        }
       } catch (err) {
         if (err instanceof DropAlreadyExistsError) {
           return reply.status(409).send({ error: "Link already has a pending or completed drop" });
@@ -122,8 +132,9 @@ export function registerUploadRoutes(server: FastifyInstance): void {
         }
         throw err;
       }
-      // Emitted only after the Serializable transaction has committed, so
-      // subscribers never hear about a drop that a lost race rolled back.
+      // Emitted only after the drop row has committed (for one-time links, after
+      // the Serializable transaction), so subscribers never hear about a drop
+      // that a lost race rolled back.
       emitDropEvent(link.id, { type: "drop-created", drop: toDropSummary(created) });
 
       const uploadUrl = await getSignedUploadUrl(s3Key, metadata.fileSize + NACL_BOX_OVERHEAD_BYTES);
