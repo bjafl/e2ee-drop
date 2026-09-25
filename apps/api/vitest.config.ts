@@ -8,5 +8,7 @@ export default defineConfig({
     // race another file's in-flight assertions, causing flaky failures.
     // Serialize file execution so DB-touching suites don't collide.
     fileParallelism: false,
+    // Resets every in-memory rate limiter before each test (see the file).
+    setupFiles: ["./src/test/setup.ts"],
   },
 });

@@ -249,4 +249,88 @@ describe("2FA routes", () => {
       vi.useRealTimers();
     }
   });
+  describe("rate limiting (twoFactorRateLimiter: 5 per 15 min, keyed by user id, shared by /enable and /disable)", () => {
+    // Every inject() below uses light-my-request's default remoteAddress, so
+    // both users share one IP — proving the limiter is keyed by user, not IP.
+    async function registerUser(server: ReturnType<typeof buildServer>, username: string) {
+      const response = await server.inject({
+        method: "POST",
+        url: "/api/auth/register",
+        payload: {
+          email: `${username}@example.com`,
+          username,
+          name: username,
+          authKey: "p",
+          passwordSalt: "s",
+          passwordWrappedPrivateKey: "w",
+          recoveryWrappedPrivateKey: "r",
+          publicKey: "k",
+        },
+      });
+      const cookie = response.cookies.find((c: { name: string }) => c.name === "e2ee_drop_session")!;
+      return { userId: response.json().userId as string, cookies: { e2ee_drop_session: cookie.value } };
+    }
+
+    // Enables 2FA directly in the DB so setup doesn't consume limiter attempts.
+    async function enableTotpDirectly(userId: string): Promise<string> {
+      const secret = generateTotpSecret();
+      await prisma.user.update({
+        where: { id: userId },
+        data: { totpEnabled: true, totpSecretEncrypted: encryptTotpSecret(secret) },
+      });
+      return secret;
+    }
+
+    const disable = (server: ReturnType<typeof buildServer>, cookies: Record<string, string>, code: string) =>
+      server.inject({ method: "POST", url: "/api/auth/2fa/disable", cookies, payload: { code } });
+
+    it("429s /2fa/disable after 5 attempts for one user — even with a valid code — without affecting another user on the same IP", async () => {
+      const server = buildServer();
+      const victim = await registerUser(server, "victim");
+      const other = await registerUser(server, "other");
+      const victimSecret = await enableTotpDirectly(victim.userId);
+      const otherSecret = await enableTotpDirectly(other.userId);
+
+      for (let i = 0; i < 5; i++) {
+        expect((await disable(server, victim.cookies, "000000")).statusCode).toBe(401);
+      }
+      // The 6th attempt is rejected before the code is even checked: a
+      // correct code does not get through while the user is throttled.
+      const validCode = new TOTP({ secret: Secret.fromBase32(victimSecret) }).generate();
+      const blocked = await disable(server, victim.cookies, validCode);
+      expect(blocked.statusCode).toBe(429);
+      expect(blocked.json()).toEqual({ error: expect.any(String) });
+      expect((await prisma.user.findUniqueOrThrow({ where: { id: victim.userId } })).totpEnabled).toBe(true);
+
+      // A different user from the same IP has their own bucket.
+      const otherCode = new TOTP({ secret: Secret.fromBase32(otherSecret) }).generate();
+      expect((await disable(server, other.cookies, otherCode)).statusCode).toBe(200);
+    });
+
+    it("429s /2fa/enable after 5 wrong codes, and the bucket is shared with /2fa/disable", async () => {
+      const server = buildServer();
+      const user = await registerUser(server, "enabler");
+      expect((await server.inject({ method: "POST", url: "/api/auth/2fa/setup", cookies: user.cookies })).statusCode).toBe(200);
+
+      const enable = (code: string) =>
+        server.inject({ method: "POST", url: "/api/auth/2fa/enable", cookies: user.cookies, payload: { code } });
+      for (let i = 0; i < 5; i++) {
+        expect((await enable("000000")).statusCode).toBe(401);
+      }
+      expect((await enable("000000")).statusCode).toBe(429);
+      expect((await disable(server, user.cookies, "000000")).statusCode).toBe(429);
+    });
+
+    it("allows legitimate traffic under the limit: a few mistyped codes, then a correct one, still disables 2FA", async () => {
+      const server = buildServer();
+      const user = await registerUser(server, "typo");
+      const secret = await enableTotpDirectly(user.userId);
+
+      for (let i = 0; i < 3; i++) {
+        expect((await disable(server, user.cookies, "000000")).statusCode).toBe(401);
+      }
+      const code = new TOTP({ secret: Secret.fromBase32(secret) }).generate();
+      expect((await disable(server, user.cookies, code)).statusCode).toBe(200);
+    });
+  });
 });

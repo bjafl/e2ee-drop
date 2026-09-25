@@ -107,6 +107,40 @@ describe("password reset routes", () => {
     vi.mocked(isMailerConfigured).mockReturnValue(false);
   });
 
+  it("rate-limits /request per IP (5 per 15 min) identically for registered and unregistered emails", async () => {
+    const server = buildServer();
+    await registerUser(server);
+    vi.mocked(sendPasswordResetEmail).mockClear();
+    vi.mocked(isMailerConfigured).mockReturnValue(true);
+    try {
+      const request = (ip: string, email: string) =>
+        server.inject({ method: "POST", url: "/api/auth/password-reset/request", remoteAddress: ip, payload: { email } });
+
+      // Legitimate traffic up to the limit, mixing a real and an unknown email.
+      for (const email of ["dana@example.com", "nobody@example.com", "dana@example.com", "nobody@example.com", "dana@example.com"]) {
+        expect((await request("203.0.113.30", email)).statusCode).toBe(200);
+      }
+      expect(await prisma.passwordResetToken.count()).toBe(3);
+      expect(vi.mocked(sendPasswordResetEmail)).toHaveBeenCalledTimes(3);
+
+      // Once the IP is throttled, a registered and an unregistered email get
+      // byte-identical 429s, and no token or email is produced — the limit
+      // reveals nothing about which emails have accounts.
+      const blockedRegistered = await request("203.0.113.30", "dana@example.com");
+      const blockedUnknown = await request("203.0.113.30", "nobody@example.com");
+      expect(blockedRegistered.statusCode).toBe(429);
+      expect(blockedUnknown.statusCode).toBe(429);
+      expect(blockedRegistered.body).toBe(blockedUnknown.body);
+      expect(await prisma.passwordResetToken.count()).toBe(3);
+      expect(vi.mocked(sendPasswordResetEmail)).toHaveBeenCalledTimes(3);
+
+      // A different IP is unaffected.
+      expect((await request("198.51.100.30", "dana@example.com")).statusCode).toBe(200);
+    } finally {
+      vi.mocked(isMailerConfigured).mockReturnValue(false);
+    }
+  });
+
   it("creates a token for a registered email and verify-token returns the recovery blob", async () => {
     const server = buildServer();
     const { userId } = await registerUser(server);

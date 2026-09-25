@@ -1,9 +1,20 @@
 // apps/api/src/routes/twoFactor.ts
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { prisma } from "@e2ee-drop/db";
 import type { TotpSetupResponse, TotpEnableRequest } from "@e2ee-drop/shared";
 import { generateTotpSecret, buildOtpauthUrl, verifyTotpCode, encryptTotpSecret, decryptTotpSecret } from "../lib/totp";
 import { getUsedCodesForUser } from "../lib/totpReplayGuard";
+import { twoFactorRateLimiter, rateLimitExceededBody } from "../lib/rateLimit";
+
+// Keyed by the authenticated user's id (same convention as account.ts's
+// accountDeletionRateLimit): runs after requireAuth, so request.user is
+// non-null. Throttles TOTP-code guessing on /2fa/enable and /2fa/disable —
+// see twoFactorRateLimiter in lib/rateLimit.ts for the limit and reasoning.
+async function twoFactorRateLimit(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+  if (!twoFactorRateLimiter.attempt(request.user!.id)) {
+    reply.status(429).send(rateLimitExceededBody());
+  }
+}
 
 // A user who calls /2fa/setup but never follows through with /2fa/enable
 // (abandoned setup, browser closed mid-flow, etc.) would otherwise leave a
@@ -55,7 +66,7 @@ export function registerTwoFactorRoutes(server: FastifyInstance): void {
 
   server.post<{ Body: TotpEnableRequest }>(
     "/api/auth/2fa/enable",
-    { preHandler: server.requireAuth },
+    { preHandler: [server.requireAuth, twoFactorRateLimit] },
     async (request, reply) => {
       const alreadyEnabled = { error: "2FA is already enabled. Disable it first to set up a new authenticator." };
       const user = await prisma.user.findUniqueOrThrow({ where: { id: request.user!.id } });
@@ -93,7 +104,7 @@ export function registerTwoFactorRoutes(server: FastifyInstance): void {
   // rationale and the alternative considered.
   server.post<{ Body: TotpEnableRequest }>(
     "/api/auth/2fa/disable",
-    { preHandler: server.requireAuth },
+    { preHandler: [server.requireAuth, twoFactorRateLimit] },
     async (request, reply) => {
       const user = await prisma.user.findUniqueOrThrow({ where: { id: request.user!.id } });
       if (!user.totpEnabled || !user.totpSecretEncrypted) {

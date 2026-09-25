@@ -1,5 +1,5 @@
 // apps/api/src/routes/passwordReset.ts
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { randomBytes, createHash } from "node:crypto";
 import { prisma } from "@e2ee-drop/db";
 import type {
@@ -15,6 +15,7 @@ import { cascadeDeleteUserLinks } from "../lib/accountDeletion";
 import { createDefaultLinkForUser } from "../lib/links";
 import { hashPassword } from "../lib/passwordAuth";
 import { env } from "../env";
+import { passwordResetRequestRateLimiter, rateLimitExceededBody } from "../lib/rateLimit";
 
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 
@@ -54,9 +55,20 @@ async function claimResetTokenAndRevokeSessions(token: string): Promise<string |
   return record.userId;
 }
 
+// Keyed by the caller's IP and checked before the body is even read, so the
+// limit is consumed identically whether or not the submitted email exists —
+// a 429 reveals nothing about registered accounts (see
+// passwordResetRequestRateLimiter in lib/rateLimit.ts).
+async function passwordResetRequestRateLimit(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+  if (!passwordResetRequestRateLimiter.attempt(request.ip)) {
+    reply.status(429).send(rateLimitExceededBody());
+  }
+}
+
 export function registerPasswordResetRoutes(server: FastifyInstance): void {
   server.post<{ Body: PasswordResetRequestRequest }>(
     "/api/auth/password-reset/request",
+    { preHandler: passwordResetRequestRateLimit },
     async (request, reply) => {
       const { email } = request.body;
       const user = email ? await prisma.user.findUnique({ where: { email } }) : null;

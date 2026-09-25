@@ -242,6 +242,46 @@ describe("POST /api/auth/register", () => {
   });
 });
 
+
+describe("POST /api/auth/register rate limiting (registerRateLimiter: 10 per 15 min, keyed by IP)", () => {
+  beforeEach(async () => {
+    await prisma.session.deleteMany();
+    await prisma.drop.deleteMany();
+    await prisma.link.deleteMany();
+    await prisma.user.deleteMany();
+  });
+
+  const registerFrom = (server: ReturnType<typeof buildServer>, ip: string, username: string) =>
+    server.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      remoteAddress: ip,
+      payload: {
+        email: `${username}@example.com`,
+        username,
+        name: username,
+        authKey: "p",
+        passwordSalt: "c2FsdA==",
+        passwordWrappedPrivateKey: "d3JhcHBlZA==",
+        recoveryWrappedPrivateKey: "cmVjb3Zlcnk=",
+        publicKey: "cHVia2V5",
+      },
+    });
+
+  it("allows up to the limit, then 429s the same IP without creating a user, while a different IP is unaffected", async () => {
+    const server = buildServer();
+    // Every attempt up to the limit is legitimate traffic and must succeed.
+    for (let i = 0; i < 10; i++) {
+      expect((await registerFrom(server, "203.0.113.20", `spam${i}`)).statusCode).toBe(200);
+    }
+    const blocked = await registerFrom(server, "203.0.113.20", "spam10");
+    expect(blocked.statusCode).toBe(429);
+    expect(blocked.json()).toEqual({ error: expect.any(String) });
+    expect(await prisma.user.findUnique({ where: { username: "spam10" } })).toBeNull();
+
+    expect((await registerFrom(server, "198.51.100.20", "legit")).statusCode).toBe(200);
+  });
+});
 describe("POST /api/auth/login, /api/auth/logout, GET /api/auth/me", () => {
   beforeEach(async () => {
     await prisma.session.deleteMany();

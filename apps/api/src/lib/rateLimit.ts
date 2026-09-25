@@ -1,9 +1,8 @@
 // apps/api/src/lib/rateLimit.ts
 //
 // Lightweight in-memory, per-key rate limiting for a small number of
-// especially sensitive endpoints (currently: POST /api/auth/login, keyed by
-// IP, and DELETE /api/account, keyed by user id — see auth.ts and
-// account.ts). This is deliberately NOT a general Fastify rate-limit
+// especially sensitive endpoints (see the limiter instances at the bottom
+// of this file for the full list and each one's key and reasoning). This is deliberately NOT a general Fastify rate-limit
 // plugin applied globally; it's scoped to just the routes that need it.
 //
 // Implemented as a small in-process Map with TTL-style pruning rather than
@@ -46,6 +45,22 @@ export interface RateLimiterOptions {
   maxAttempts: number;
 }
 
+// Every limiter ever created, so tests can reset all of them at once (see
+// clearAllRateLimiters). Only module-level singletons are created in
+// practice, so this never grows beyond the handful declared below.
+const allLimiters: RateLimiter[] = [];
+
+/**
+ * Test-only: clears every limiter's state. Called from the API test setup
+ * file (src/test/setup.ts) before each test, because light-my-request's
+ * inject() uses the same remoteAddress for every call — without this, e.g.
+ * user registrations made by earlier tests in a file would count toward the
+ * registration limit and spuriously 429 a later test.
+ */
+export function clearAllRateLimiters(): void {
+  for (const limiter of allLimiters) limiter.clear();
+}
+
 export function createRateLimiter({ windowMs, maxAttempts }: RateLimiterOptions): RateLimiter {
   const windows = new Map<string, WindowEntry>();
 
@@ -65,7 +80,7 @@ export function createRateLimiter({ windowMs, maxAttempts }: RateLimiterOptions)
     }
   }
 
-  return {
+  const limiter: RateLimiter = {
     attempt(key: string): boolean {
       const now = Date.now();
       pruneExpired(now);
@@ -84,13 +99,14 @@ export function createRateLimiter({ windowMs, maxAttempts }: RateLimiterOptions)
       lastPruneAt = Date.now();
     },
   };
+  allLimiters.push(limiter);
+  return limiter;
 }
 
 // POST /api/auth/login, keyed by request.ip (see server.ts's trustProxy
 // for how that resolves to the real client IP behind the shipped nginx —
 // apps/web/nginx.conf). This is a password-guessing surface even with the
-// existing dummy-hash timing mitigation (see auth.ts), so it's the one
-// unauthenticated route in this pair. 8 attempts per minute is generous
+// existing dummy-hash timing mitigation (see auth.ts). 8 attempts per minute is generous
 // enough to absorb a legitimate user mistyping their password a couple of
 // times (including a TOTP retry) while still blunting automated guessing —
 // deliberately simple (no escalating lockout), per this task's scope.
@@ -105,6 +121,53 @@ export const loginRateLimiter = createRateLimiter({ windowMs: 60_000, maxAttempt
 // entry or two, without giving an attacker holding a stolen session
 // cookie a useful number of guesses at the account password.
 export const accountDeletionRateLimiter = createRateLimiter({ windowMs: 15 * 60_000, maxAttempts: 5 });
+
+// POST /api/auth/2fa/enable and POST /api/auth/2fa/disable (one shared
+// limiter across both routes), keyed by the authenticated user's id — same
+// reasoning as accountDeletionRateLimiter for why not IP. Both routes verify
+// a 6-digit TOTP code, and verifyTotpCode (lib/totp.ts) accepts ±1 time step,
+// so ~3 of the 1,000,000 codes are valid at any moment; unthrottled, an
+// attacker holding a stolen session cookie could brute-force /2fa/disable
+// (stripping the account's second factor) in well under an hour. 5 attempts
+// per 15 minutes caps that at ~480 guesses/day (~0.14% daily success odds),
+// while a legitimate user — who types one code, maybe retries once or twice
+// — never notices. Shared across both routes because they're mutually
+// exclusive states (enable requires 2FA off, disable requires it on), so
+// separate buckets would only add attacker budget, never legitimate headroom.
+export const twoFactorRateLimiter = createRateLimiter({ windowMs: 15 * 60_000, maxAttempts: 5 });
+
+// POST /api/auth/register, keyed by request.ip (unauthenticated — same
+// reasoning as loginRateLimiter). Each attempt runs a real Argon2id hash
+// (~19 MiB memory-hard, lib/passwordAuth.ts) and can create a user row, so
+// unthrottled registration is both a CPU/memory-exhaustion and a
+// row-spam vector. A legitimate user registers once, perhaps retrying a
+// few times after a validation error (e.g. a taken username); 10 per 15
+// minutes leaves room for that (and for a few people behind one NAT) while
+// capping a single IP at 40 hashes/accounts per hour.
+export const registerRateLimiter = createRateLimiter({ windowMs: 15 * 60_000, maxAttempts: 10 });
+
+// POST /api/auth/password-reset/request, keyed by request.ip. Stops one
+// caller from email-bombing a registered address (each accepted request
+// sends a real email when a mailer is configured) or flooding the
+// PasswordResetToken table. Deliberately keyed by the CALLER's IP, never by
+// the submitted email: the limit is consumed identically whether or not the
+// email belongs to an account, so a 429 carries no information about which
+// emails are registered (preserving the route's anti-enumeration design).
+// Requesting a reset more than a couple of times in quick succession is
+// already unusual for a real user, hence stricter than login/register.
+export const passwordResetRequestRateLimiter = createRateLimiter({ windowMs: 15 * 60_000, maxAttempts: 5 });
+
+// POST /api/links/:slug/upload-url, keyed by request.ip (the unauthenticated
+// sender), NOT by the link or its owner: a public inbox is legitimately hit
+// by many different senders, and keying by the target would let one abusive
+// caller lock every other sender out of that link. Each call on an owned
+// link reserves fileSize + overhead against the owner's quota for up to
+// UPLOAD_RESERVATION_WINDOW_MS (lib/quota.ts) whether or not anything is
+// ever uploaded, so this bounds how fast one IP can create such
+// reservations. The web client (UploadPage.tsx) makes one call per file, so
+// 20 per minute absorbs retries after network hiccups and a small office
+// NAT's worth of senders without affecting normal use.
+export const uploadUrlRateLimiter = createRateLimiter({ windowMs: 60_000, maxAttempts: 20 });
 
 // Consistent with this codebase's other rejected-request bodies, e.g.
 // { error: "Authentication required" } (plugins/auth.ts) and

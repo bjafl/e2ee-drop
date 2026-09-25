@@ -16,7 +16,7 @@ import { decryptTotpSecret, verifyTotpCode } from "../lib/totp";
 import { createDefaultLinkForUser } from "../lib/links";
 import { createSession, deleteSession } from "../lib/sessions";
 import { getUsedCodesForUser } from "../lib/totpReplayGuard";
-import { loginRateLimiter, rateLimitExceededBody } from "../lib/rateLimit";
+import { loginRateLimiter, registerRateLimiter, rateLimitExceededBody } from "../lib/rateLimit";
 import { env } from "../env";
 import { SESSION_COOKIE_NAME } from "../plugins/auth";
 
@@ -119,8 +119,16 @@ async function loginRateLimit(request: FastifyRequest, reply: FastifyReply): Pro
   }
 }
 
+// Same shape and keying as loginRateLimit above: rejected before the
+// handler's Argon2id hash and user-row insert ever run.
+async function registerRateLimit(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+  if (!registerRateLimiter.attempt(request.ip)) {
+    reply.status(429).send(rateLimitExceededBody());
+  }
+}
+
 export function registerAuthRoutes(server: FastifyInstance): void {
-  server.post<{ Body: RegisterRequest }>("/api/auth/register", async (request, reply) => {
+  server.post<{ Body: RegisterRequest }>("/api/auth/register", { preHandler: registerRateLimit }, async (request, reply) => {
     if (!env.ALLOW_REGISTRATION) {
       return reply.status(403).send({ error: "Registration is disabled on this instance" });
     }

@@ -606,4 +606,35 @@ describe("upload routes", () => {
 
     expect(response.statusCode).toBe(200);
   });
+
+  describe("rate limiting (uploadUrlRateLimiter: 20 per minute, keyed by sender IP)", () => {
+    // test/setup.ts resets every limiter before each test, so the 12-request
+    // concurrency tests above (and storageQuota.test.ts's) each start with a
+    // fresh bucket and stay well under the limit.
+    it("allows up to the limit, then 429s the same IP without reserving quota, while other senders to the same link are unaffected", async () => {
+      const server = buildServer();
+      const { userId } = await registerAndGetCookie(server, "inbox");
+      const upload = (ip: string) =>
+        server.inject({
+          method: "POST",
+          url: "/api/links/inbox/upload-url",
+          remoteAddress: ip,
+          payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+        });
+
+      // Legitimate traffic up to the limit is never rejected.
+      for (let i = 0; i < 20; i++) {
+        expect((await upload("203.0.113.40")).statusCode).toBe(200);
+      }
+      const blocked = await upload("203.0.113.40");
+      expect(blocked.statusCode).toBe(429);
+      expect(blocked.json()).toEqual({ error: expect.any(String) });
+      // The throttled request created no drop, so reserved no quota.
+      const link = await prisma.link.findFirstOrThrow({ where: { ownerId: userId } });
+      expect(await prisma.drop.count({ where: { linkId: link.id } })).toBe(20);
+
+      // A different sender to the SAME link has their own bucket.
+      expect((await upload("198.51.100.40")).statusCode).toBe(200);
+    });
+  });
 });

@@ -1,5 +1,5 @@
 // apps/api/src/routes/uploads.ts
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { nanoid } from "nanoid";
 import { prisma, Prisma, type Drop } from "@e2ee-drop/db";
 import type { RequestUploadUrlRequest, RequestUploadUrlResponse } from "@e2ee-drop/shared";
@@ -17,6 +17,7 @@ import {
   reservationCutoff,
 } from "../lib/quota";
 import { env } from "../env";
+import { uploadUrlRateLimiter, rateLimitExceededBody } from "../lib/rateLimit";
 
 const MAX_MESSAGE_LENGTH = 500;
 
@@ -46,9 +47,21 @@ function sanitizeMessage(message: string | undefined): string | null {
   return stripped.slice(0, MAX_MESSAGE_LENGTH) || null;
 }
 
+// Keyed by the sender's IP, never the link/owner (see uploadUrlRateLimiter in
+// lib/rateLimit.ts). Applied to every upload-url call rather than only the
+// owned-link (quota-reserving) branch: it runs before the link lookup, so a
+// throttled caller costs no DB work at all, and for anonymous links it is
+// harmless defense-in-depth on top of their single-drop Serializable check.
+async function uploadUrlRateLimit(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+  if (!uploadUrlRateLimiter.attempt(request.ip)) {
+    reply.status(429).send(rateLimitExceededBody());
+  }
+}
+
 export function registerUploadRoutes(server: FastifyInstance): void {
   server.post<{ Params: { slug: string }; Body: RequestUploadUrlRequest }>(
     "/api/links/:slug/upload-url",
+    { preHandler: uploadUrlRateLimit },
     async (request, reply) => {
       const link = await getLinkBySlug(request.params.slug);
       if (!link) return reply.status(404).send({ error: "Link not found" });
