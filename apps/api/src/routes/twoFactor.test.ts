@@ -12,7 +12,7 @@ async function registerAndGetCookie(server: ReturnType<typeof buildServer>) {
       email: "erin@example.com",
       username: "erin",
       name: "Erin",
-      password: "p",
+      authKey: "p",
       passwordSalt: "s",
       passwordWrappedPrivateKey: "w",
       recoveryWrappedPrivateKey: "r",

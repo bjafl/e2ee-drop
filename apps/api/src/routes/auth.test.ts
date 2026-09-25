@@ -22,7 +22,7 @@ describe("POST /api/auth/register", () => {
         email: "alice@example.com",
         username: "alice",
         name: "Alice",
-        password: "correct horse battery staple",
+        authKey: "correct horse battery staple",
         passwordSalt: "c2FsdA==",
         passwordWrappedPrivateKey: "d3JhcHBlZA==",
         recoveryWrappedPrivateKey: "cmVjb3Zlcnk=",
@@ -48,7 +48,7 @@ describe("POST /api/auth/register", () => {
       email: "bob@example.com",
       username: "bob",
       name: "Bob",
-      password: "p",
+      authKey: "p",
       passwordSalt: "s",
       passwordWrappedPrivateKey: "w",
       recoveryWrappedPrivateKey: "r",
@@ -70,7 +70,7 @@ describe("POST /api/auth/register", () => {
       email: "carol@example.com",
       username: "carol",
       name: "Carol",
-      password: "p",
+      authKey: "p",
       passwordSalt: "s",
       passwordWrappedPrivateKey: "w",
       recoveryWrappedPrivateKey: "r",
@@ -104,7 +104,7 @@ describe("POST /api/auth/register", () => {
         email: "x@example.com",
         username: "x",
         name: "X",
-        password: "p",
+        authKey: "p",
         passwordSalt: "s",
         passwordWrappedPrivateKey: "w",
         recoveryWrappedPrivateKey: "r",
@@ -126,7 +126,7 @@ describe("POST /api/auth/register", () => {
         email: "dave@example.com",
         username: "dave/../etc",
         name: "Dave",
-        password: "p",
+        authKey: "p",
         passwordSalt: "s",
         passwordWrappedPrivateKey: "w",
         recoveryWrappedPrivateKey: "r",
@@ -148,7 +148,7 @@ describe("POST /api/auth/register", () => {
         email: "create@example.com",
         username: "create",
         name: "Create",
-        password: "p",
+        authKey: "p",
         passwordSalt: "s",
         passwordWrappedPrivateKey: "w",
         recoveryWrappedPrivateKey: "r",
@@ -176,7 +176,7 @@ describe("POST /api/auth/register", () => {
         email: "ab@example.com",
         username: "ab",
         name: "Ab",
-        password: "p",
+        authKey: "p",
         passwordSalt: "s",
         passwordWrappedPrivateKey: "w",
         recoveryWrappedPrivateKey: "r",
@@ -207,7 +207,7 @@ describe("POST /api/auth/login, /api/auth/logout, GET /api/auth/me", () => {
         email: "carol@example.com",
         username: "carol",
         name: "Carol",
-        password: "correct horse battery staple",
+        authKey: "correct horse battery staple",
         passwordSalt: "c2FsdA==",
         passwordWrappedPrivateKey: "d3JhcHBlZA==",
         recoveryWrappedPrivateKey: "cmVjb3Zlcnk=",
@@ -224,7 +224,7 @@ describe("POST /api/auth/login, /api/auth/logout, GET /api/auth/me", () => {
     const response = await server.inject({
       method: "POST",
       url: "/api/auth/login",
-      payload: { email: "carol@example.com", password: "correct horse battery staple" },
+      payload: { email: "carol@example.com", authKey: "correct horse battery staple" },
     });
 
     expect(response.statusCode).toBe(200);
@@ -240,7 +240,7 @@ describe("POST /api/auth/login, /api/auth/logout, GET /api/auth/me", () => {
     const response = await server.inject({
       method: "POST",
       url: "/api/auth/login",
-      payload: { email: "carol@example.com", password: "wrong password" },
+      payload: { email: "carol@example.com", authKey: "wrong password" },
     });
 
     expect(response.statusCode).toBe(401);
@@ -258,7 +258,7 @@ describe("POST /api/auth/login, /api/auth/logout, GET /api/auth/me", () => {
     const withoutCode = await server.inject({
       method: "POST",
       url: "/api/auth/login",
-      payload: { email: "carol@example.com", password: "correct horse battery staple" },
+      payload: { email: "carol@example.com", authKey: "correct horse battery staple" },
     });
     expect(withoutCode.statusCode).toBe(401);
     expect(withoutCode.json().requiresTotp).toBe(true);
@@ -269,14 +269,14 @@ describe("POST /api/auth/login, /api/auth/logout, GET /api/auth/me", () => {
     const withCode = await server.inject({
       method: "POST",
       url: "/api/auth/login",
-      payload: { email: "carol@example.com", password: "correct horse battery staple", totpCode: code },
+      payload: { email: "carol@example.com", authKey: "correct horse battery staple", totpCode: code },
     });
     expect(withCode.statusCode).toBe(200);
 
     const replay = await server.inject({
       method: "POST",
       url: "/api/auth/login",
-      payload: { email: "carol@example.com", password: "correct horse battery staple", totpCode: code },
+      payload: { email: "carol@example.com", authKey: "correct horse battery staple", totpCode: code },
     });
     expect(replay.statusCode).toBe(401);
   });
@@ -301,5 +301,76 @@ describe("POST /api/auth/login, /api/auth/logout, GET /api/auth/me", () => {
       cookies: { e2ee_drop_session: cookie.value },
     });
     expect(meAfter.statusCode).toBe(403);
+  });
+});
+
+describe("POST /api/auth/prelogin", () => {
+  // A realistic salt, shaped like the web client's generateWrappingSalt()
+  // output: 16 random bytes, base64-encoded (24 chars incl. "==" padding).
+  const REAL_SALT = Buffer.from("0123456789abcdef").toString("base64");
+
+  beforeEach(async () => {
+    await prisma.session.deleteMany();
+    await prisma.drop.deleteMany();
+    await prisma.link.deleteMany();
+    await prisma.user.deleteMany();
+  });
+
+  async function prelogin(server: ReturnType<typeof buildServer>, email: string) {
+    return server.inject({ method: "POST", url: "/api/auth/prelogin", payload: { email } });
+  }
+
+  it("returns the stored passwordSalt for a registered email", async () => {
+    const server = buildServer();
+    await server.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: {
+        email: "gina@example.com",
+        username: "gina",
+        name: "Gina",
+        authKey: "k",
+        passwordSalt: REAL_SALT,
+        passwordWrappedPrivateKey: "w",
+        recoveryWrappedPrivateKey: "r",
+        publicKey: "pk",
+      },
+    });
+
+    const response = await prelogin(server, "gina@example.com");
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ passwordSalt: REAL_SALT });
+  });
+
+  it("returns a same-shaped fake salt for an unregistered email", async () => {
+    const server = buildServer();
+    const response = await prelogin(server, "nobody@example.com");
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(Object.keys(body)).toEqual(["passwordSalt"]);
+    expect(body.passwordSalt).toHaveLength(REAL_SALT.length);
+    expect(body.passwordSalt).toMatch(/^[A-Za-z0-9+/]{22}==$/);
+    expect(Buffer.from(body.passwordSalt, "base64")).toHaveLength(16);
+  });
+
+  it("returns the same fake salt every time for the same unregistered email", async () => {
+    const server = buildServer();
+    const first = (await prelogin(server, "nobody@example.com")).json().passwordSalt;
+    const second = (await prelogin(server, "nobody@example.com")).json().passwordSalt;
+    expect(second).toBe(first);
+  });
+
+  it("returns different fake salts for different unregistered emails", async () => {
+    const server = buildServer();
+    const a = (await prelogin(server, "nobody-a@example.com")).json().passwordSalt;
+    const b = (await prelogin(server, "nobody-b@example.com")).json().passwordSalt;
+    expect(a).not.toBe(b);
+  });
+
+  it("returns 400 when email is missing", async () => {
+    const server = buildServer();
+    const response = await server.inject({ method: "POST", url: "/api/auth/prelogin", payload: {} });
+    expect(response.statusCode).toBe(400);
   });
 });

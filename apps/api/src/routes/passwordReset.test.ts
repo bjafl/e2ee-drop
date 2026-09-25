@@ -18,7 +18,7 @@ async function registerUser(server: ReturnType<typeof buildServer>) {
       email: "dana@example.com",
       username: "dana",
       name: "Dana",
-      password: "original password",
+      authKey: "original password",
       passwordSalt: "b3JpZ2luYWwtc2FsdA==",
       passwordWrappedPrivateKey: "b3JpZ2luYWwtd3JhcHBlZA==",
       recoveryWrappedPrivateKey: "b3JpZ2luYWwtcmVjb3Zlcnk=",
@@ -107,7 +107,7 @@ describe("password reset routes", () => {
       url: "/api/auth/password-reset/complete",
       payload: {
         token,
-        newPassword: "a brand new password",
+        newAuthKey: "a brand new password",
         newPasswordSalt: "bmV3LXNhbHQ=",
         newPasswordWrappedPrivateKey: "bmV3LXdyYXBwZWQ=",
       },
@@ -134,7 +134,7 @@ describe("password reset routes", () => {
       url: "/api/auth/password-reset/complete-fresh",
       payload: {
         token,
-        newPassword: "a fresh new password",
+        newAuthKey: "a fresh new password",
         newPasswordSalt: "bmV3LXNhbHQ=",
         newPasswordWrappedPrivateKey: "bmV3LXdyYXBwZWQ=",
         newRecoveryWrappedPrivateKey: "bmV3LXJlY292ZXJ5",
