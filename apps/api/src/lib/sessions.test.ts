@@ -1,7 +1,7 @@
 // apps/api/src/lib/sessions.test.ts
 import { describe, it, expect, beforeEach } from "vitest";
 import { prisma } from "@e2ee-drop/db";
-import { createSession, getUserIdFromSession, deleteSession, deleteAllUserSessions } from "./sessions";
+import { createSession, getUserIdFromSession, deleteSession, deleteAllUserSessions, generateSessionId } from "./sessions";
 
 async function createTestUser() {
   return prisma.user.create({
@@ -29,6 +29,25 @@ describe("sessions", () => {
     const user = await createTestUser();
     const session = await createSession(user.id);
     expect(await getUserIdFromSession(session.id)).toBe(user.id);
+  });
+
+  it("uses a 256-bit random base64url id, not a cuid, and round-trips create/lookup/delete", async () => {
+    const user = await createTestUser();
+    const session = await createSession(user.id);
+    // 32 bytes -> 43 base64url chars (no padding). A cuid v1 is 25 chars starting with "c".
+    expect(session.id).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(Buffer.from(session.id, "base64url")).toHaveLength(32);
+    const stored = await prisma.session.findUnique({ where: { id: session.id } });
+    expect(stored?.userId).toBe(user.id);
+    expect(await getUserIdFromSession(session.id)).toBe(user.id);
+    await deleteSession(session.id);
+    expect(await prisma.session.findUnique({ where: { id: session.id } })).toBeNull();
+    expect(await getUserIdFromSession(session.id)).toBeNull();
+  });
+
+  it("generates distinct ids", () => {
+    const ids = new Set(Array.from({ length: 1000 }, generateSessionId));
+    expect(ids.size).toBe(1000);
   });
 
   it("returns null for an unknown session id", async () => {

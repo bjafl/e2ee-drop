@@ -1,10 +1,25 @@
 // apps/api/src/lib/sessions.ts
+import { randomBytes } from "node:crypto";
 import { prisma, Prisma } from "@e2ee-drop/db";
 
 const SESSION_LENGTH_MS = 30 * 24 * 60 * 60 * 1000;
 
+// The session id is a bearer credential (it is the session cookie's value),
+// so it is generated here from 256 bits of CSPRNG output rather than left to
+// the Prisma schema's `@default(cuid())`: cuid v1 embeds a timestamp, a
+// counter and a host fingerprint alongside little actual randomness. Same
+// generator as password-reset tokens (routes/passwordReset.ts). base64url has
+// no ".", so the signed cookie's "<value>.<signature>" format stays unambiguous.
+const SESSION_ID_BYTES = 32;
+
+export function generateSessionId(): string {
+  return randomBytes(SESSION_ID_BYTES).toString("base64url");
+}
+
 export async function createSession(userId: string): Promise<{ id: string; expiresAt: Date }> {
-  return prisma.session.create({ data: { userId, expiresAt: new Date(Date.now() + SESSION_LENGTH_MS) } });
+  return prisma.session.create({
+    data: { id: generateSessionId(), userId, expiresAt: new Date(Date.now() + SESSION_LENGTH_MS) },
+  });
 }
 
 export async function getUserIdFromSession(sessionId: string): Promise<string | null> {
