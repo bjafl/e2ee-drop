@@ -1,6 +1,6 @@
 // apps/web/src/components/DownloadPage.tsx
 import { useCallback, useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { decodeBase64 } from "tweetnacl-util";
 import nacl from "tweetnacl";
@@ -328,19 +328,35 @@ function DownloadPageForLink() {
     // A drop that is merely "downloading" (e.g. fetched fresh after a reload,
     // with no in-memory downloadedIds) stays, with a working download button.
     const queued = drops.filter((drop) => drop.status !== "downloaded" && !downloadedIds.has(drop.id));
+    // Plan 2 never persists the owner's decryption key pair across a page
+    // reload: a bare reload restores `user` from GET /api/auth/me but leaves
+    // `user.keyPair` null until the next login() call. Without this check, a
+    // reloaded owner would see their queue exactly as before and every
+    // download would silently fail with the generic "download failed" alert,
+    // giving no indication that logging in again would fix it. File names are
+    // harmless metadata (no crypto needed to display them), so the list still
+    // renders — only the download affordance is replaced with the prompt.
+    const needsRelogin = !userKeyPair;
     return (
       <Card className="mx-auto mt-12 max-w-md">
         <CardHeader>
           <CardTitle>{t("queueTitle")}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          {failureAlert}
+          {needsRelogin && (
+            <Alert>
+              <AlertDescription>
+                {t("reloginRequired")} <Link to="/login">{t("reloginLink")}</Link>
+              </AlertDescription>
+            </Alert>
+          )}
+          {!needsRelogin && failureAlert}
           {queued.length === 0 && <p>{t("queueEmpty")}</p>}
           {queued.map((drop) => (
             <div key={drop.id} className="space-y-2 border-b pb-4 last:border-0">
               <p>{drop.fileName}</p>
               {drop.message && <p className="italic">{drop.message}</p>}
-              {isReadyForDownload(drop) ? (
+              {needsRelogin ? null : isReadyForDownload(drop) ? (
                 <Button onClick={() => handleDownload(drop)} disabled={downloadingIds.has(drop.id)}>
                   {t("downloadButton")}
                 </Button>

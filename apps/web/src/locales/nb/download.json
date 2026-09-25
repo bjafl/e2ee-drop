@@ -6,5 +6,7 @@
   "downloadedMessage": "Filen ble lastet ned og dekryptert.",
   "queueTitle": "Innkommende filer",
   "queueEmpty": "Ingen filer venter.",
+  "reloginRequired": "Dekrypteringsnøkkelen din er ikke tilgjengelig etter at siden ble lastet på nytt.",
+  "reloginLink": "Logg inn på nytt",
   "errors": { "linkNotFound": "Denne lenken er ugyldig eller utløpt.", "downloadFailed": "Nedlasting feilet. Prøv igjen.", "noLocalKey": "Fant ingen privatnøkkel for denne lenken i denne nettleseren." }
 }

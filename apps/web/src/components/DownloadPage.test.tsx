@@ -574,3 +574,72 @@ describe("DownloadPage — owned permanent link queue", () => {
     expect(urls).toContain("/api/links/ada/drops/d2/downloaded");
   });
 });
+
+describe("DownloadPage — owned link, owner's decryption key missing after a reload", () => {
+  // Plan 2 restores `user` from GET /api/auth/me on a bare reload but never
+  // restores `user.keyPair` (it's only populated by login()/register() within
+  // the same page load). This mirrors that exact post-reload shape: logged
+  // in, owns the link (matching publicKey), but keyPair is null.
+  const RELOADED_OWNER_NO_KEYPAIR = { ...LOGGED_IN_USER, keyPair: null };
+
+  function stubOwnedFetch(drops: unknown[]) {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.toString().endsWith("/drops")) {
+        return Promise.resolve({ ok: true, json: async () => ({ drops }) });
+      }
+      if (url.toString() === "/api/links/ada") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            slug: "ada",
+            mode: "permanent",
+            isAnonymous: false,
+            recipientPublicKey: OWNER_PUBLIC_KEY,
+            drop: null,
+            codewords: ["a", "b", "c"],
+          }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  beforeEach(() => {
+    authState.user = RELOADED_OWNER_NO_KEYPAIR;
+  });
+
+  it("shows a re-login prompt instead of a working download button, while still listing queued file names", async () => {
+    stubOwnedFetch([
+      { id: "d1", status: "uploaded", fileName: "first.pdf", message: null },
+      { id: "d2", status: "uploaded", fileName: "second.pdf", message: null },
+    ]);
+
+    renderAt("ada");
+
+    await waitFor(() => {
+      expect(screen.getByText("first.pdf")).toBeInTheDocument();
+    });
+    // Harmless metadata (file names) still renders...
+    expect(screen.getByText("second.pdf")).toBeInTheDocument();
+    // ...but no working download button is offered, and the reason + fix are explicit.
+    expect(screen.queryByText(/download and decrypt/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/decryption key isn't available/i)).toBeInTheDocument();
+    const loginLink = screen.getByRole("link", { name: /log in again/i });
+    expect(loginLink).toHaveAttribute("href", "/login");
+    // The owner's (unavailable) key pair must never be handed to useFileEncryption.
+    expect(setKeyPairMock).not.toHaveBeenCalled();
+  });
+
+  it("does not silently fail — no generic download-failed alert appears since there's nothing to click", async () => {
+    stubOwnedFetch([{ id: "d1", status: "uploaded", fileName: "first.pdf", message: null }]);
+
+    renderAt("ada");
+
+    await waitFor(() => {
+      expect(screen.getByText(/log in again/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/download failed/i)).not.toBeInTheDocument();
+  });
+});
