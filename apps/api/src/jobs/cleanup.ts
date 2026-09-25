@@ -2,6 +2,7 @@
 import { prisma } from "@e2ee-drop/db";
 import { deleteObject } from "../lib/storage";
 import { deleteLinkIfExists } from "../lib/links";
+import { deleteDropReleasingQuota, deleteLinkReleasingQuota } from "../lib/quota";
 import { env } from "../env";
 
 export async function runCleanup(): Promise<{ deletedLinks: number }> {
@@ -15,7 +16,13 @@ export async function runCleanup(): Promise<{ deletedLinks: number }> {
     for (const drop of link.drops) {
       await deleteObject(drop.s3Key);
     }
-    await deleteLinkIfExists(link.id);
+    if (link.ownerId === null) {
+      await deleteLinkIfExists(link.id);
+    } else {
+      // An owned one-time link (POST /api/links/custom, mode "one-time"):
+      // release the owner's quota for its drop if that drop had been charged.
+      await deleteLinkReleasingQuota(link);
+    }
   }
 
   return { deletedLinks: expiredLinks.length };
@@ -34,7 +41,13 @@ export async function sweepExpiredDrops(): Promise<{ deletedDrops: number }> {
     const cutoff = drop.createdAt.getTime() + retentionDays * 24 * 60 * 60 * 1000;
     if (cutoff < now) {
       await deleteObject(drop.s3Key);
-      await prisma.drop.delete({ where: { id: drop.id } });
+      if (drop.link.ownerId === null) {
+        await prisma.drop.delete({ where: { id: drop.id } });
+      } else {
+        // Releases the owner's quota iff the row still exists and had been
+        // charged (i.e. isn't an abandoned "uploading" drop) at delete time.
+        await deleteDropReleasingQuota(drop.id, drop.link.ownerId);
+      }
       deletedDrops++;
     }
   }
