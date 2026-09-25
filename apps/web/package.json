@@ -18,6 +18,7 @@
     "@tailwindcss/vite": "^4.3.3",
     "class-variance-authority": "^0.7.1",
     "cn": "^0.4.0",
+    "hash-wasm": "^4.11.0",
     "i18next": "^25.10.9",
     "i18next-browser-languagedetector": "^8.2.0",
     "lucide-react": "^1.47.0",
