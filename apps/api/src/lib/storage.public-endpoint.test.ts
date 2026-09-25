@@ -21,6 +21,14 @@ describe("storage with a public endpoint behind a path-prefix proxy", () => {
     expect(url.searchParams.get("X-Amz-SignedHeaders")).toBe("host");
   });
 
+  it("does not bake a checksum of an empty body into presigned PUT urls", async () => {
+    const url = new URL(await getSignedUploadUrl("links/abc/drop1"));
+    const checksumParams = [...url.searchParams.keys()].filter((k) =>
+      k.toLowerCase().startsWith("x-amz-checksum") || k.toLowerCase() === "x-amz-sdk-checksum-algorithm"
+    );
+    expect(checksumParams).toEqual([]);
+  });
+
   it("builds presigned GET urls on the public endpoint, not the internal one", async () => {
     const url = new URL(await getSignedDownloadUrl("links/abc/drop1"));
     expect(url.host).toBe("localhost:8080");

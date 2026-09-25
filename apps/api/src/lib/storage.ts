@@ -1,5 +1,6 @@
 import {
   S3Client,
+  type S3ClientConfig,
   PutObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
@@ -10,8 +11,9 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { env } from "../env";
 
-function makeClient(endpoint: string): S3Client {
+function makeClient(endpoint: string, extra: Partial<S3ClientConfig> = {}): S3Client {
   return new S3Client({
+    ...extra,
     region: env.MINIO_REGION,
     endpoint,
     forcePathStyle: true,
@@ -50,7 +52,14 @@ function getPresignClient(): S3Client {
   if (!presignClient) {
     const publicEndpoint = new URL(env.MINIO_PUBLIC_ENDPOINT ?? env.MINIO_ENDPOINT);
     presignPathPrefix = publicEndpoint.pathname.replace(/\/+$/, "");
-    presignClient = makeClient(publicEndpoint.origin);
+    // The SDK's default flexible checksums would compute a CRC32 at presign time —
+    // of an *empty* body, since the real bytes are only uploaded later by the
+    // browser — and bake it into the URL (x-amz-checksum-crc32=AAAAAA==). Backends
+    // that enforce it reject every real upload. Only add checksums when an
+    // operation requires them.
+    presignClient = makeClient(publicEndpoint.origin, {
+      requestChecksumCalculation: "WHEN_REQUIRED",
+    });
   }
   return presignClient;
 }
