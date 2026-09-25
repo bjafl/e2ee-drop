@@ -178,7 +178,10 @@ export const passwordResetTotpRateLimiter = createRateLimiter({ windowMs: 15 * 6
 // link reserves fileSize + overhead against the owner's quota for up to
 // UPLOAD_RESERVATION_WINDOW_MS (lib/quota.ts) whether or not anything is
 // ever uploaded, so this bounds how fast one IP can create such
-// reservations. The web client (UploadPage.tsx) makes one call per file, so
+// reservations. (How MANY bytes one sender may hold in reservations against
+// one owner at a time is capped separately, by assertWithinSenderShare in
+// lib/quota.ts — a request-rate limit alone can't stop a slow, patient
+// reservation flood.) The web client (UploadPage.tsx) makes one call per file, so
 // 20 per minute absorbs retries after network hiccups and a small office
 // NAT's worth of senders without affecting normal use.
 export const uploadUrlRateLimiter = createRateLimiter({ windowMs: 60_000, maxAttempts: 20 });

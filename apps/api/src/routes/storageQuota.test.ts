@@ -15,6 +15,9 @@ vi.mock("../lib/storage", async (importOriginal) => {
 
 import { buildServer } from "../server";
 import { cascadeDeleteUserLinks } from "../lib/accountDeletion";
+import { env } from "../env";
+import { chargedBytes, senderReservationCap } from "../lib/quota";
+import { reservationSenderKey } from "../lib/senderKey";
 
 const OVERHEAD = 16;
 const FILE_SIZE = 100;
@@ -427,6 +430,226 @@ describe("storage quota", () => {
         expect(await prisma.drop.count({ where: { link: { ownerId: owner.id } } })).toBe(0);
         expect(await usedBytes(owner.id)).toBe(0n);
       });
+    });
+  });
+
+  // Fairness on top of the quota: one sender network may hold at most
+  // senderReservationCap(quota) bytes of an owner's in-flight reservations
+  // (lib/quota.ts assertWithinSenderShare). With the default settings that is
+  // 1.25 GiB of 5 GiB, i.e. two 500 MiB reservations.
+  describe("per-sender reservation share", () => {
+    const MiB = 1024 * 1024;
+    const MAX = env.MAX_FILE_SIZE_BYTES;
+    const MAX_CHARGE = chargedBytes(MAX);
+    const DEFAULT_QUOTA = 5 * 1024 * MiB;
+    const CAP = senderReservationCap(BigInt(DEFAULT_QUOTA), MAX);
+    const MAX_FILES_PER_SENDER = Number(CAP / MAX_CHARGE);
+
+    const ATTACKER = "203.0.113.66";
+    const OTHER_SENDER = "198.51.100.7";
+
+    function requestUploadFrom(server: Server, slug: string, ip: string, fileSize: number) {
+      return server.inject({
+        method: "POST",
+        url: `/api/links/${slug}/upload-url`,
+        remoteAddress: ip,
+        payload: { senderPublicKey: "c2VuZGVy", metadata: metadata(fileSize) },
+      });
+    }
+
+    // Over a real socket every request comes from 127.0.0.1, which the
+    // default TRUST_PROXY_HOPS=1 treats as our own nginx, so request.ip is
+    // the rightmost X-Forwarded-For entry — exactly how production sees it.
+    function liveUploadFrom(baseUrl: string, slug: string, ip: string, fileSize: number) {
+      return fetch(`${baseUrl}/api/links/${slug}/upload-url`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-forwarded-for": ip },
+        body: JSON.stringify({ senderPublicKey: "c2VuZGVy", metadata: metadata(fileSize) }),
+      });
+    }
+
+    // Bytes currently held in reservation against `ownerId`, optionally by one sender.
+    async function reservedBytes(ownerId: string, ip?: string): Promise<bigint> {
+      const drops = await prisma.drop.findMany({
+        where: {
+          status: "uploading",
+          link: { ownerId },
+          ...(ip === undefined ? {} : { reservationSenderKey: reservationSenderKey(ip) }),
+        },
+        select: { fileSize: true },
+      });
+      return drops.reduce((sum, drop) => sum + chargedBytes(drop.fileSize), 0n);
+    }
+
+    it("sanity: the default settings give each sender two max-size reservations", () => {
+      expect(CAP).toBe(1280n * BigInt(MiB));
+      expect(MAX_FILES_PER_SENDER).toBe(2);
+    });
+
+    it("stops one IP's concurrent max-size reservation flood at its share, while a different IP can still reserve against the same owner", async () => {
+      await withLiveServer(async (_server, baseUrl) => {
+        const owner = await createOwner(DEFAULT_QUOTA);
+        await createOwnedLink(owner.id, "flooded");
+
+        // The reported attack: ~11 max-size upload-url calls (enough to cover
+        // the whole 5 GiB quota, well under the 20/min rate limit), all at once.
+        const ATTACK_REQUESTS = 11;
+        const attack = await Promise.all(
+          Array.from({ length: ATTACK_REQUESTS }, () => liveUploadFrom(baseUrl, "flooded", ATTACKER, MAX))
+        );
+        const attackStatuses = attack.map((r) => r.status);
+        expect(attackStatuses.filter((s) => s === 200)).toHaveLength(MAX_FILES_PER_SENDER);
+        expect(attackStatuses.filter((s) => s === 429)).toHaveLength(ATTACK_REQUESTS - MAX_FILES_PER_SENDER);
+
+        const rejected = attack.find((r) => r.status === 429)!;
+        expect((await rejected.json()).error).toMatch(/unfinished uploads/i);
+        const retryAfter = Number(rejected.headers.get("retry-after"));
+        expect(retryAfter).toBeGreaterThan(0);
+        expect(retryAfter).toBeLessThanOrEqual(60 * 60);
+
+        // Byte-level: the attacker holds exactly its share, nowhere near the quota.
+        const attackerHeld = await reservedBytes(owner.id, ATTACKER);
+        expect(attackerHeld).toBe(BigInt(MAX_FILES_PER_SENDER) * MAX_CHARGE);
+        expect(attackerHeld).toBeLessThanOrEqual(CAP);
+
+        // Availability for everyone else: a different sender, same owner,
+        // concurrently reserving its own max-size uploads, is unaffected.
+        const other = await Promise.all(
+          Array.from({ length: MAX_FILES_PER_SENDER }, () => liveUploadFrom(baseUrl, "flooded", OTHER_SENDER, MAX))
+        );
+        expect(other.map((r) => r.status)).toEqual(Array(MAX_FILES_PER_SENDER).fill(200));
+
+        // The attacker is still capped afterwards, and the quota was never exceeded.
+        expect((await liveUploadFrom(baseUrl, "flooded", ATTACKER, MAX)).status).toBe(429);
+        expect(await reservedBytes(owner.id)).toBeLessThanOrEqual(BigInt(DEFAULT_QUOTA));
+      });
+    });
+
+    it("keeps every sender within its share and the owner within quota under a concurrent multi-IP storm", async () => {
+      await withLiveServer(async (_server, baseUrl) => {
+        const owner = await createOwner(DEFAULT_QUOTA);
+        await createOwnedLink(owner.id, "storm");
+        const ips = Array.from({ length: 6 }, (_, i) => `192.0.2.${10 + i}`);
+        const PER_IP = 5;
+
+        const results = await Promise.all(
+          ips.flatMap((ip) =>
+            Array.from({ length: PER_IP }, async () => ({ ip, status: (await liveUploadFrom(baseUrl, "storm", ip, MAX)).status }))
+          )
+        );
+
+        // 6 senders x 2 allowed each = 12 > the 10 max-size files the quota
+        // holds, so the quota is the binding limit overall: exactly 10 get in.
+        const fitInQuota = Number(BigInt(DEFAULT_QUOTA) / MAX_CHARGE);
+        expect(fitInQuota).toBe(10);
+        expect(results.filter((r) => r.status === 200)).toHaveLength(fitInQuota);
+        for (const ip of ips) {
+          expect(results.filter((r) => r.ip === ip && r.status === 200).length).toBeLessThanOrEqual(MAX_FILES_PER_SENDER);
+          expect(await reservedBytes(owner.id, ip)).toBeLessThanOrEqual(CAP);
+        }
+        expect(results.every((r) => [200, 413, 429].includes(r.status))).toBe(true);
+        expect(await reservedBytes(owner.id)).toBeLessThanOrEqual(BigInt(DEFAULT_QUOTA));
+      });
+    });
+
+    it("caps by bytes held, not by request count, at the exact boundary", async () => {
+      const server = buildServer();
+      const owner = await createOwner(DEFAULT_QUOTA);
+      await createOwnedLink(owner.id, "byte-cap");
+      const SIZE = 100 * MiB;
+      const fits = Number(CAP / chargedBytes(SIZE));
+      expect(fits).toBe(12);
+
+      for (let i = 0; i < fits; i++) {
+        expect((await requestUploadFrom(server, "byte-cap", ATTACKER, SIZE)).statusCode).toBe(200);
+      }
+      // Remaining headroom is less than one more 100 MiB file, but a file
+      // whose charge exactly fills it still fits; one byte more does not.
+      const headroom = CAP - BigInt(fits) * chargedBytes(SIZE);
+      const exactFit = Number(headroom) - 16;
+      expect((await requestUploadFrom(server, "byte-cap", ATTACKER, exactFit + 1)).statusCode).toBe(429);
+      expect((await requestUploadFrom(server, "byte-cap", ATTACKER, exactFit)).statusCode).toBe(200);
+      expect(await reservedBytes(owner.id, ATTACKER)).toBe(CAP);
+      expect((await requestUploadFrom(server, "byte-cap", ATTACKER, 1)).statusCode).toBe(429);
+      // The owner still has room, and other senders get it.
+      expect((await requestUploadFrom(server, "byte-cap", OTHER_SENDER, 1)).statusCode).toBe(200);
+    });
+
+    it("releases a sender's share when its upload completes, and clears the sender tag", async () => {
+      const server = buildServer();
+      const owner = await createOwner(DEFAULT_QUOTA);
+      await createOwnedLink(owner.id, "release-complete");
+      const dropIds: string[] = [];
+      for (let i = 0; i < MAX_FILES_PER_SENDER; i++) {
+        const response = await requestUploadFrom(server, "release-complete", ATTACKER, MAX);
+        expect(response.statusCode).toBe(200);
+        dropIds.push(response.json().dropId);
+      }
+      expect((await requestUploadFrom(server, "release-complete", ATTACKER, MAX)).statusCode).toBe(429);
+
+      expect((await complete(server, "release-complete", dropIds[0]!)).statusCode).toBe(200);
+      const completed = await prisma.drop.findUniqueOrThrow({ where: { id: dropIds[0]! } });
+      expect(completed.reservationSenderKey).toBeNull();
+
+      expect((await requestUploadFrom(server, "release-complete", ATTACKER, MAX)).statusCode).toBe(200);
+    });
+
+    it("releases a sender's share once its reservations leave the reservation window", async () => {
+      const server = buildServer();
+      const owner = await createOwner(DEFAULT_QUOTA);
+      await createOwnedLink(owner.id, "release-window");
+      const dropIds: string[] = [];
+      for (let i = 0; i < MAX_FILES_PER_SENDER; i++) {
+        dropIds.push((await requestUploadFrom(server, "release-window", ATTACKER, MAX)).json().dropId);
+      }
+      expect((await requestUploadFrom(server, "release-window", ATTACKER, MAX)).statusCode).toBe(429);
+
+      await prisma.drop.updateMany({
+        where: { id: { in: dropIds } },
+        data: { createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000) },
+      });
+
+      expect((await requestUploadFrom(server, "release-window", ATTACKER, MAX)).statusCode).toBe(200);
+    });
+
+    it("does not falsely block a legitimate sender uploading many large files in sequence (including a retry after an abandoned attempt)", async () => {
+      const server = buildServer();
+      const owner = await createOwner(DEFAULT_QUOTA);
+      await createOwnedLink(owner.id, "legit-sequence");
+
+      // One abandoned max-size attempt (e.g. the tab was closed mid-upload)...
+      expect((await requestUploadFrom(server, "legit-sequence", OTHER_SENDER, MAX)).statusCode).toBe(200);
+      // ...then eight 400 MiB files, one after another, as the web client
+      // does (upload-url -> PUT -> complete per file). 3.9 GiB in total from
+      // one sender — far above its 1.25 GiB share — all accepted, because the
+      // share only limits what is in flight at once.
+      const SIZE = 400 * MiB;
+      for (let i = 0; i < 8; i++) {
+        const response = await requestUploadFrom(server, "legit-sequence", OTHER_SENDER, SIZE);
+        expect(response.statusCode).toBe(200);
+        expect((await complete(server, "legit-sequence", response.json().dropId)).statusCode).toBe(200);
+      }
+      expect(await usedBytes(owner.id)).toBe(8n * chargedBytes(SIZE));
+    });
+
+    it("never refuses a single max-size upload just because of the cap, even on a small quota", async () => {
+      const server = buildServer();
+      const owner = await createOwner(Number(MAX_CHARGE));
+      await createOwnedLink(owner.id, "small-quota");
+
+      expect((await requestUploadFrom(server, "small-quota", OTHER_SENDER, MAX)).statusCode).toBe(200);
+    });
+
+    it("still reports a genuinely full inbox as 413, even to a sender already at its share", async () => {
+      const server = buildServer();
+      // Room for exactly two max-size files; each sender's share is one.
+      const owner = await createOwner(Number(2n * MAX_CHARGE));
+      await createOwnedLink(owner.id, "full-inbox");
+
+      expect((await requestUploadFrom(server, "full-inbox", ATTACKER, MAX)).statusCode).toBe(200);
+      expect((await requestUploadFrom(server, "full-inbox", ATTACKER, MAX)).statusCode).toBe(429);
+      expect((await requestUploadFrom(server, "full-inbox", OTHER_SENDER, MAX)).statusCode).toBe(200);
+      expect((await requestUploadFrom(server, "full-inbox", ATTACKER, MAX)).statusCode).toBe(413);
     });
   });
 });

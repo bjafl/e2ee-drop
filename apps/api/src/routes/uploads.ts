@@ -11,11 +11,14 @@ import {
   NACL_BOX_OVERHEAD_BYTES,
   QUOTA_TX_OPTIONS,
   QuotaExceededError,
+  SenderReservationLimitError,
   assertWithinQuota,
+  assertWithinSenderShare,
   chargedBytes,
   lockOwnerQuota,
   reservationCutoff,
 } from "../lib/quota";
+import { reservationSenderKey } from "../lib/senderKey";
 import { env } from "../env";
 import { uploadUrlRateLimiter, rateLimitExceededBody } from "../lib/rateLimit";
 
@@ -122,6 +125,11 @@ export function registerUploadRoutes(server: FastifyInstance): void {
       try {
         const ownerId = link.ownerId;
         if (ownerId !== null) {
+          // Tags this reservation with the sender's network, so no single
+          // sender can hold more than its share of the owner's quota in
+          // reservations (assertWithinSenderShare below; lib/quota.ts).
+          const senderKey = reservationSenderKey(request.ip);
+          dropData.reservationSenderKey = senderKey;
           // Owned link (either mode): the storage quota (spec §8) is checked and
           // the drop inserted under a row lock on the owner, so every upload-url
           // for this owner — across all their links — is serialized here. That
@@ -139,6 +147,9 @@ export function registerUploadRoutes(server: FastifyInstance): void {
               if (existingDropCount > 0) throw new DropAlreadyExistsError();
             }
             await assertWithinQuota(tx, ownerId, owner, metadata.fileSize);
+            // Same lock, same transaction as the insert below: two concurrent
+            // requests from one sender can't both pass against one headroom.
+            await assertWithinSenderShare(tx, ownerId, owner, senderKey, metadata.fileSize, env.MAX_FILE_SIZE_BYTES);
             return tx.drop.create({ data: dropData });
           }, QUOTA_TX_OPTIONS);
         } else if (link.mode === "permanent") {
@@ -181,6 +192,18 @@ export function registerUploadRoutes(server: FastifyInstance): void {
         // omits the owner's usage/remaining bytes: senders are often strangers.
         if (err instanceof QuotaExceededError) {
           return reply.status(413).send({ error: "Recipient's storage quota exceeded" });
+        }
+        // 429, not 413: the recipient still has room; it's this sender (network)
+        // that already holds its share of it in unfinished uploads. Checked
+        // after the quota, so a genuinely full inbox still reads as 413.
+        if (err instanceof SenderReservationLimitError) {
+          return reply
+            .status(429)
+            .header("Retry-After", String(err.retryAfterSeconds))
+            .send({
+              error:
+                "Too many unfinished uploads to this recipient from your network. Finish or wait for them, then try again.",
+            });
         }
         if (err instanceof OwnerGoneError) {
           return reply.status(404).send({ error: "Link not found" });
@@ -242,7 +265,8 @@ export function registerUploadRoutes(server: FastifyInstance): void {
               status: "uploading",
               createdAt: { gt: reservationCutoff() },
             },
-            data: { status: "uploaded" },
+            // No longer a reservation, so the sender tag has no further use.
+            data: { status: "uploaded", reservationSenderKey: null },
           });
           if (count !== 1) {
             // Lost the CAS. Only to choose the error message: a drop that is

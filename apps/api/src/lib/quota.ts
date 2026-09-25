@@ -41,6 +41,9 @@ export const NACL_BOX_OVERHEAD_BYTES = 16;
 // "uploading" (uncharged) forever and is left to the cleanup job. Both sides
 // use reservationCutoff() so "still reserved" and "may still complete" can
 // never disagree.
+//
+// Deliberately not shortened to limit reservation-flooding; see the
+// per-sender share section below for why, and for the control used instead.
 export const UPLOAD_RESERVATION_WINDOW_MS = 60 * 60 * 1000;
 
 // Drops created strictly after this instant still hold a reservation.
@@ -83,17 +86,30 @@ export async function lockOwnerQuota(tx: Prisma.TransactionClient, userId: strin
 // in storageUsedBytes yet (they are charged on /complete), but must count
 // against the quota at upload-url time, or N concurrent senders could each
 // pass the check against the same free space and together overshoot it.
-async function reservedUploadBytes(tx: Prisma.TransactionClient, userId: string): Promise<bigint> {
-  const { _sum, _count } = await tx.drop.aggregate({
+//
+// With `senderKey`, only the reservations made by that sender network (see
+// lib/senderKey.ts) are summed. `oldestCreatedAt` is the creation time of
+// the oldest matching reservation (null when there are none).
+async function reservedUploadBytes(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  senderKey?: string
+): Promise<{ bytes: bigint; oldestCreatedAt: Date | null }> {
+  const { _sum, _count, _min } = await tx.drop.aggregate({
     where: {
       status: "uploading",
       createdAt: { gt: reservationCutoff() },
       link: { ownerId: userId },
+      ...(senderKey === undefined ? {} : { reservationSenderKey: senderKey }),
     },
     _sum: { fileSize: true },
     _count: { _all: true },
+    _min: { createdAt: true },
   });
-  return BigInt(_sum.fileSize ?? 0) + BigInt(_count._all) * BigInt(NACL_BOX_OVERHEAD_BYTES);
+  return {
+    bytes: BigInt(_sum.fileSize ?? 0) + BigInt(_count._all) * BigInt(NACL_BOX_OVERHEAD_BYTES),
+    oldestCreatedAt: _min.createdAt,
+  };
 }
 
 // Throws QuotaExceededError unless the owner can take `fileSize` more bytes.
@@ -105,9 +121,86 @@ export async function assertWithinQuota(
   owner: OwnerQuotaRow,
   fileSize: number
 ): Promise<void> {
-  const reserved = await reservedUploadBytes(tx, userId);
+  const { bytes: reserved } = await reservedUploadBytes(tx, userId);
   if (owner.storageUsedBytes + reserved + chargedBytes(fileSize) > owner.storageQuotaBytes) {
     throw new QuotaExceededError();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Per-sender share of an owner's in-flight reservations.
+//
+// assertWithinQuota keeps the accounting correct (reserved + charged never
+// exceeds the quota) but not fair: reservations cost the sender nothing but
+// an upload-url call, so one sender could request ~11 max-size (500 MiB)
+// uploads, never upload a byte, and hold an owner's entire default 5 GiB
+// quota for the full reservation window, locking every other sender out of
+// that inbox — and simply repeat it every hour. The per-IP rate limit on
+// upload-url (lib/rateLimit.ts, 20/min) doesn't help: the attack needs far
+// fewer requests than that.
+//
+// So, on top of the quota check, no single sender network may hold more than
+// senderReservationCap(quota) bytes of one owner's IN-FLIGHT reservations.
+// Completed uploads don't count: those bytes really were uploaded (the
+// sender paid the bandwidth), and the owner can see and delete them.
+//
+// Why the reservation window itself was NOT shortened instead: presigned-URL
+// expiry only gates when the PUT may START — verified against this project's
+// MinIO (a PUT started before expiry and finishing well after it succeeds;
+// one started after expiry gets 403 "Request has expired"), matching AWS's
+// documented behaviour — so a legitimate 500 MiB upload on a slow uplink can
+// genuinely take most of the hour, and a shorter window would 410 it at
+// /complete after all its bytes were sent. A shorter window also doesn't
+// stop the attack, only makes the attacker repeat it more often.
+// ---------------------------------------------------------------------------
+
+// One sender network may hold at most 1/SENDER_RESERVATION_SHARE_DIVISOR of
+// an owner's quota in reservations (1.25 GiB of the default 5 GiB, i.e. two
+// max-size files plus change), leaving at least 3/4 of the quota reachable by
+// everyone else during an attack.
+export const SENDER_RESERVATION_SHARE_DIVISOR = 4n;
+
+// The cap never drops below one max-size file, so a single upload the
+// server would otherwise accept is never refused by this rule alone (for
+// small quotas the owner's total quota is then the binding limit).
+export function senderReservationCap(quotaBytes: bigint, maxFileSizeBytes: number): bigint {
+  const share = quotaBytes / SENDER_RESERVATION_SHARE_DIVISOR;
+  const oneMaxFile = chargedBytes(maxFileSizeBytes);
+  return share > oneMaxFile ? share : oneMaxFile;
+}
+
+export class SenderReservationLimitError extends Error {
+  // Seconds until this sender's oldest reservation leaves the window (the
+  // earliest moment the answer could change without anything completing).
+  constructor(readonly retryAfterSeconds: number) {
+    super("Sender reservation share exceeded");
+  }
+}
+
+// Throws SenderReservationLimitError if `senderKey`'s current in-flight
+// reservations against this owner plus this upload would exceed the cap.
+//
+// No locking of its own: like assertWithinQuota, the caller must already
+// hold the owner lock (lockOwnerQuota) in the same transaction and insert
+// the drop — with this same senderKey — in that transaction. Every
+// upload-url for one owner is serialized on that lock, and the per-sender
+// sum is read from committed Drop rows after acquiring it, so two concurrent
+// requests from one sender can't both pass against the same headroom. The
+// state lives in the Drop rows themselves (not a separate in-memory
+// counter), so completion, deletion and window expiry all release a
+// sender's share automatically, with nothing to keep in sync.
+export async function assertWithinSenderShare(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  owner: OwnerQuotaRow,
+  senderKey: string,
+  fileSize: number,
+  maxFileSizeBytes: number
+): Promise<void> {
+  const { bytes: held, oldestCreatedAt } = await reservedUploadBytes(tx, userId, senderKey);
+  if (held + chargedBytes(fileSize) > senderReservationCap(owner.storageQuotaBytes, maxFileSizeBytes)) {
+    const freesAt = (oldestCreatedAt?.getTime() ?? Date.now()) + UPLOAD_RESERVATION_WINDOW_MS;
+    throw new SenderReservationLimitError(Math.max(1, Math.ceil((freesAt - Date.now()) / 1000)));
   }
 }
 
