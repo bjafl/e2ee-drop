@@ -14,7 +14,17 @@ import { SESSION_COOKIE_NAME } from "../plugins/auth";
 // are safe there (no `/`, no `..`, no whitespace) and long-lived enough
 // that a bad choice can't be walked back casually. Lowercase-only avoids
 // splitting identity across case variants of the same slug.
-const USERNAME_PATTERN = /^[a-z0-9](?:[a-z0-9_-]{1,30}[a-z0-9])?$/;
+//
+// Length and charset are deliberately checked separately (isValidUsername
+// below), not combined into one regex: a single regex trying to express
+// "3-32 chars, first/last alphanumeric, middle alphanumeric/-/_" via a
+// `(?:...)?` optional group previously had a bug where the optional group
+// could only match 0 or >=2 extra characters, never exactly 1 — so it
+// silently accepted a 1-char username while rejecting a legitimate 2-char
+// one. Splitting length from charset avoids that class of off-by-one bug.
+const USERNAME_MIN_LENGTH = 3;
+const USERNAME_MAX_LENGTH = 32;
+const USERNAME_CHARSET_PATTERN = /^[a-z0-9][a-z0-9_-]*[a-z0-9]$/;
 
 // Route segments already used (or reserved for) by the app's own frontend
 // and API routes — a username matching one of these would either shadow an
@@ -51,7 +61,12 @@ const RESERVED_USERNAMES = new Set([
 ]);
 
 function isValidUsername(username: string): boolean {
-  return USERNAME_PATTERN.test(username) && !RESERVED_USERNAMES.has(username);
+  return (
+    username.length >= USERNAME_MIN_LENGTH &&
+    username.length <= USERNAME_MAX_LENGTH &&
+    USERNAME_CHARSET_PATTERN.test(username) &&
+    !RESERVED_USERNAMES.has(username)
+  );
 }
 
 export function registerAuthRoutes(server: FastifyInstance): void {

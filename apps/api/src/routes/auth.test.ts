@@ -158,4 +158,33 @@ describe("POST /api/auth/register", () => {
     const user = await prisma.user.findFirst({ where: { email: "create@example.com" } });
     expect(user).toBeNull();
   });
+
+  // Regression test: an earlier version combined the length and charset
+  // checks into a single regex with a `(?:...)?` optional group that could
+  // only match 0 or >=2 extra characters after the first, never exactly 1 —
+  // so a 2-char username like "ab" was wrongly rejected (while a bare 1-char
+  // username was wrongly accepted). Length and charset are now checked
+  // independently; this pins the boundary that broke.
+  it("rejects a 2-character username as too short (below the 3-32 char minimum)", async () => {
+    const server = buildServer();
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: {
+        email: "ab@example.com",
+        username: "ab",
+        name: "Ab",
+        password: "p",
+        passwordSalt: "s",
+        passwordWrappedPrivateKey: "w",
+        recoveryWrappedPrivateKey: "r",
+        publicKey: "k",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toMatch(/3-32/);
+    const user = await prisma.user.findFirst({ where: { email: "ab@example.com" } });
+    expect(user).toBeNull();
+  });
 });
