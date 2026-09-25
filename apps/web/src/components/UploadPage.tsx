@@ -27,6 +27,7 @@ export function UploadPage() {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [done, setDone] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
   const { setKeyPair, encryptFile } = useFileEncryption();
 
   useEffect(() => {
@@ -54,7 +55,9 @@ export function UploadPage() {
   }, [slug, t]);
 
   const handleFile = async (file: File) => {
-    if (!link || !slug) return;
+    if (!link || !slug || isUploading) return;
+    setError(null);
+    setIsUploading(true);
     try {
       const encrypted = await encryptFile(file, link.recipientPublicKey);
       const requestBody: RequestUploadUrlRequest = {
@@ -86,10 +89,17 @@ export function UploadPage() {
       setDone(true);
     } catch {
       setError(t("errors.uploadFailed"));
+    } finally {
+      setIsUploading(false);
     }
   };
 
-  if (error) {
+  // A failure while fetching the link itself leaves us with nothing to show
+  // a form for, so that's a genuine dead end. A failure during the upload
+  // chain (handleFile) happens once `link` is already loaded and valid, so
+  // it must NOT replace the form — the sender needs to be able to see the
+  // error and simply pick a file again to retry.
+  if (error && !link) {
     return (
       <Alert variant="destructive" className="mx-auto mt-12 max-w-md">
         <AlertDescription>{error}</AlertDescription>
@@ -105,6 +115,11 @@ export function UploadPage() {
         <CardTitle>{t("title")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        {error && (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
         <div data-testid="recipient-badge">
           {link.isAnonymous ? t("anonymousRecipient") : t("verifiedRecipient")}
         </div>
@@ -112,17 +127,27 @@ export function UploadPage() {
           <p className="text-sm text-muted-foreground">{t("codewordsLabel")}</p>
           <p className="font-mono text-lg">{link.codewords.slice(0, 3).join(" · ")}</p>
         </div>
-        <textarea
-          value={message}
-          maxLength={MAX_MESSAGE_LENGTH}
-          onChange={(e) => setMessage(e.target.value)}
-          placeholder={t("messagePlaceholder")}
-          className="w-full rounded border p-2 text-sm"
-        />
-        <Alert>
+        <div>
+          <textarea
+            value={message}
+            maxLength={MAX_MESSAGE_LENGTH}
+            onChange={(e) => setMessage(e.target.value)}
+            placeholder={t("messagePlaceholder")}
+            className="w-full rounded border p-2 text-sm"
+          />
+          <p className="text-right text-xs text-muted-foreground">
+            {message.length}/{MAX_MESSAGE_LENGTH}
+          </p>
+        </div>
+        <Alert variant="destructive">
           <AlertDescription>{t("messageNotEncryptedWarning")}</AlertDescription>
         </Alert>
-        <input type="file" onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} />
+        <input
+          type="file"
+          data-testid="file-input"
+          disabled={isUploading}
+          onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
+        />
       </CardContent>
     </Card>
   );
