@@ -69,20 +69,30 @@ export async function ensureBucket(): Promise<void> {
   } catch {
     await s3.send(new CreateBucketCommand({ Bucket: env.MINIO_BUCKET }));
   }
-  await s3.send(
-    new PutBucketCorsCommand({
-      Bucket: env.MINIO_BUCKET,
-      CORSConfiguration: {
-        CORSRules: [
-          {
-            AllowedMethods: ["GET", "PUT"],
-            AllowedOrigins: ["*"],
-            AllowedHeaders: ["*"],
-          },
-        ],
-      },
-    })
-  );
+  try {
+    await s3.send(
+      new PutBucketCorsCommand({
+        Bucket: env.MINIO_BUCKET,
+        CORSConfiguration: {
+          CORSRules: [
+            {
+              AllowedMethods: ["GET", "PUT"],
+              AllowedOrigins: ["*"],
+              AllowedHeaders: ["*"],
+            },
+          ],
+        },
+      })
+    );
+  } catch (err) {
+    // MinIO does not implement the per-bucket CORS API (it answers 501
+    // NotImplemented; CORS is configured server-wide via MINIO_API_CORS_ALLOW_ORIGIN,
+    // which defaults to "*"). In the Compose setup presigned URLs are same-origin
+    // via the web container's /s3 proxy anyway, so this is non-fatal there. Other
+    // S3-compatible backends that do support it still get the rule applied.
+    if ((err as { name?: string }).name !== "NotImplemented") throw err;
+    console.warn("[storage] bucket CORS API not implemented by storage backend; skipping");
+  }
 }
 
 export async function getSignedUploadUrl(s3Key: string, expiresIn = 600): Promise<string> {
