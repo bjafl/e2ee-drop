@@ -1,0 +1,149 @@
+// apps/web/src/hooks/useAuth.tsx
+import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react";
+import nacl from "tweetnacl";
+import { encodeBase64 } from "tweetnacl-util";
+import type { LoginResponse, MeResponse, RegisterResponse } from "@e2ee-drop/shared";
+import {
+  generateWrappingSalt,
+  deriveWrappingKey,
+  wrapPrivateKey,
+  unwrapPrivateKey,
+  generateRecoveryCode,
+  deriveRecoveryKey,
+} from "@/lib/keyWrapping";
+
+export interface AuthUser {
+  id: string;
+  username: string;
+  name: string;
+  email: string;
+  emailVerified: boolean;
+  publicKey: string;
+  totpEnabled: boolean;
+  keyPair: nacl.BoxKeyPair | null;
+}
+
+export interface RegisterInput {
+  email: string;
+  username: string;
+  name: string;
+  password: string;
+}
+
+interface AuthContextValue {
+  user: AuthUser | null;
+  login: (email: string, password: string, totpCode?: string) => Promise<{ requiresTotp: boolean }>;
+  logout: () => Promise<void>;
+  register: (input: RegisterInput) => Promise<{ recoveryCode: string }>;
+}
+
+const AuthContext = createContext<AuthContextValue | null>(null);
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<AuthUser | null>(null);
+
+  useEffect(() => {
+    fetch("/api/auth/me")
+      .then((res) => (res.ok ? (res.json() as Promise<MeResponse>) : null))
+      .then((data) => {
+        if (!data) return;
+        setUser({
+          id: data.userId,
+          username: data.username,
+          name: data.name,
+          email: data.email,
+          emailVerified: data.emailVerified,
+          publicKey: data.publicKey,
+          totpEnabled: data.totpEnabled,
+          keyPair: null,
+        });
+      })
+      .catch(() => undefined);
+  }, []);
+
+  const register = useCallback(async (input: RegisterInput): Promise<{ recoveryCode: string }> => {
+    const keyPair = nacl.box.keyPair();
+    const passwordSalt = generateWrappingSalt();
+    const wrappingKey = await deriveWrappingKey(input.password, passwordSalt);
+    const passwordWrappedPrivateKey = wrapPrivateKey(keyPair.secretKey, wrappingKey);
+
+    const recoveryCode = generateRecoveryCode();
+    const recoveryWrappedPrivateKey = wrapPrivateKey(keyPair.secretKey, deriveRecoveryKey(recoveryCode));
+
+    const response = await fetch("/api/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: input.email,
+        username: input.username,
+        name: input.name,
+        password: input.password,
+        passwordSalt,
+        passwordWrappedPrivateKey,
+        recoveryWrappedPrivateKey,
+        publicKey: encodeBase64(keyPair.publicKey),
+      }),
+    });
+    if (!response.ok) throw new Error("Registration failed");
+    const body: RegisterResponse = await response.json();
+
+    setUser({
+      id: body.userId,
+      username: body.username,
+      name: input.name,
+      email: input.email,
+      emailVerified: false,
+      publicKey: encodeBase64(keyPair.publicKey),
+      totpEnabled: false,
+      keyPair,
+    });
+
+    return { recoveryCode };
+  }, []);
+
+  const login = useCallback(
+    async (email: string, password: string, totpCode?: string): Promise<{ requiresTotp: boolean }> => {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password, totpCode }),
+      });
+      const body = await response.json();
+      if (!response.ok) {
+        if (body.requiresTotp) return { requiresTotp: true };
+        throw new Error(body.error ?? "Login failed");
+      }
+      const loginBody = body as LoginResponse;
+      const wrappingKey = await deriveWrappingKey(password, loginBody.passwordSalt);
+      const secretKey = unwrapPrivateKey(loginBody.passwordWrappedPrivateKey, wrappingKey);
+      const keyPair = nacl.box.keyPair.fromSecretKey(secretKey);
+
+      setUser({
+        id: loginBody.userId,
+        username: loginBody.username,
+        name: loginBody.name,
+        email: loginBody.email,
+        emailVerified: loginBody.emailVerified,
+        publicKey: loginBody.publicKey,
+        totpEnabled: loginBody.totpEnabled,
+        keyPair,
+      });
+
+      return { requiresTotp: false };
+    },
+    []
+  );
+
+  const logout = useCallback(async () => {
+    await fetch("/api/auth/logout", { method: "POST" });
+    setUser(null);
+  }, []);
+
+  return <AuthContext.Provider value={{ user, login, logout, register }}>{children}</AuthContext.Provider>;
+}
+
+export function useAuth(): AuthContextValue {
+  const context = useContext(AuthContext);
+  if (!context) throw new Error("useAuth must be used within an AuthProvider");
+  return context;
+}
