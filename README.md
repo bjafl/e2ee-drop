@@ -46,7 +46,7 @@ identical to `POSTGRES_PASSWORD` (see the table below).
 | `APP_SECRET_KEY` | — (required) | `api`, `cleanup` | Encrypts stored TOTP secrets at rest |
 | `ALLOW_REGISTRATION` | `true` | `api`, `cleanup` | Set to `false` to close self-registration on this instance |
 | `DEFAULT_STORAGE_QUOTA_BYTES` | `5368709120` (5 GiB) | `api`, `cleanup` | Default per-account storage quota for new accounts |
-| `APP_URL` | `http://localhost:8080` | `api`, `cleanup` | Public base URL, used when building links in emails |
+| `APP_URL` | `http://localhost:8080` | `api`, `cleanup` | Public base URL: used when building links in emails, and to decide whether the session cookie is sent as `Secure` (only when this starts with `https://`). Must be a valid `http://` or `https://` URL — an invalid value stops the API from starting |
 | `TRUST_PROXY_HOPS` | `1` | `api` | How many reverse-proxy hops in front of the API are trusted when reading the client IP from `X-Forwarded-For` (used to rate-limit login attempts per IP). `1` = the shipped `web` (nginx) container only. Set to `2` if you put your own reverse proxy in front of `web`; see [Fronting with TLS](#fronting-with-tls) |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | — (optional) | `api`, `cleanup` | Outgoing mail for email verification and password-reset requests; those flows are unavailable if unset |
 | `WEB_PORT` | `8080` | `web` | Host port the `web` service (SPA + `/api` + `/s3` proxy) is published on — this is the port you visit in a browser |
@@ -59,8 +59,11 @@ blank in `.env` as an *empty string*, not as unset. The numeric
 variables happen to treat an empty string as "use the default", but
 others do not: a blank `ALLOW_REGISTRATION` silently *closes*
 registration (only the exact string `true` enables it), and a blank
-`MINIO_REGION` or `APP_URL` stays empty instead of falling back to its
-default. Either give each variable a real value in `.env` (as
+`MINIO_REGION` stays empty instead of falling back to its default.
+(`APP_URL` is an exception: a blank value now falls back to its
+default rather than staying empty, and an invalid one stops the API
+from starting — see the table above.) Either give each variable a
+real value in `.env` (as
 `.env.example` does), or remove its line from `docker-compose.yml`'s
 `environment:` block if you want the coded default.
 
@@ -72,6 +75,14 @@ expects you to put your own reverse proxy (Caddy, Traefik, nginx-proxy,
 etc.) in front of it for a real domain and HTTPS, the same way you
 would for Immich or Vaultwarden. Point your proxy at the `web`
 service's published port.
+
+**Set `APP_URL` to your real `https://` origin in `.env` when you do
+this.** The API decides whether to send the session cookie as `Secure`
+by checking whether `APP_URL` starts with `https://` — it has no other
+way to know your proxy terminates TLS in front of it. Leaving `APP_URL`
+as the shipped `http://localhost:8080` default means every session
+cookie is sent without `Secure`, even once your domain is genuinely
+served over HTTPS.
 
 **Set `TRUST_PROXY_HOPS=2` in `.env` when you do this.** The API
 limits login attempts per client IP address, and it works out the
