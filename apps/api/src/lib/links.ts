@@ -63,9 +63,11 @@ export async function transitionDropStatus(
   dropId: string,
   linkId: string,
   fromStatuses: readonly DropStatus[],
-  toStatus: DropStatus
+  toStatus: DropStatus,
+  // Lets /complete run the CAS inside the same transaction as its quota charge.
+  db: Prisma.TransactionClient = prisma
 ): Promise<boolean> {
-  const { count } = await prisma.drop.updateMany({
+  const { count } = await db.drop.updateMany({
     where: { id: dropId, linkId, status: { in: [...fromStatuses] } },
     data: { status: toStatus },
   });
