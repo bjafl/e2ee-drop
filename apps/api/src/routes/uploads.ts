@@ -6,6 +6,7 @@ import type { RequestUploadUrlRequest, RequestUploadUrlResponse } from "@e2ee-dr
 import { getLinkBySlug, isLinkExpired, toDropSummary, transitionDropStatus } from "../lib/links";
 import { getSignedUploadUrl } from "../lib/storage";
 import { emitDropEvent } from "../lib/dropEvents";
+import { hasAcceptedContact } from "../lib/contacts";
 import { env } from "../env";
 
 const MAX_MESSAGE_LENGTH = 500;
@@ -43,6 +44,15 @@ export function registerUploadRoutes(server: FastifyInstance): void {
       // Not deleted here — see the GET /api/links/:slug handler: only the cleanup
       // job deletes expired links, so storage objects are never orphaned.
       if (isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+      // Checked before any DB writes or the Serializable transaction below: a
+      // disallowed sender should be rejected as cheaply as possible, and must
+      // never cause a drop row (or queue-limit bookkeeping) to be created.
+      if (link.visibility === "contacts-only") {
+        const allowed = request.user ? await hasAcceptedContact(link.ownerId!, request.user.id) : false;
+        if (!allowed) {
+          return reply.status(403).send({ error: "This link only accepts uploads from approved contacts" });
+        }
+      }
       // Fast path only: avoids opening a transaction for the common case where we
       // already know from this same fetch that a drop exists. Not relied on for
       // correctness — the transaction below re-checks authoritatively.

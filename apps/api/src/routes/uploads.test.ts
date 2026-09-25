@@ -13,6 +13,33 @@ vi.mock("../lib/storage", async (importOriginal) => {
 import { buildServer } from "../server";
 import { subscribeToLink, type DropEvent } from "../lib/dropEvents";
 
+// The brief this suite was drafted from used a placeholder `x-test-user-id`
+// header to fake `request.user` in .inject() calls; that header doesn't exist
+// in this codebase's real auth plugin (apps/api/src/plugins/auth.ts) —
+// request.user is populated only from a signed SESSION_COOKIE_NAME cookie
+// (see apps/api/src/lib/sessions.ts). Per contacts.test.ts's and
+// links.test.ts's established pattern, each authenticated test here registers
+// a REAL user via POST /api/auth/register and reuses that user's real session
+// cookie.
+async function registerAndGetCookie(server: ReturnType<typeof buildServer>, username: string) {
+  const response = await server.inject({
+    method: "POST",
+    url: "/api/auth/register",
+    payload: {
+      email: `${username}@example.com`,
+      username,
+      name: username,
+      authKey: "p",
+      passwordSalt: "s",
+      passwordWrappedPrivateKey: "w",
+      recoveryWrappedPrivateKey: "r",
+      publicKey: `${username}-pubkey`,
+    },
+  });
+  const cookie = response.cookies.find((c: { name: string }) => c.name === "e2ee_drop_session")!;
+  return { userId: response.json().userId as string, cookies: { e2ee_drop_session: cookie.value } };
+}
+
 const validMetadata = {
   fileName: "report.pdf",
   fileSize: 1024,
@@ -394,5 +421,107 @@ describe("upload routes", () => {
       ["drop-updated", dropId, "uploaded"],
     ]);
     expect(events[0].drop.fileName).toBe(validMetadata.fileName);
+  });
+
+  it("rejects an anonymous sender on a contacts-only link", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "coowner");
+    const link = await prisma.link.create({
+      data: {
+        ownerId: owner.userId, slug: "contacts-only-test", mode: "permanent",
+        visibility: "contacts-only", recipientPublicKey: "coowner-pubkey",
+      },
+    });
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/upload-url`,
+      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+    });
+
+    expect(response.statusCode).toBe(403);
+  });
+
+  it("rejects an authenticated but non-contact sender on a contacts-only link", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "coowner2");
+    const stranger = await registerAndGetCookie(server, "stranger");
+    const link = await prisma.link.create({
+      data: {
+        ownerId: owner.userId, slug: "contacts-only-test2", mode: "permanent",
+        visibility: "contacts-only", recipientPublicKey: "coowner2-pubkey",
+      },
+    });
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/upload-url`,
+      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+      cookies: stranger.cookies,
+    });
+
+    expect(response.statusCode).toBe(403);
+  });
+
+  it("rejects a sender whose contact request is still pending (not yet accepted)", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "coowner2b");
+    const pendingSender = await registerAndGetCookie(server, "pendingsender");
+    await prisma.contact.create({
+      data: { userId: pendingSender.userId, contactUserId: owner.userId, status: "pending" },
+    });
+    const link = await prisma.link.create({
+      data: {
+        ownerId: owner.userId, slug: "contacts-only-pending-test", mode: "permanent",
+        visibility: "contacts-only", recipientPublicKey: "coowner2b-pubkey",
+      },
+    });
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/upload-url`,
+      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+      cookies: pendingSender.cookies,
+    });
+
+    expect(response.statusCode).toBe(403);
+  });
+
+  it("allows an accepted contact to upload to a contacts-only link", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "coowner3");
+    const friend = await registerAndGetCookie(server, "friend");
+    await prisma.contact.create({ data: { userId: owner.userId, contactUserId: friend.userId, status: "accepted" } });
+    const link = await prisma.link.create({
+      data: {
+        ownerId: owner.userId, slug: "contacts-only-test3", mode: "permanent",
+        visibility: "contacts-only", recipientPublicKey: "coowner3-pubkey",
+      },
+    });
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/upload-url`,
+      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+      cookies: friend.cookies,
+    });
+
+    expect(response.statusCode).toBe(200);
+  });
+
+  it("still allows an anonymous sender on a public permanent link", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "coowner4");
+    const link = await prisma.link.create({
+      data: { ownerId: owner.userId, slug: "public-permanent-test", mode: "permanent", recipientPublicKey: "coowner4-pubkey" },
+    });
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/upload-url`,
+      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+    });
+
+    expect(response.statusCode).toBe(200);
   });
 });
