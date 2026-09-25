@@ -36,4 +36,12 @@ describe("mailer", () => {
       expect.objectContaining({ to: "someone@example.com", from: "e2ee-drop <no-reply@example.com>" })
     );
   });
+
+  it("throws when sendPasswordResetEmail is called while unconfigured", async () => {
+    vi.doMock("../env", () => ({ env: { SMTP_HOST: undefined } }));
+    const { sendPasswordResetEmail } = await import("./mailer");
+    await expect(sendPasswordResetEmail("x@example.com", "https://example.com/reset")).rejects.toThrow(
+      "SMTP is not configured"
+    );
+  });
 });
