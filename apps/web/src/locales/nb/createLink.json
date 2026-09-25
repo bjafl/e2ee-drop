@@ -6,5 +6,7 @@
   "codewordsLabel": "Verifiseringsord — les disse høyt for å bekrefte at avsenderen har riktig lenke",
   "showMoreWords": "Vis flere ord",
   "showFewerWords": "Vis færre ord",
+  "downloadPageHint": "Bruk denne nettleseren: filen kan bare dekrypteres her. Åpne nedlastingssiden din for å vente på at avsenderen laster opp.",
+  "goToDownloadPage": "Gå til nedlastingssiden din",
   "errors": { "createFailed": "Kunne ikke opprette lenke. Prøv igjen." }
 }

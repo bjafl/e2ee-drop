@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import nacl from "tweetnacl";
 import { encodeBase64 } from "tweetnacl-util";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router-dom";
 import type { CreateLinkResponse } from "@e2ee-drop/shared";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -86,6 +87,12 @@ export function CreateLinkPage() {
                   {showAllCodewords ? t("showFewerWords") : t("showMoreWords")}
                 </button>
               )}
+            </div>
+            <div className="space-y-2 border-t pt-4">
+              <p className="text-sm text-muted-foreground">{t("downloadPageHint")}</p>
+              <Button asChild variant="secondary">
+                <Link to={`/download/${slug}`}>{t("goToDownloadPage")}</Link>
+              </Button>
             </div>
           </>
         )}
