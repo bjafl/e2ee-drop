@@ -39,6 +39,14 @@ function getPendingSecret(userId: string): string | undefined {
 export function registerTwoFactorRoutes(server: FastifyInstance): void {
   server.post("/api/auth/2fa/setup", { preHandler: server.requireAuth }, async (request, reply) => {
     const user = await prisma.user.findUniqueOrThrow({ where: { id: request.user!.id } });
+    // A session cookie alone must not be enough to replace an existing second
+    // factor (a stolen cookie + the attacker's own authenticator would
+    // otherwise take over 2FA). Rotating requires /2fa/disable first, which
+    // demands a valid code from the CURRENT secret — the same proof-of-
+    // possession rule /2fa/disable already applies.
+    if (user.totpEnabled) {
+      return reply.status(409).send({ error: "2FA is already enabled. Disable it first to set up a new authenticator." });
+    }
     const secret = generateTotpSecret();
     pendingSetupSecrets.set(user.id, { secret, createdAt: Date.now() });
     const body: TotpSetupResponse = { secretBase32: secret, otpauthUrl: buildOtpauthUrl(secret, user.email) };
@@ -49,18 +57,26 @@ export function registerTwoFactorRoutes(server: FastifyInstance): void {
     "/api/auth/2fa/enable",
     { preHandler: server.requireAuth },
     async (request, reply) => {
-      const pendingSecret = getPendingSecret(request.user!.id);
+      const alreadyEnabled = { error: "2FA is already enabled. Disable it first to set up a new authenticator." };
+      const user = await prisma.user.findUniqueOrThrow({ where: { id: request.user!.id } });
+      if (user.totpEnabled) return reply.status(409).send(alreadyEnabled);
+      const pendingSecret = getPendingSecret(user.id);
       if (!pendingSecret) {
         return reply.status(400).send({ error: "No pending 2FA setup. Call /api/auth/2fa/setup first." });
       }
-      if (!verifyTotpCode(pendingSecret, request.body?.code, getUsedCodesForUser(request.user!.id))) {
+      if (!verifyTotpCode(pendingSecret, request.body?.code, getUsedCodesForUser(user.id))) {
         return reply.status(401).send({ error: "Invalid code" });
       }
-      await prisma.user.update({
-        where: { id: request.user!.id },
+      // Compare-and-swap on totpEnabled (same updateMany + count pattern as
+      // transitionDropStatus in lib/links.ts): if a concurrent /enable won the
+      // race after the check above, this writes nothing instead of
+      // overwriting the secret that request just enabled.
+      const { count } = await prisma.user.updateMany({
+        where: { id: user.id, totpEnabled: false },
         data: { totpEnabled: true, totpSecretEncrypted: encryptTotpSecret(pendingSecret) },
       });
-      pendingSetupSecrets.delete(request.user!.id);
+      pendingSetupSecrets.delete(user.id);
+      if (count !== 1) return reply.status(409).send(alreadyEnabled);
       return reply.send({ enabled: true });
     }
   );
