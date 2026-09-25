@@ -4,5 +4,7 @@
   "waitingForFile": "Venter på at filen skal lastes opp…",
   "downloadButton": "Last ned og dekrypter",
   "downloadedMessage": "Filen ble lastet ned og dekryptert.",
+  "queueTitle": "Innkommende filer",
+  "queueEmpty": "Ingen filer venter.",
   "errors": { "linkNotFound": "Denne lenken er ugyldig eller utløpt.", "downloadFailed": "Nedlasting feilet. Prøv igjen.", "noLocalKey": "Fant ingen privatnøkkel for denne lenken i denne nettleseren." }
 }
