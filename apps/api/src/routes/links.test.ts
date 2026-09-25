@@ -11,6 +11,36 @@ vi.mock("../lib/storage", async (importOriginal) => ({
 
 import { buildServer } from "../server";
 
+// The brief this suite was drafted from used a placeholder `x-test-user-id`
+// header to fake `request.user` in .inject() calls; that header doesn't exist
+// in this codebase's real auth plugin (apps/api/src/plugins/auth.ts) —
+// request.user is populated only from a signed SESSION_COOKIE_NAME cookie
+// (see apps/api/src/lib/sessions.ts). Per contacts.test.ts's established
+// pattern, each authenticated test here registers a REAL user via
+// POST /api/auth/register and reuses that user's real session cookie.
+async function registerAndGetCookie(server: ReturnType<typeof buildServer>, username: string) {
+  const response = await server.inject({
+    method: "POST",
+    url: "/api/auth/register",
+    payload: {
+      email: `${username}@example.com`,
+      username,
+      name: username,
+      authKey: "p",
+      passwordSalt: "s",
+      passwordWrappedPrivateKey: "w",
+      recoveryWrappedPrivateKey: "r",
+      publicKey: `${username}-pubkey`,
+    },
+  });
+  const cookie = response.cookies.find((c: { name: string }) => c.name === "e2ee_drop_session")!;
+  return {
+    userId: response.json().userId as string,
+    publicKey: `${username}-pubkey`,
+    cookies: { e2ee_drop_session: cookie.value },
+  };
+}
+
 async function createLinkWithDrop(slug: string, expiresAt: Date) {
   const link = await prisma.link.create({
     data: { slug, mode: "one-time", recipientPublicKey: "x", expiresAt },
@@ -217,5 +247,55 @@ describe("link routes", () => {
     expect(anonBody.isAnonymous).toBe(true);
     expect(anonBody.recipientName).toBeUndefined();
     expect(anonBody.recipientEmailVerified).toBeUndefined();
+  });
+
+  it("creates a custom named link for the authenticated owner", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "customownera");
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/links/custom",
+      payload: { slug: "team-drop", mode: "permanent", visibility: "public" },
+      cookies: owner.cookies,
+    });
+
+    expect(response.statusCode).toBe(200);
+    const { slug } = response.json();
+    expect(slug).toBe("team-drop");
+
+    const link = await prisma.link.findFirst({ where: { ownerId: owner.userId, slug: "team-drop" } });
+    expect(link?.mode).toBe("permanent");
+    expect(link?.recipientPublicKey).toBe(owner.publicKey);
+  });
+
+  it("rejects a duplicate slug, whether from the same owner or a different one (Link.slug is globally unique)", async () => {
+    const server = buildServer();
+    const ownerA = await registerAndGetCookie(server, "customownerb");
+    const ownerB = await registerAndGetCookie(server, "customownerc");
+
+    const first = await server.inject({
+      method: "POST",
+      url: "/api/links/custom",
+      payload: { slug: "dupe", mode: "permanent" },
+      cookies: ownerA.cookies,
+    });
+    expect(first.statusCode).toBe(200);
+
+    const secondSameOwner = await server.inject({
+      method: "POST",
+      url: "/api/links/custom",
+      payload: { slug: "dupe", mode: "one-time" },
+      cookies: ownerA.cookies,
+    });
+    expect(secondSameOwner.statusCode).toBe(409);
+
+    const thirdDifferentOwner = await server.inject({
+      method: "POST",
+      url: "/api/links/custom",
+      payload: { slug: "dupe", mode: "permanent" },
+      cookies: ownerB.cookies,
+    });
+    expect(thirdDifferentOwner.statusCode).toBe(409);
   });
 });

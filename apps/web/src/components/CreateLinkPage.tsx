@@ -41,6 +41,11 @@ export function CreateLinkPage() {
         if (!response.ok) throw new Error("create failed");
         const body = (await response.json()) as CreateLinkResponse;
         if (cancelled) return;
+        // POST /api/links (one-time, anonymous links only) always sets expiresAt
+        // server-side — CreateLinkResponse.expiresAt is only optional because the
+        // same response type is reused by POST /api/links/custom, whose permanent
+        // links have none. Treat a missing one here as a malformed response.
+        if (body.expiresAt === undefined) throw new Error("create failed: missing expiresAt");
         // Keep the private key exactly as long as the server keeps the link
         // (operator-configurable LINK_EXPIRY_HOURS) — forgetting it earlier would
         // make a later drop on a still-valid link undecryptable.

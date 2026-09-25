@@ -12,7 +12,17 @@ export interface CreateLinkResponse {
   linkId: string;
   slug: string;
   codewords: string[]; // returned immediately so the creator doesn't need a second round-trip to see their phrase
-  expiresAt: number; // epoch ms — the link's real server-side expiry (LINK_EXPIRY_HOURS); the creator keeps its private key until then
+  // epoch ms — the link's real server-side expiry (LINK_EXPIRY_HOURS); the creator keeps its private key
+  // until then. Optional (not just for one-time links, e.g. POST /api/links always sets it): a permanent
+  // link (Link.expiresAt is null in the DB — see schema.prisma) has no expiry to report.
+  expiresAt?: number;
+}
+
+export interface CreateCustomLinkRequest {
+  slug: string;
+  mode: LinkMode;
+  visibility?: LinkVisibility;
+  retentionDays?: number;
 }
 
 export interface DropSummary {
