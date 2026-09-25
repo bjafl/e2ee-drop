@@ -7,6 +7,8 @@ import { RegisterPage } from "@/components/RegisterPage";
 import { LoginPage } from "@/components/LoginPage";
 import { RequestPasswordResetPage } from "@/components/RequestPasswordResetPage";
 import { ConfirmPasswordResetPage } from "@/components/ConfirmPasswordResetPage";
+import { ContactsPage } from "@/components/ContactsPage";
+import { NewLinkPage } from "@/components/NewLinkPage";
 import { AuthProvider } from "@/hooks/useAuth";
 
 export default function App() {
@@ -17,6 +19,8 @@ export default function App() {
         <Route path="/create" element={<CreateLinkPage />} />
         <Route path="/send/:slug" element={<UploadPage />} />
         <Route path="/download/:slug" element={<DownloadPage />} />
+        <Route path="/contacts" element={<ContactsPage />} />
+        <Route path="/links/new" element={<NewLinkPage />} />
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/reset-password" element={<RequestPasswordResetPage />} />
