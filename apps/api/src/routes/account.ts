@@ -1,0 +1,53 @@
+// apps/api/src/routes/account.ts
+import type { FastifyInstance } from "fastify";
+import { prisma } from "@e2ee-drop/db";
+import { verifyPassword } from "../lib/passwordAuth";
+import { cascadeDeleteUserLinks } from "../lib/accountDeletion";
+
+export function registerAccountRoutes(server: FastifyInstance): void {
+  server.delete<{ Body: { authKey: string } }>(
+    "/api/account",
+    { preHandler: server.requireAuth },
+    async (request, reply) => {
+      // apps/api/src/plugins/auth.ts decorates the request as
+      // `request.user: { id: string } | null`; requireAuth (the preHandler
+      // above) already 403s when it's null, so it's non-null here.
+      const userId = request.user!.id;
+
+      // authKey (not the raw password) — see /api/auth/login for the
+      // established pattern. Sending a raw password to any server route,
+      // even an already-authenticated one, would reopen the zero-knowledge
+      // gap Plan 2's finding C1 closed.
+      const { authKey } = request.body;
+      if (!authKey) {
+        return reply.status(400).send({ error: "Password confirmation is required" });
+      }
+
+      const user = await prisma.user.findUnique({ where: { id: userId } });
+      if (!user) return reply.status(404).send({ error: "Account not found" });
+
+      const passwordValid = await verifyPassword(authKey, user.passwordHash);
+      if (!passwordValid) {
+        return reply.status(403).send({ error: "Incorrect password" });
+      }
+
+      // Delete links/drops/MinIO objects FIRST. If this throws (e.g. MinIO is
+      // temporarily unreachable), we abort before touching Session/Contact/User
+      // rows, so a storage outage never leaves the account half-deleted — the
+      // whole operation can simply be retried once storage is back. This
+      // ordering also matters because Link.owner has onDelete: Cascade at the
+      // DB level: deleting the User row first would let Postgres auto-cascade
+      // every Link/Drop row before the app ever saw which MinIO objects
+      // needed cleanup, permanently orphaning storage.
+      await cascadeDeleteUserLinks(userId);
+
+      await prisma.$transaction([
+        prisma.session.deleteMany({ where: { userId } }),
+        prisma.contact.deleteMany({ where: { OR: [{ userId }, { contactUserId: userId }] } }),
+        prisma.user.delete({ where: { id: userId } }),
+      ]);
+
+      return reply.send({ deleted: true });
+    }
+  );
+}

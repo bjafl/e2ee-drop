@@ -10,6 +10,7 @@ import { registerDownloadRoutes } from "./routes/downloads";
 import { registerTwoFactorRoutes } from "./routes/twoFactor";
 import { registerContactRoutes } from "./routes/contacts";
 import { registerEventRoutes } from "./routes/events";
+import { registerAccountRoutes } from "./routes/account";
 import { env } from "./env";
 
 export function buildServer(): FastifyInstance {
@@ -39,6 +40,7 @@ export function buildServer(): FastifyInstance {
   registerTwoFactorRoutes(server);
   registerContactRoutes(server);
   registerEventRoutes(server);
+  registerAccountRoutes(server);
 
   return server;
 }
