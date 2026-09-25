@@ -44,7 +44,13 @@ export function UploadPage() {
       })
       .then((data) => {
         if (cancelled) return;
-        setLink(data);
+        setLink({
+          recipientPublicKey: data.recipientPublicKey,
+          isAnonymous: data.isAnonymous,
+          recipientName: data.recipientName,
+          recipientEmailVerified: data.recipientEmailVerified,
+          codewords: data.codewords,
+        });
       })
       .catch(() => {
         if (!cancelled) setError(t("errors.linkNotFound"));
@@ -121,7 +127,15 @@ export function UploadPage() {
           </Alert>
         )}
         <div data-testid="recipient-badge">
-          {link.isAnonymous ? t("anonymousRecipient") : t("verifiedRecipient")}
+          {link.isAnonymous ? (
+            t("anonymousRecipient")
+          ) : (
+            <>
+              {t("recipientNameLabel", { name: link.recipientName })}
+              {" — "}
+              {link.recipientEmailVerified ? t("emailVerified") : t("emailUnverified")}
+            </>
+          )}
         </div>
         <div>
           <p className="text-sm text-muted-foreground">{t("codewordsLabel")}</p>

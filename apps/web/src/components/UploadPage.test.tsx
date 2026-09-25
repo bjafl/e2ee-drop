@@ -163,4 +163,28 @@ describe("UploadPage", () => {
       expect(screen.getByText(/file sent successfully/i)).toBeInTheDocument();
     });
   });
+
+  it("shows the owner's name (unverified label) and email-verified badge for an owned link", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          recipientPublicKey: "cmVjaXBpZW50",
+          isAnonymous: false,
+          recipientName: "Ada Lovelace",
+          recipientEmailVerified: true,
+          codewords: ["fox", "river", "lamp"],
+        }),
+      })
+    );
+
+    renderAt("ada");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("recipient-badge")).toHaveTextContent("Ada Lovelace");
+      expect(screen.getByTestId("recipient-badge")).toHaveTextContent(/not verified/i);
+      expect(screen.getByTestId("recipient-badge")).toHaveTextContent(/verified/i);
+    });
+  });
 });
