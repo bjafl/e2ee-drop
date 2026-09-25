@@ -1,10 +1,11 @@
 // apps/api/src/routes/auth.test.ts
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { buildServer } from "../server";
 import { prisma } from "@e2ee-drop/db";
 import { encryptTotpSecret, generateTotpSecret } from "../lib/totp";
 import { TOTP, Secret } from "otpauth";
 import { loginRateLimiter } from "../lib/rateLimit";
+import { env } from "../env";
 
 // The /api/auth/login rate limiter (lib/rateLimit.ts) is a module-level Map
 // shared across every test in this file (and every buildServer() call,
@@ -524,6 +525,52 @@ describe("POST /api/auth/login, /api/auth/logout, GET /api/auth/me", () => {
           { remoteAddress: nginx, xff: "198.51.100.9, 192.0.2.50" },
         ),
       ).toBe(429);
+    });
+  });
+
+  describe("session cookie Secure attribute", () => {
+    type ResponseCookie = { name: string; value: string; secure?: boolean; httpOnly?: boolean; path?: string };
+    const sessionCookieOf = (response: { cookies: ResponseCookie[] }) =>
+      response.cookies.find((c) => c.name === "e2ee_drop_session")!;
+    const original = env.SECURE_COOKIES;
+    afterEach(() => {
+      env.SECURE_COOKIES = original;
+    });
+
+    it("omits Secure when APP_URL is http:// (local dev), so the browser still sends the cookie back", async () => {
+      env.SECURE_COOKIES = false;
+      const server = buildServer();
+      const cookie = sessionCookieOf(await register(server));
+      expect(cookie.secure).toBeFalsy();
+      expect(cookie.httpOnly).toBe(true);
+      const logout = await server.inject({ method: "POST", url: "/api/auth/logout" });
+      expect(sessionCookieOf(logout).secure).toBeFalsy();
+    });
+
+    it("sets Secure on register, login and the logout clear when APP_URL is https://", async () => {
+      env.SECURE_COOKIES = true;
+      const server = buildServer();
+      const registerCookie = sessionCookieOf(await register(server));
+      expect(registerCookie.secure).toBe(true);
+      expect(registerCookie.httpOnly).toBe(true);
+
+      const login = await server.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        payload: { email: "carol@example.com", authKey: "correct horse battery staple" },
+      });
+      expect(login.statusCode).toBe(200);
+      expect(sessionCookieOf(login).secure).toBe(true);
+
+      const logout = await server.inject({
+        method: "POST",
+        url: "/api/auth/logout",
+        cookies: { e2ee_drop_session: registerCookie.value },
+      });
+      const cleared = sessionCookieOf(logout);
+      expect(cleared.value).toBe("");
+      expect(cleared.secure).toBe(true);
+      expect(cleared.path).toBe("/");
     });
   });
 

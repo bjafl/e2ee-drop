@@ -99,6 +99,17 @@ function fakePasswordSaltForEmail(email: string): string {
     .toString("base64");
 }
 
+// Attributes shared by setting and clearing the session cookie. Clearing
+// reuses the same set: @fastify/cookie's clearCookie() only emits the
+// attributes it is given (it merely forces an epoch Expires / Max-Age=0), and
+// keeping path/Secure/SameSite identical guarantees the browser treats the
+// clearing Set-Cookie as replacing the very cookie it holds. `secure` follows
+// env.SECURE_COOKIES (true iff APP_URL is https://) — see env.ts. Read at call
+// time rather than captured once, so tests can flip it.
+function sessionCookieAttributes() {
+  return { httpOnly: true, secure: env.SECURE_COOKIES, sameSite: "lax", path: "/" } as const;
+}
+
 // Lazily computed once per process and cached — see the comment at its call
 // site in the login route (timing-attack mitigation for email enumeration).
 let dummyPasswordHashPromise: Promise<string> | null = null;
@@ -205,10 +216,8 @@ export function registerAuthRoutes(server: FastifyInstance): void {
     const session = await createSession(user.id);
 
     reply.setCookie(SESSION_COOKIE_NAME, session.id, {
+      ...sessionCookieAttributes(),
       signed: true,
-      httpOnly: true,
-      sameSite: "lax",
-      path: "/",
       expires: session.expiresAt,
     });
 
@@ -261,10 +270,8 @@ export function registerAuthRoutes(server: FastifyInstance): void {
 
     const session = await createSession(user.id);
     reply.setCookie(SESSION_COOKIE_NAME, session.id, {
+      ...sessionCookieAttributes(),
       signed: true,
-      httpOnly: true,
-      sameSite: "lax",
-      path: "/",
       expires: session.expiresAt,
     });
 
@@ -288,7 +295,7 @@ export function registerAuthRoutes(server: FastifyInstance): void {
       const unsigned = request.unsignCookie(raw);
       if (unsigned.valid && unsigned.value) await deleteSession(unsigned.value);
     }
-    reply.clearCookie(SESSION_COOKIE_NAME, { path: "/" });
+    reply.clearCookie(SESSION_COOKIE_NAME, sessionCookieAttributes());
     return reply.send({ loggedOut: true });
   });
 

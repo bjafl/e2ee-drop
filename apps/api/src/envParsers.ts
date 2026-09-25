@@ -89,3 +89,35 @@ export function bool(name: string, fallback: boolean, source: Source = process.e
     `Invalid value for env var ${name}: ${JSON.stringify(value)}. Expected "true" or "false".`
   );
 }
+
+// An absolute http(s) URL (e.g. APP_URL, the app's public origin). Unset or
+// empty means "use the fallback", like int(). Anything else that isn't a
+// parseable http:// or https:// URL throws: APP_URL decides whether the
+// session cookie is marked Secure (see isHttpsUrl), so a typo there must not
+// silently downgrade it.
+export function httpUrl(name: string, fallback: string, source: Source = process.env): string {
+  const value = source[name]?.trim();
+  if (!value) return fallback;
+  let parsed: URL | null = null;
+  try {
+    parsed = new URL(value);
+  } catch {
+    parsed = null;
+  }
+  if (!parsed || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) {
+    throw new EnvError(
+      `Invalid value for env var ${name}: ${JSON.stringify(source[name])}. ` +
+        `Expected an absolute http:// or https:// URL.`
+    );
+  }
+  return value;
+}
+
+/** True when `url` is an https:// URL (scheme compared case-insensitively). */
+export function isHttpsUrl(url: string): boolean {
+  try {
+    return new URL(url).protocol === "https:";
+  } catch {
+    return false;
+  }
+}

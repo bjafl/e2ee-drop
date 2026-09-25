@@ -1,8 +1,10 @@
 // apps/api/src/env.ts
-import { required, requiredSecret, int, optionalInt, bool } from "./envParsers";
+import { required, requiredSecret, int, optionalInt, bool, httpUrl, isHttpsUrl } from "./envParsers";
 
 // Evaluated at module load: any missing or invalid value throws here and the
 // process refuses to start, naming the offending variable (see envParsers.ts).
+const APP_URL = httpUrl("APP_URL", "http://localhost:8080");
+
 export const env = {
   DATABASE_URL: required("DATABASE_URL"),
   PORT: int("PORT", 3000, { min: 1, max: 65535 }),
@@ -27,7 +29,16 @@ export const env = {
   // entries are trusted when resolving request.ip (see lib/trustProxy.ts).
   // 1 = the shipped web/nginx container only; 2 = your own proxy in front of it.
   TRUST_PROXY_HOPS: int("TRUST_PROXY_HOPS", 1),
-  APP_URL: process.env.APP_URL ?? "http://localhost:8080",
+  // The app's public origin, as the browser sees it (used in emailed links).
+  APP_URL,
+  // Whether the session cookie gets the `Secure` attribute. Derived from
+  // APP_URL rather than the request's protocol: TLS terminates at the
+  // operator's reverse proxy (README "Fronting with TLS"), so the API itself
+  // only ever sees plain HTTP from nginx. An https:// APP_URL means browsers
+  // reach this deployment over TLS, so the cookie must never travel in
+  // cleartext; an http:// APP_URL (local dev) must NOT set it, or browsers
+  // would refuse to send the cookie back and login would silently break.
+  SECURE_COOKIES: isHttpsUrl(APP_URL),
   SMTP_HOST: process.env.SMTP_HOST,
   SMTP_PORT: optionalInt("SMTP_PORT", { min: 1, max: 65535 }),
   SMTP_USER: process.env.SMTP_USER,

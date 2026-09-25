@@ -1,6 +1,6 @@
 // apps/api/src/envParsers.test.ts
 import { describe, it, expect } from "vitest";
-import { EnvError, bool, int, optionalInt, required, requiredSecret } from "./envParsers";
+import { EnvError, bool, httpUrl, int, isHttpsUrl, optionalInt, required, requiredSecret } from "./envParsers";
 
 describe("int", () => {
   it("parses a valid whole number", () => {
@@ -78,5 +78,27 @@ describe("required / requiredSecret", () => {
   it("accepts a real secret", () => {
     const secret = "3f9a".repeat(16);
     expect(requiredSecret("SESSION_SECRET", { SESSION_SECRET: secret })).toBe(secret);
+  });
+});
+
+describe("httpUrl / isHttpsUrl", () => {
+  it("returns a valid http(s) URL and falls back when unset or empty", () => {
+    expect(httpUrl("APP_URL", "http://localhost:8080", { APP_URL: "https://drop.example.com" })).toBe(
+      "https://drop.example.com"
+    );
+    expect(httpUrl("APP_URL", "http://localhost:8080", {})).toBe("http://localhost:8080");
+    expect(httpUrl("APP_URL", "http://localhost:8080", { APP_URL: "" })).toBe("http://localhost:8080");
+  });
+
+  it("throws on a value that is not an absolute http(s) URL", () => {
+    expect(() => httpUrl("APP_URL", "http://x", { APP_URL: "drop.example.com" })).toThrow(/APP_URL/);
+    expect(() => httpUrl("APP_URL", "http://x", { APP_URL: "ftp://drop.example.com" })).toThrow(EnvError);
+  });
+
+  it("marks only https:// origins as secure (so http:// local dev keeps working)", () => {
+    expect(isHttpsUrl("https://drop.example.com")).toBe(true);
+    expect(isHttpsUrl("HTTPS://drop.example.com")).toBe(true);
+    expect(isHttpsUrl("http://localhost:8080")).toBe(false);
+    expect(isHttpsUrl("not a url")).toBe(false);
   });
 });
