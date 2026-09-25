@@ -1,5 +1,5 @@
 // apps/web/src/components/ConfirmPasswordResetPage.tsx
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import nacl from "tweetnacl";
@@ -47,6 +47,23 @@ export function ConfirmPasswordResetPage() {
   // it; otherwise they'd end up with a new key protected by a code they were
   // never shown, and no way to ever recover it.
   const [freshRecoveryCode, setFreshRecoveryCode] = useState<string | null>(null);
+  // Defense in depth against double-submits (the server's atomic token claim
+  // is the real guard): the ref blocks a second submit synchronously, before
+  // React re-renders; the state disables the buttons visibly.
+  const submittingRef = useRef(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const runExclusive = async (work: () => Promise<void>) => {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    try {
+      await work();
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  };
 
   useEffect(() => {
     fetch("/api/auth/password-reset/verify-token", {
@@ -59,8 +76,12 @@ export function ConfirmPasswordResetPage() {
       .catch(() => setInvalidToken(true));
   }, [token]);
 
-  const handleRecoverySubmit = async (e: React.FormEvent) => {
+  const handleRecoverySubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    return runExclusive(submitWithRecovery);
+  };
+
+  const submitWithRecovery = async () => {
     if (!info) return;
     setError(null);
 
@@ -104,8 +125,12 @@ export function ConfirmPasswordResetPage() {
     }
   };
 
-  const handleFreshSubmit = async (e: React.FormEvent) => {
+  const handleFreshSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    return runExclusive(submitFresh);
+  };
+
+  const submitFresh = async () => {
     setError(null);
     const keyPair = nacl.box.keyPair();
     const newSalt = generateWrappingSalt();
@@ -188,8 +213,10 @@ export function ConfirmPasswordResetPage() {
                 className="w-full rounded border p-2"
               />
             </div>
-            <Button type="submit">{t("confirm.submitWithRecovery")}</Button>
-            <Button type="button" variant="ghost" onClick={() => setNoRecovery(true)}>
+            <Button type="submit" disabled={submitting}>
+              {t("confirm.submitWithRecovery")}
+            </Button>
+            <Button type="button" variant="ghost" disabled={submitting} onClick={() => setNoRecovery(true)}>
               {t("confirm.noRecovery")}
             </Button>
           </form>
@@ -209,7 +236,9 @@ export function ConfirmPasswordResetPage() {
                 className="w-full rounded border p-2"
               />
             </div>
-            <Button type="submit">{t("confirm.submitFresh")}</Button>
+            <Button type="submit" disabled={submitting}>
+              {t("confirm.submitFresh")}
+            </Button>
           </form>
         )}
       </CardContent>

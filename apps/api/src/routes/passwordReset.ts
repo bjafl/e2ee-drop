@@ -28,6 +28,32 @@ async function findValidResetToken(token: string) {
   return record;
 }
 
+// Consumes a reset token atomically and returns its userId, or null if the
+// token is unknown, expired, or was just consumed by a concurrent request.
+// Must run BEFORE any credential or link mutation in /complete and
+// /complete-fresh:
+//   1. Compare-and-delete (same discipline as deleteLinkIfExists /
+//      transitionDropStatus in lib/links.ts): only the one request whose
+//      deleteMany actually removes the still-unexpired row may proceed, so a
+//      double-submitted token can't drive two interleaved resets (which on
+//      complete-fresh could mix keys from two different requests).
+//   2. Every other outstanding reset token for the user is invalidated, so a
+//      completed reset can't be followed by another via an older emailed link.
+//   3. All sessions are revoked up front: if a later step fails, the account
+//      is left logged-out everywhere (safe), never with a stolen pre-reset
+//      session still live while credentials/links are being rewritten.
+async function claimResetTokenAndRevokeSessions(token: string): Promise<string | null> {
+  const record = await prisma.passwordResetToken.findUnique({ where: { tokenHash: hashToken(token) } });
+  if (!record) return null;
+  const { count } = await prisma.passwordResetToken.deleteMany({
+    where: { id: record.id, expiresAt: { gt: new Date() } },
+  });
+  if (count !== 1) return null;
+  await prisma.passwordResetToken.deleteMany({ where: { userId: record.userId, id: { not: record.id } } });
+  await deleteAllUserSessions(record.userId);
+  return record.userId;
+}
+
 export function registerPasswordResetRoutes(server: FastifyInstance): void {
   server.post<{ Body: PasswordResetRequestRequest }>(
     "/api/auth/password-reset/request",
@@ -79,23 +105,23 @@ export function registerPasswordResetRoutes(server: FastifyInstance): void {
   server.post<{ Body: PasswordResetCompleteRequest }>(
     "/api/auth/password-reset/complete",
     async (request, reply) => {
-      const { token, newAuthKey, newPasswordSalt, newPasswordWrappedPrivateKey } = request.body;
-      const record = await findValidResetToken(token);
-      if (!record) return reply.status(400).send({ error: "Invalid or expired reset token" });
+      const { token, newAuthKey, newPasswordSalt, newPasswordWrappedPrivateKey } = (request.body ?? {}) as Partial<PasswordResetCompleteRequest>;
+      if (!token || !newAuthKey || !newPasswordSalt || !newPasswordWrappedPrivateKey) {
+        return reply.status(400).send({ error: "Missing required fields" });
+      }
+      const userId = await claimResetTokenAndRevokeSessions(token);
+      if (!userId) return reply.status(400).send({ error: "Invalid or expired reset token" });
 
-      await prisma.user.update({
-        where: { id: record.userId },
-        data: {
-          passwordHash: await hashPassword(newAuthKey),
-          passwordSalt: newPasswordSalt,
-          passwordWrappedPrivateKey: newPasswordWrappedPrivateKey,
-        },
-      });
-      // Revoke every existing session so a cookie issued before this reset
-      // stops working immediately — otherwise an attacker who stole a
-      // session cookie before the reset would keep access after it.
-      await deleteAllUserSessions(record.userId);
-      await prisma.passwordResetToken.delete({ where: { id: record.id } });
+      const passwordHash = await hashPassword(newAuthKey);
+      await prisma.$transaction([
+        prisma.user.update({
+          where: { id: userId },
+          data: { passwordHash, passwordSalt: newPasswordSalt, passwordWrappedPrivateKey: newPasswordWrappedPrivateKey },
+        }),
+        // Second sweep: closes the window where someone still holding the
+        // OLD credentials logged in between the revoke above and this write.
+        prisma.session.deleteMany({ where: { userId } }),
+      ]);
       return reply.send({ reset: true });
     }
   );
@@ -117,24 +143,42 @@ export function registerPasswordResetRoutes(server: FastifyInstance): void {
         newPasswordWrappedPrivateKey,
         newRecoveryWrappedPrivateKey,
         newPublicKey,
-      } = request.body;
-      const record = await findValidResetToken(token);
-      if (!record) return reply.status(400).send({ error: "Invalid or expired reset token" });
+      } = (request.body ?? {}) as Partial<PasswordResetCompleteFreshRequest>;
+      if (
+        !token ||
+        !newAuthKey ||
+        !newPasswordSalt ||
+        !newPasswordWrappedPrivateKey ||
+        !newRecoveryWrappedPrivateKey ||
+        !newPublicKey
+      ) {
+        return reply.status(400).send({ error: "Missing required fields" });
+      }
+      const userId = await claimResetTokenAndRevokeSessions(token);
+      if (!userId) return reply.status(400).send({ error: "Invalid or expired reset token" });
 
-      await cascadeDeleteUserLinks(record.userId);
-      const user = await prisma.user.update({
-        where: { id: record.userId },
-        data: {
-          passwordHash: await hashPassword(newAuthKey),
-          passwordSalt: newPasswordSalt,
-          passwordWrappedPrivateKey: newPasswordWrappedPrivateKey,
-          recoveryWrappedPrivateKey: newRecoveryWrappedPrivateKey,
-          publicKey: newPublicKey,
-        },
+      // Outside the transaction below: it's idempotent (P2025-tolerant, and
+      // MinIO deletes succeed on missing keys), so if a later step fails the
+      // user can request a new token and retry, converging to the same state.
+      await cascadeDeleteUserLinks(userId);
+      const passwordHash = await hashPassword(newAuthKey);
+      // New keys and the new default link (encrypted to the new public key)
+      // commit together or not at all — never new keys with no default link.
+      await prisma.$transaction(async (tx) => {
+        const user = await tx.user.update({
+          where: { id: userId },
+          data: {
+            passwordHash,
+            passwordSalt: newPasswordSalt,
+            passwordWrappedPrivateKey: newPasswordWrappedPrivateKey,
+            recoveryWrappedPrivateKey: newRecoveryWrappedPrivateKey,
+            publicKey: newPublicKey,
+          },
+        });
+        await createDefaultLinkForUser(user.id, user.username, user.publicKey, tx);
+        // Second sweep, as in /complete above.
+        await tx.session.deleteMany({ where: { userId } });
       });
-      await createDefaultLinkForUser(user.id, user.username, user.publicKey);
-      await deleteAllUserSessions(user.id);
-      await prisma.passwordResetToken.delete({ where: { id: record.id } });
       return reply.send({ reset: true });
     }
   );

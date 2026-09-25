@@ -1,6 +1,6 @@
 // apps/web/src/components/ConfirmPasswordResetPage.test.tsx
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import nacl from "tweetnacl";
@@ -238,5 +238,49 @@ describe("ConfirmPasswordResetPage", () => {
     for (const body of bodies) {
       expect(body).not.toContain(PASSWORD);
     }
+  });
+
+  it("sends only one /complete request on a double submit and disables the button while in flight", async () => {
+    const keyPair = nacl.box.keyPair();
+    const recoveryCode = generateRecoveryCode();
+    const recoveryWrapped = wrapPrivateKey(keyPair.secretKey, deriveRecoveryKey(recoveryCode));
+    const salt = generateWrappingSalt();
+    let completeCalls = 0;
+    let releaseComplete!: () => void;
+    const completeGate = new Promise<void>((resolve) => (releaseComplete = resolve));
+
+    vi.spyOn(global, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/verify-token")) {
+        return new Response(
+          JSON.stringify({ email: "i@example.com", passwordSalt: salt, recoveryWrappedPrivateKey: recoveryWrapped }),
+          { status: 200 }
+        );
+      }
+      if (url.includes("/complete")) {
+        completeCalls += 1;
+        await completeGate;
+        return new Response(JSON.stringify({ reset: true }), { status: 200 });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+
+    const user = userEvent.setup();
+    renderAt("/reset-password/confirm?token=abc");
+    await waitFor(() => screen.getByLabelText(/recovery code/i));
+    await user.type(screen.getByLabelText(/recovery code/i), recoveryCode);
+    await user.type(screen.getByLabelText(/new password/i), "a brand new password");
+
+    const submit = screen.getByRole("button", { name: /reset with recovery code/i });
+    // Two synchronous submits, before React can re-render the disabled state.
+    fireEvent.submit(submit.closest("form")!);
+    fireEvent.submit(submit.closest("form")!);
+
+    await waitFor(() => expect(completeCalls).toBe(1));
+    expect(screen.getByRole("button", { name: /reset with recovery code/i })).toBeDisabled();
+
+    releaseComplete();
+    await waitFor(() => expect(screen.getByText(/password has been reset/i)).toBeInTheDocument());
+    expect(completeCalls).toBe(1);
   });
 });

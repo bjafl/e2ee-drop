@@ -3,7 +3,8 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { buildServer } from "../server";
 import { prisma } from "@e2ee-drop/db";
-import { verifyPassword } from "../lib/passwordAuth";
+import { verifyPassword, hashPassword } from "../lib/passwordAuth";
+import { createDefaultLinkForUser } from "../lib/links";
 import { isMailerConfigured, sendPasswordResetEmail } from "../lib/mailer";
 import { env } from "../env";
 
@@ -11,6 +12,29 @@ vi.mock("../lib/mailer", () => ({
   isMailerConfigured: vi.fn().mockReturnValue(false),
   sendPasswordResetEmail: vi.fn().mockResolvedValue(undefined),
 }));
+
+// Pass-through spies, so individual tests can inject a failure mid-reset.
+vi.mock("../lib/passwordAuth", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../lib/passwordAuth")>();
+  return { ...original, hashPassword: vi.fn(original.hashPassword) };
+});
+vi.mock("../lib/links", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../lib/links")>();
+  return { ...original, createDefaultLinkForUser: vi.fn(original.createDefaultLinkForUser) };
+});
+
+const completePayload = {
+  newAuthKey: "a brand new password",
+  newPasswordSalt: "bmV3LXNhbHQ=",
+  newPasswordWrappedPrivateKey: "bmV3LXdyYXBwZWQ=",
+};
+const completeFreshPayload = {
+  newAuthKey: "a fresh new password",
+  newPasswordSalt: "bmV3LXNhbHQ=",
+  newPasswordWrappedPrivateKey: "bmV3LXdyYXBwZWQ=",
+  newRecoveryWrappedPrivateKey: "bmV3LXJlY292ZXJ5",
+  newPublicKey: "bmV3LXB1YmtleQ==",
+};
 
 async function registerUser(server: ReturnType<typeof buildServer>) {
   const response = await server.inject({
@@ -30,8 +54,7 @@ async function registerUser(server: ReturnType<typeof buildServer>) {
   return response.json();
 }
 
-async function issueResetToken(userId: string): Promise<string> {
-  const token = "test-reset-token";
+async function issueResetToken(userId: string, token = "test-reset-token"): Promise<string> {
   await prisma.passwordResetToken.create({
     data: {
       userId,
@@ -201,5 +224,164 @@ describe("password reset routes", () => {
     const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
     expect(user.publicKey).toBe("bmV3LXB1YmtleQ==");
     expect(await prisma.session.count({ where: { userId } })).toBe(0);
+  });
+
+  it("lets only one of two concurrent /complete calls with the same token succeed", async () => {
+    const server = buildServer();
+    const { userId } = await registerUser(server);
+    const token = await issueResetToken(userId);
+
+    const [a, b] = await Promise.all(
+      ["first", "second"].map((tag) =>
+        server.inject({
+          method: "POST",
+          url: "/api/auth/password-reset/complete",
+          payload: { ...completePayload, token, newPasswordWrappedPrivateKey: `wrapped-${tag}` },
+        })
+      )
+    );
+
+    expect([a!.statusCode, b!.statusCode].sort()).toEqual([200, 400]);
+    const winner = a!.statusCode === 200 ? "first" : "second";
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    expect(user.passwordWrappedPrivateKey).toBe(`wrapped-${winner}`);
+    expect(await prisma.passwordResetToken.count({ where: { userId } })).toBe(0);
+  });
+
+  it("lets only one of two concurrent /complete-fresh calls with the same token succeed, leaving consistent keys", async () => {
+    const server = buildServer();
+    const { userId } = await registerUser(server);
+    const token = await issueResetToken(userId);
+
+    const responses = await Promise.all(
+      ["first", "second"].map((tag) =>
+        server.inject({
+          method: "POST",
+          url: "/api/auth/password-reset/complete-fresh",
+          payload: { ...completeFreshPayload, token, newPublicKey: `pub-${tag}`, newPasswordWrappedPrivateKey: `wrapped-${tag}` },
+        })
+      )
+    );
+
+    expect(responses.map((r) => r.statusCode).sort()).toEqual([200, 400]);
+    const winner = responses[0]!.statusCode === 200 ? "first" : "second";
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    expect(user.publicKey).toBe(`pub-${winner}`);
+    expect(user.passwordWrappedPrivateKey).toBe(`wrapped-${winner}`);
+    const links = await prisma.link.findMany({ where: { ownerId: userId } });
+    expect(links).toHaveLength(1);
+    expect(links[0]!.recipientPublicKey).toBe(`pub-${winner}`);
+  });
+
+  it("invalidates every other outstanding reset token for the user once one is used", async () => {
+    const server = buildServer();
+    const { userId } = await registerUser(server);
+    const olderToken = await issueResetToken(userId, "older-still-valid-token");
+    const usedToken = await issueResetToken(userId, "token-being-used");
+
+    const first = await server.inject({
+      method: "POST",
+      url: "/api/auth/password-reset/complete",
+      payload: { ...completePayload, token: usedToken },
+    });
+    expect(first.statusCode).toBe(200);
+
+    for (const url of ["/api/auth/password-reset/verify-token", "/api/auth/password-reset/complete"]) {
+      const response = await server.inject({
+        method: "POST",
+        url,
+        payload: { ...completePayload, token: olderToken, newPasswordWrappedPrivateKey: "attacker" },
+      });
+      expect(response.statusCode).toBe(400);
+    }
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    expect(user.passwordWrappedPrivateKey).toBe(completePayload.newPasswordWrappedPrivateKey);
+  });
+
+  it("rejects an expired token on /complete without consuming other state", async () => {
+    const server = buildServer();
+    const { userId } = await registerUser(server);
+    await prisma.passwordResetToken.create({
+      data: {
+        userId,
+        tokenHash: createHash("sha256").update("expired-token").digest("hex"),
+        expiresAt: new Date(Date.now() - 1000),
+      },
+    });
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/auth/password-reset/complete",
+      payload: { ...completePayload, token: "expired-token" },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(await prisma.session.count({ where: { userId } })).toBeGreaterThan(0);
+  });
+
+  it("returns 400 (not 500) when /complete or /complete-fresh is missing fields", async () => {
+    const server = buildServer();
+    for (const url of ["/api/auth/password-reset/complete", "/api/auth/password-reset/complete-fresh"]) {
+      const response = await server.inject({ method: "POST", url, payload: { token: "x" } });
+      expect(response.statusCode).toBe(400);
+    }
+  });
+
+  it("/complete revokes sessions and consumes the token BEFORE mutating credentials (failure injected mid-reset)", async () => {
+    const server = buildServer();
+    const { userId } = await registerUser(server);
+    const before = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    expect(await prisma.session.count({ where: { userId } })).toBeGreaterThan(0);
+    const token = await issueResetToken(userId);
+    vi.mocked(hashPassword).mockRejectedValueOnce(new Error("injected failure"));
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/auth/password-reset/complete",
+      payload: { ...completePayload, token },
+    });
+
+    expect(response.statusCode).toBe(500);
+    // Already revoked and consumed, though the credential step never ran.
+    expect(await prisma.session.count({ where: { userId } })).toBe(0);
+    expect(await prisma.passwordResetToken.count({ where: { userId } })).toBe(0);
+    const after = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    expect(after.passwordHash).toBe(before.passwordHash);
+    expect(after.passwordWrappedPrivateKey).toBe(before.passwordWrappedPrivateKey);
+  });
+
+  it("/complete-fresh rolls back the key rotation if creating the new default link fails", async () => {
+    const server = buildServer();
+    const { userId } = await registerUser(server);
+    const before = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    const token = await issueResetToken(userId);
+    vi.mocked(createDefaultLinkForUser).mockRejectedValueOnce(new Error("injected failure"));
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/auth/password-reset/complete-fresh",
+      payload: { ...completeFreshPayload, token },
+    });
+
+    expect(response.statusCode).toBe(500);
+    const after = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    // Keys/credentials unchanged: never "new keys with no default link".
+    expect(after.publicKey).toBe(before.publicKey);
+    expect(after.passwordHash).toBe(before.passwordHash);
+    expect(after.passwordWrappedPrivateKey).toBe(before.passwordWrappedPrivateKey);
+    expect(after.recoveryWrappedPrivateKey).toBe(before.recoveryWrappedPrivateKey);
+    // Sessions were revoked first; the (idempotent) cascade delete already ran.
+    expect(await prisma.session.count({ where: { userId } })).toBe(0);
+    expect(await prisma.link.count({ where: { ownerId: userId } })).toBe(0);
+
+    // A retry with a fresh token completes normally.
+    const retryToken = await issueResetToken(userId, "retry-token");
+    const retry = await server.inject({
+      method: "POST",
+      url: "/api/auth/password-reset/complete-fresh",
+      payload: { ...completeFreshPayload, token: retryToken },
+    });
+    expect(retry.statusCode).toBe(200);
+    const link = await prisma.link.findFirstOrThrow({ where: { ownerId: userId, isDefault: true } });
+    expect(link.recipientPublicKey).toBe(completeFreshPayload.newPublicKey);
   });
 });
