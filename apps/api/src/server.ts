@@ -12,27 +12,46 @@ import { registerContactRoutes } from "./routes/contacts";
 import { registerEventRoutes } from "./routes/events";
 import { registerAccountRoutes } from "./routes/account";
 import { env } from "./env";
+import { createTrustProxyFn } from "./lib/trustProxy";
 
-export function buildServer(): FastifyInstance {
-  // Trust exactly one hop of X-Forwarded-For, matching this app's shipped
-  // deployment topology: nginx (apps/web/nginx.conf) as the sole reverse
-  // proxy directly facing clients, forwarding to this API. Without this,
-  // request.ip (used by the /api/auth/login rate limiter — see
-  // lib/rateLimit.ts) would always resolve to nginx's own container
-  // address, collapsing every client behind it into a single rate-limit
-  // bucket. `trustProxy: true` (trust all hops) is deliberately NOT used
-  // here: with no hop limit, Fastify would trust the leftmost address in a
-  // client-supplied X-Forwarded-For header, letting a caller spoof its own
-  // IP and dodge the limit entirely. A numeric `trustProxy: 1` would
-  // express "trust exactly one hop" directly, but this Fastify version's
-  // TS types don't accept a number here (only boolean | string | string[]
-  // | TrustProxyFunction) even though the underlying proxy-addr dependency
-  // supports it at runtime — so the same semantics are expressed as a
-  // TrustProxyFunction: `hop === 0` is the immediate, socket-connecting
-  // peer (nginx), which is trusted; anything further left in the chain
-  // (hop >= 1) is not, so Fastify stops there and uses that address as the
-  // resolved request.ip.
-  const server = Fastify({ logger: true, trustProxy: (_address: string, hop: number) => hop === 0 });
+export interface BuildServerOptions {
+  /** Overrides env.TRUST_PROXY_HOPS (used by tests). */
+  trustProxyHops?: number;
+}
+
+export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
+  // Trust exactly TRUST_PROXY_HOPS reverse-proxy hops of X-Forwarded-For
+  // (default 1: the shipped apps/web/nginx.conf proxy talking directly to
+  // this API). request.ip is used as the /api/auth/login rate-limit key
+  // (lib/rateLimit.ts), so it must be the real client's address. Trusting
+  // too few hops collapses every client into one proxy's address (one shared
+  // bucket, so one attacker can lock everyone out of login). Trusting too
+  // many lets clients spoof their IP. An operator who puts their own reverse
+  // proxy in front of the `web` container (README "Fronting with TLS") must
+  // set TRUST_PROXY_HOPS=2. See lib/trustProxy.ts for how hops are counted.
+  //
+  // `trustProxy: true` (trust all hops) is deliberately NOT used: Fastify
+  // would then take the leftmost, client-supplied X-Forwarded-For entry,
+  // letting a caller spoof its IP and dodge the limit.
+  //
+  // Do NOT "simplify" this to a numeric `trustProxy: N`. Besides not being
+  // in Fastify's TS types (boolean | string | string[] | TrustProxyFunction),
+  // Fastify 5.12.5 deliberately fails CLOSED on a number at runtime
+  // (lib/request.js getTrustProxyFn returns `() => false`, because a bare hop
+  // count can't validate the immediate peer). That would silently disable all
+  // proxy trust, making request.ip always nginx's address and collapsing
+  // every client into one bucket again.
+  //
+  // The function form trusts hop 0 (the socket peer) unconditionally, which
+  // is only safe because the API is never directly reachable by untrusted
+  // clients: docker-compose.yml publishes no ports for the `api` service, so
+  // only the `web` container's nginx can connect to it. Never publish the
+  // API's port or expose it to clients directly, or anyone could set
+  // X-Forwarded-For freely.
+  const server = Fastify({
+    logger: true,
+    trustProxy: createTrustProxyFn(options.trustProxyHops ?? env.TRUST_PROXY_HOPS),
+  });
 
   // Must be registered before authPlugin(server): the auth plugin's
   // onRequest hook reads request.cookies (populated by this plugin's own

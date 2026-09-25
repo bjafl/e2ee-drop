@@ -403,6 +403,90 @@ describe("POST /api/auth/login, /api/auth/logout, GET /api/auth/me", () => {
     }
   });
 
+  describe("client IP resolution through the X-Forwarded-For chain (TRUST_PROXY_HOPS)", () => {
+    // Each case sends 8 failed logins then a 9th (which must be 429) from a
+    // "blocked" XFF chain, then checks whether a request from a "sibling"
+    // chain shares that bucket. The socket peer (remoteAddress) is always
+    // the same innermost proxy, as it is in production.
+    async function exhaustThenProbe(
+      trustProxyHops: number,
+      blocked: { remoteAddress: string; xff?: string },
+      probe: { remoteAddress: string; xff?: string },
+    ) {
+      const server = buildServer({ trustProxyHops });
+      await register(server);
+      const attempt = (r: { remoteAddress: string; xff?: string }) =>
+        server.inject({
+          method: "POST",
+          url: "/api/auth/login",
+          remoteAddress: r.remoteAddress,
+          headers: r.xff ? { "x-forwarded-for": r.xff } : {},
+          payload: { email: "carol@example.com", authKey: "wrong password" },
+        });
+      for (let i = 0; i < 8; i++) {
+        expect((await attempt(blocked)).statusCode).toBe(401);
+      }
+      expect((await attempt(blocked)).statusCode).toBe(429);
+      return (await attempt(probe)).statusCode;
+    }
+
+    it("hops=1 (shipped nginx only): keys on the rightmost XFF entry and ignores client-supplied entries to its left", async () => {
+      // nginx (10.0.0.2) appends the real client 203.0.113.7; "6.6.6.6" is
+      // a spoofed value the client put in the header itself.
+      const nginx = "10.0.0.2";
+      // Same real client, different spoofed prefix: still the same bucket.
+      expect(
+        await exhaustThenProbe(
+          1,
+          { remoteAddress: nginx, xff: "6.6.6.6, 203.0.113.7" },
+          { remoteAddress: nginx, xff: "7.7.7.7, 203.0.113.7" },
+        ),
+      ).toBe(429);
+      loginRateLimiter.clear();
+      // A different real client behind the same nginx: separate bucket.
+      expect(
+        await exhaustThenProbe(
+          1,
+          { remoteAddress: nginx, xff: "6.6.6.6, 203.0.113.7" },
+          { remoteAddress: nginx, xff: "203.0.113.8" },
+        ),
+      ).toBe(401);
+    });
+
+    it("hops=2 (operator proxy in front of nginx): distinct clients behind the same operator proxy get distinct buckets", async () => {
+      // client -> operator proxy (192.0.2.50) -> nginx (10.0.0.2) -> api.
+      // nginx appends 192.0.2.50; the operator proxy appended the client.
+      const nginx = "10.0.0.2";
+      expect(
+        await exhaustThenProbe(
+          2,
+          { remoteAddress: nginx, xff: "6.6.6.6, 203.0.113.7, 192.0.2.50" },
+          { remoteAddress: nginx, xff: "198.51.100.9, 192.0.2.50" },
+        ),
+      ).toBe(401);
+      loginRateLimiter.clear();
+      // Same real client, different spoofed prefix: still the same bucket.
+      expect(
+        await exhaustThenProbe(
+          2,
+          { remoteAddress: nginx, xff: "6.6.6.6, 203.0.113.7, 192.0.2.50" },
+          { remoteAddress: nginx, xff: "203.0.113.7, 192.0.2.50" },
+        ),
+      ).toBe(429);
+    });
+
+    it("hops=1 behind an extra, unaccounted-for proxy collapses every client into one bucket (the misconfiguration README warns about)", async () => {
+      const nginx = "10.0.0.2";
+      expect(
+        await exhaustThenProbe(
+          1,
+          { remoteAddress: nginx, xff: "203.0.113.7, 192.0.2.50" },
+          { remoteAddress: nginx, xff: "198.51.100.9, 192.0.2.50" },
+        ),
+      ).toBe(429);
+    });
+  });
+
   it("logs out and clears the session so /me subsequently 403s", async () => {
     const server = buildServer();
     const registerResponse = await register(server);

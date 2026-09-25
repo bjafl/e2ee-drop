@@ -47,6 +47,7 @@ identical to `POSTGRES_PASSWORD` (see the table below).
 | `ALLOW_REGISTRATION` | `true` | `api`, `cleanup` | Set to `false` to close self-registration on this instance |
 | `DEFAULT_STORAGE_QUOTA_BYTES` | `5368709120` (5 GiB) | `api`, `cleanup` | Default per-account storage quota for new accounts |
 | `APP_URL` | `http://localhost:8080` | `api`, `cleanup` | Public base URL, used when building links in emails |
+| `TRUST_PROXY_HOPS` | `1` | `api` | How many reverse-proxy hops in front of the API are trusted when reading the client IP from `X-Forwarded-For` (used to rate-limit login attempts per IP). `1` = the shipped `web` (nginx) container only. Set to `2` if you put your own reverse proxy in front of `web`; see [Fronting with TLS](#fronting-with-tls) |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | — (optional) | `api`, `cleanup` | Outgoing mail for email verification and password-reset requests; those flows are unavailable if unset |
 | `WEB_PORT` | `8080` | `web` | Host port the `web` service (SPA + `/api` + `/s3` proxy) is published on — this is the port you visit in a browser |
 
@@ -71,6 +72,29 @@ expects you to put your own reverse proxy (Caddy, Traefik, nginx-proxy,
 etc.) in front of it for a real domain and HTTPS, the same way you
 would for Immich or Vaultwarden. Point your proxy at the `web`
 service's published port.
+
+**Set `TRUST_PROXY_HOPS=2` in `.env` when you do this.** The API
+limits login attempts per client IP address, and it works out the
+client IP by trusting a fixed number of proxy hops in the
+`X-Forwarded-For` header. The default, `1`, fits the shipped setup,
+where the `web` container's nginx is the only proxy. Your own proxy
+adds a second hop (client → your proxy → `web`/nginx → `api`). If you
+leave the value at `1`, the API sees every user as coming from your
+proxy's address, so they all share one rate-limit bucket, and a single
+client making a few bad login attempts can lock everyone out of
+logging in. Add one more for each additional proxy layer (for example,
+a CDN in front of your proxy). Setting it higher than your real number
+of proxies lets clients fake their IP, so don't overshoot.
+
+Your proxy must also append the client address to `X-Forwarded-For`.
+Caddy's `reverse_proxy` and Traefik do this by default. With plain
+nginx, add `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`.
+
+Never publish the `api` service's port or otherwise let clients reach
+the API directly. The shipped `docker-compose.yml` publishes no ports
+for `api`, so only `web` can talk to it. The API trusts whatever
+connects to it directly as a proxy, so a client that reached it
+directly could put any address it likes in `X-Forwarded-For`.
 
 ## Development
 

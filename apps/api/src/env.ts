@@ -35,6 +35,10 @@ export const env = {
   APP_SECRET_KEY: required("APP_SECRET_KEY"),
   ALLOW_REGISTRATION: bool("ALLOW_REGISTRATION", true),
   DEFAULT_STORAGE_QUOTA_BYTES: int("DEFAULT_STORAGE_QUOTA_BYTES", 5 * 1024 * 1024 * 1024),
+  // Number of reverse-proxy hops in front of the API whose X-Forwarded-For
+  // entries are trusted when resolving request.ip (see lib/trustProxy.ts).
+  // 1 = the shipped web/nginx container only; 2 = your own proxy in front of it.
+  TRUST_PROXY_HOPS: int("TRUST_PROXY_HOPS", 1),
   APP_URL: process.env.APP_URL ?? "http://localhost:8080",
   SMTP_HOST: process.env.SMTP_HOST,
   SMTP_PORT: process.env.SMTP_PORT ? parseInt(process.env.SMTP_PORT, 10) : undefined,
