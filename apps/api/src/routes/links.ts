@@ -166,6 +166,14 @@ export function registerLinkRoutes(server: FastifyInstance): void {
     // username), so the slug alone must never authorize deleting it — owned
     // links, and default links in particular (spec §5: non-deletable), can
     // only ever be removed through an authenticated owner path (Plan 3).
+    //
+    // KNOWN, ACCEPTED TRADE-OFF (security review SEC10): for an anonymous
+    // link, anyone who has seen the slug, including a bystander, can delete it.
+    // Deliberate. The slug is the only credential an ownerless link has, and a
+    // bystander can already sabotage the exchange by taking its single upload
+    // slot first. Content stays E2EE either way. See spec §5.1 for the
+    // rationale and for the creator "manage token" design to adopt if this
+    // route ever needs to be restricted to the link's creator.
     if (link.ownerId !== null) {
       return reply.status(403).send({ error: "Owned links cannot be deleted through this endpoint" });
     }

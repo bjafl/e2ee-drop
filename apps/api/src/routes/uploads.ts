@@ -237,6 +237,13 @@ export function registerUploadRoutes(server: FastifyInstance): void {
       let updated: boolean;
       if (ownerId === null) {
         // Anonymous link: no owner, no quota to charge.
+        //
+        // KNOWN, ACCEPTED TRADE-OFF (security review SEC10): the drop id is
+        // readable by every slug holder, so any of them can complete an
+        // "uploading" drop early. The only effect is a recipient download
+        // attempt that fails until the real PUT lands. A per-drop upload
+        // secret was considered and rejected because it closes nothing: the
+        // same bystander can DELETE the link (see links.ts). See spec §5.1.
         updated = await transitionDropStatus(request.params.dropId, link.id, ["uploading"], "uploaded");
       } else {
         // Owned link: the CAS and the owner's quota charge commit together, and

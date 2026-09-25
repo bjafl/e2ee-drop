@@ -213,6 +213,58 @@ The anonymous flow uses the same `Link`/`Drop` tables with `ownerId =
 null` and `mode` always `one-time` — no separate anonymous-session
 schema, avoiding two parallel systems for the same underlying concept.
 
+### 5.1 Anonymous link authorization: the slug is a bearer capability
+
+(Added after security review SEC10, which asked why a bystander who only
+*saw* an anonymous link can delete it or complete its drop early.)
+
+An anonymous link has no account behind it, so the only thing the server
+can check is possession of its random slug (16 chars from a 34-symbol
+alphabet, about 81 bits). Every route on an ownerless link accepts any
+slug holder: `GET /api/links/:slug` (including the drop's id and its
+plaintext metadata: file name, size, MIME type, message), `upload-url`,
+`.../complete`, `download-url`, `.../downloaded`, `/events` and
+`DELETE /api/links/:slug`. Owned links do not work this way: their
+slugs are public, so their recipient-side routes are owner-gated.
+
+This is an **accepted design**, not an oversight. What it does and does
+not expose:
+
+- **Confidentiality and integrity are unaffected.** File bytes are
+  `nacl.box` ciphertext that only the creator's local private key opens.
+  Only the party that called `upload-url` receives the presigned PUT,
+  and a one-time link refuses a second drop, so a bystander cannot
+  change a drop's bytes. The codewords (§2.1) let the sender check they
+  have the right recipient key.
+- **What a bystander can do is disrupt that one exchange:** delete the
+  link, mark a drop complete or downloaded early, or, before the real
+  sender uploads, take the link's single slot with a file of their own.
+  The last one is the strongest, and it cannot be prevented, because
+  "sender" means "anyone the slug was given to". There is no sender
+  credential to check. The recipient's fix is the same in every case:
+  create a new link and share it over a better channel.
+- **Why the routes were not gated one by one.** A per-drop secret
+  returned by `upload-url` and required by `/complete` would stop a
+  bystander from completing someone else's upload early. But that same
+  bystander can still `DELETE` the link, which does more damage, or
+  take the slot before the upload starts. No attack is actually
+  prevented, and every in-flight sender would have to change protocol.
+- **What would actually help, if this threat ever matters.** Only the
+  link's creator has something a bystander lacks: their `localStorage`
+  entry (`useLocalLinks`). `POST /api/links` could return a random
+  *manage token*, which the creator stores next to the private key and
+  the server stores hashed on `Link`. Recipient-side routes
+  (`DELETE`, `download-url`, `.../downloaded`, `/events`) would then
+  require it. Add a per-drop *upload token* for `/complete`, and after
+  the upload starts, a bystander could only read metadata. Taking the
+  slot before the upload would still be possible. This needs a schema
+  change, a new field in the creation response and in local storage,
+  and a way to handle links created before the change. That is a
+  redesign of the anonymous flow, which §1 says must not become more
+  complicated. It is deferred until there is a concrete need for it,
+  such as a "revoke link" button in the UI. Today no frontend code calls
+  `DELETE /api/links/:slug`.
+
 ## 6. Links, contacts, and the "send to contact" flow
 
 - **Contacts** are established via mutual request/accept between two
