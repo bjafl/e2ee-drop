@@ -4,6 +4,8 @@ import { createHash } from "node:crypto";
 import { buildServer } from "../server";
 import { prisma } from "@e2ee-drop/db";
 import { verifyPassword } from "../lib/passwordAuth";
+import { isMailerConfigured, sendPasswordResetEmail } from "../lib/mailer";
+import { env } from "../env";
 
 vi.mock("../lib/mailer", () => ({
   isMailerConfigured: vi.fn().mockReturnValue(false),
@@ -70,6 +72,34 @@ describe("password reset routes", () => {
       payload: { email: "dana@example.com" },
     });
     expect(await prisma.passwordResetToken.count({ where: { userId } })).toBe(1);
+  });
+
+  it("emails a link to the token-consuming /reset-password/confirm page whose token verifies", async () => {
+    vi.mocked(isMailerConfigured).mockReturnValueOnce(true);
+    vi.mocked(sendPasswordResetEmail).mockClear();
+    const server = buildServer();
+    await registerUser(server);
+
+    await server.inject({
+      method: "POST",
+      url: "/api/auth/password-reset/request",
+      payload: { email: "dana@example.com" },
+    });
+
+    expect(sendPasswordResetEmail).toHaveBeenCalledTimes(1);
+    const [to, resetUrl] = vi.mocked(sendPasswordResetEmail).mock.calls[0]!;
+    expect(to).toBe("dana@example.com");
+    const url = new URL(resetUrl);
+    expect(url.origin + url.pathname).toBe(`${new URL(env.APP_URL).origin}/reset-password/confirm`);
+    const token = url.searchParams.get("token");
+    expect(token).toBeTruthy();
+
+    const verify = await server.inject({
+      method: "POST",
+      url: "/api/auth/password-reset/verify-token",
+      payload: { token },
+    });
+    expect(verify.statusCode).toBe(200);
   });
 
   it("rejects verify-token and complete for an invalid token", async () => {

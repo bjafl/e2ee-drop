@@ -39,7 +39,10 @@ export function registerPasswordResetRoutes(server: FastifyInstance): void {
           data: { userId: user.id, tokenHash: hashToken(token), expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS) },
         });
         if (isMailerConfigured()) {
-          await sendPasswordResetEmail(user.email, `${env.APP_URL}/reset-password?token=${token}`);
+          // Must point at the token-consuming page (apps/web App.tsx route
+          // /reset-password/confirm), not /reset-password, which is the
+          // "enter your email" request page.
+          await sendPasswordResetEmail(user.email, `${env.APP_URL}/reset-password/confirm?token=${token}`);
         }
       }
       // Always 200, regardless of whether the email is registered, so this endpoint cannot be used to enumerate accounts.
