@@ -42,6 +42,45 @@ describe("POST /api/auth/register", () => {
     expect(link?.ownerId).toBe(body.userId);
   });
 
+  it("returns 409 (not 500) and leaves no orphaned user when the username equals an existing anonymous link's slug", async () => {
+    const server = buildServer();
+    // An anonymous one-time link, created the real way; its random slug is a
+    // valid username (lowercase alphanumeric, 16 chars).
+    const created = await server.inject({
+      method: "POST",
+      url: "/api/links",
+      payload: { recipientPublicKey: "YW5vbi1rZXk=" },
+    });
+    const anonSlug: string = created.json().slug;
+    const anonLink = await prisma.link.findUniqueOrThrow({ where: { slug: anonSlug } });
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: {
+        email: "collide@example.com",
+        username: anonSlug,
+        name: "Collide",
+        authKey: "p",
+        passwordSalt: "s",
+        passwordWrappedPrivateKey: "w",
+        recoveryWrappedPrivateKey: "r",
+        publicKey: "k",
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: "Email or username already in use" });
+    // The user insert was rolled back with the failed link insert.
+    expect(await prisma.user.findUnique({ where: { email: "collide@example.com" } })).toBeNull();
+    expect(await prisma.session.count()).toBe(0);
+    // The anonymous link is untouched and still the only link with that slug.
+    const stillThere = await prisma.link.findUniqueOrThrow({ where: { slug: anonSlug } });
+    expect(stillThere.id).toBe(anonLink.id);
+    expect(stillThere.ownerId).toBeNull();
+    expect(await prisma.link.count({ where: { slug: anonSlug } })).toBe(1);
+  });
+
   it("returns 409 when the email is already registered", async () => {
     const server = buildServer();
     const payload = {

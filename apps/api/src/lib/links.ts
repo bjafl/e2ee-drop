@@ -20,7 +20,8 @@ export async function createOneTimeLink(recipientPublicKey: string, locale?: str
 }
 
 export async function getLinkBySlug(slug: string): Promise<(Link & { drops: Drop[] }) | null> {
-  return prisma.link.findFirst({ where: { slug }, include: { drops: true } });
+  // Link.slug is globally unique (schema.prisma), so at most one row can match.
+  return prisma.link.findUnique({ where: { slug }, include: { drops: true } });
 }
 
 export function isLinkExpired(link: Link): boolean {
@@ -83,8 +84,16 @@ export function toDropSummary(drop: Drop): DropSummary {
   };
 }
 
-export async function createDefaultLinkForUser(userId: string, username: string, publicKey: string): Promise<Link> {
-  return prisma.link.create({
+// `db` lets callers run this inside a prisma.$transaction alongside the
+// User write it belongs with (registration, fresh-key password reset), so a
+// failure here rolls back that write too.
+export async function createDefaultLinkForUser(
+  userId: string,
+  username: string,
+  publicKey: string,
+  db: Prisma.TransactionClient = prisma
+): Promise<Link> {
+  return db.link.create({
     data: {
       ownerId: userId,
       slug: username,

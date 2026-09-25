@@ -148,33 +148,41 @@ export function registerAuthRoutes(server: FastifyInstance): void {
     // see RegisterRequest.authKey for why the server never sees the password.
     const passwordHash = await hashPassword(authKey);
 
+    // User + default Link in one transaction: if the link insert fails, the
+    // user row is rolled back too, rather than leaving an account with no
+    // default link whose email/username would then 409 on every retry.
     let user;
+    let defaultLink;
     try {
-      user = await prisma.user.create({
-        data: {
-          email,
-          username,
-          name,
-          passwordHash,
-          passwordSalt,
-          passwordWrappedPrivateKey,
-          recoveryWrappedPrivateKey,
-          publicKey,
-          storageQuotaBytes: env.DEFAULT_STORAGE_QUOTA_BYTES,
-        },
-      });
+      ({ user, defaultLink } = await prisma.$transaction(async (tx) => {
+        const created = await tx.user.create({
+          data: {
+            email,
+            username,
+            name,
+            passwordHash,
+            passwordSalt,
+            passwordWrappedPrivateKey,
+            recoveryWrappedPrivateKey,
+            publicKey,
+            storageQuotaBytes: env.DEFAULT_STORAGE_QUOTA_BYTES,
+          },
+        });
+        const link = await createDefaultLinkForUser(created.id, created.username, created.publicKey, tx);
+        return { user: created, defaultLink: link };
+      }));
     } catch (error: unknown) {
-      // P2002 (unique constraint violation) fires identically whether it's
-      // `email` or `username` that collided — email and username are each
-      // `@unique` on User (schema.prisma) — so this single catch covers
-      // both without needing to inspect error.meta.target.
+      // P2002 (unique constraint violation) covers every collision here
+      // without inspecting error.meta.target: `email` and `username` are
+      // each @unique on User, and Link.slug (= username for the default
+      // link) is globally unique, so a username equal to an existing
+      // anonymous link's slug also lands here. All are "already in use".
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
         return reply.status(409).send({ error: "Email or username already in use" });
       }
       throw error;
     }
 
-    const defaultLink = await createDefaultLinkForUser(user.id, user.username, user.publicKey);
     const session = await createSession(user.id);
 
     reply.setCookie(SESSION_COOKIE_NAME, session.id, {

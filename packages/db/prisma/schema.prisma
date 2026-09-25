@@ -71,7 +71,13 @@ model Link {
   id                 String    @id @default(cuid())
   ownerId            String?
   owner              User?     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  slug               String
+  // Globally unique, not per-owner: every link — anonymous or owned — is
+  // resolved by slug alone (/d/<slug>, GET /api/links/:slug), so two links
+  // sharing a slug would make lookups ambiguous. A per-(ownerId, slug) unique
+  // did not prevent this, because Postgres treats NULL ownerIds (anonymous
+  // links) as distinct, and a username (= default link slug) can equal an
+  // anonymous link's random slug. See migration 20260925055712_link_slug_globally_unique.
+  slug               String    @unique
   mode               String
   visibility         String    @default("public")
   recipientPublicKey String
@@ -83,8 +89,9 @@ model Link {
   revokedAt          DateTime?
   drops              Drop[]
 
-  @@unique([ownerId, slug])
-  @@index([slug])
+  // Replaces the old @@unique([ownerId, slug]) index's role in serving
+  // owner-scoped queries (e.g. cascadeDeleteUserLinks' findMany by ownerId).
+  @@index([ownerId])
 }
 
 model Drop {
