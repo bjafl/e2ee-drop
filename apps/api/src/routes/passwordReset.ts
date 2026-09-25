@@ -4,6 +4,7 @@ import { randomBytes, createHash } from "node:crypto";
 import { prisma } from "@e2ee-drop/db";
 import type {
   PasswordResetRequestRequest,
+  PasswordResetRequestResponse,
   PasswordResetVerifyTokenResponse,
   PasswordResetCompleteRequest,
   PasswordResetCompleteFreshRequest,
@@ -45,8 +46,12 @@ export function registerPasswordResetRoutes(server: FastifyInstance): void {
           await sendPasswordResetEmail(user.email, `${env.APP_URL}/reset-password/confirm?token=${token}`);
         }
       }
-      // Always 200, regardless of whether the email is registered, so this endpoint cannot be used to enumerate accounts.
-      return reply.send({ requested: true });
+      // Always 200 with the same body, regardless of whether the email is
+      // registered, so this endpoint cannot be used to enumerate accounts.
+      // emailDeliveryAvailable depends only on server configuration, never on
+      // the submitted email, so exposing it leaks nothing about accounts.
+      const body: PasswordResetRequestResponse = { requested: true, emailDeliveryAvailable: isMailerConfigured() };
+      return reply.send(body);
     }
   );
 

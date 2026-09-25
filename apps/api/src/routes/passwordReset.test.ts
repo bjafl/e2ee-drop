@@ -62,6 +62,28 @@ describe("password reset routes", () => {
     expect(await prisma.passwordResetToken.count()).toBe(0);
   });
 
+  it("reports emailDeliveryAvailable from server config only, identically for registered and unregistered emails", async () => {
+    const server = buildServer();
+    await registerUser(server);
+
+    for (const configured of [false, true]) {
+      vi.mocked(isMailerConfigured).mockReturnValue(configured);
+      const bodies = [];
+      for (const email of ["dana@example.com", "nobody@example.com"]) {
+        const response = await server.inject({
+          method: "POST",
+          url: "/api/auth/password-reset/request",
+          payload: { email },
+        });
+        expect(response.statusCode).toBe(200);
+        bodies.push(response.json());
+      }
+      expect(bodies[0]).toEqual({ requested: true, emailDeliveryAvailable: configured });
+      expect(bodies[1]).toEqual(bodies[0]);
+    }
+    vi.mocked(isMailerConfigured).mockReturnValue(false);
+  });
+
   it("creates a token for a registered email and verify-token returns the recovery blob", async () => {
     const server = buildServer();
     const { userId } = await registerUser(server);

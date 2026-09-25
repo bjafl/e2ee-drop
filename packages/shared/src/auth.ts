@@ -65,6 +65,15 @@ export interface PasswordResetRequestRequest {
   email: string;
 }
 
+// Identical for every caller regardless of whether the email is registered
+// (so it can't enumerate accounts). emailDeliveryAvailable is a property of
+// the server instance only — whether a mailer is configured at all — so the
+// UI can avoid claiming "check your email" when no email can ever be sent.
+export interface PasswordResetRequestResponse {
+  requested: true;
+  emailDeliveryAvailable: boolean;
+}
+
 export interface PasswordResetVerifyTokenResponse {
   email: string;
   passwordSalt: string;
