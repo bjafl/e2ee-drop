@@ -8,6 +8,7 @@
     "dev:web": "pnpm --filter @e2ee-drop/web dev",
     "test": "pnpm -r test",
     "lint": "pnpm -r lint",
+    "lint:i18n": "node apps/web/scripts/check-i18n-parity.mjs",
     "verify:e2e": "node scripts/verify-e2e.mjs"
   },
   "devDependencies": {
