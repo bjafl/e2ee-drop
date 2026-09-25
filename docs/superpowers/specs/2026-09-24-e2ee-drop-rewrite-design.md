@@ -289,6 +289,13 @@ not expose:
   all. Worth doing as its own follow-up regardless of whether the
   manage-token redesign ever happens.
 
+  **Implemented** (both parts, on anonymous and owned links alike):
+  `/complete` HEADs `drop.s3Key` via `objectHasSize` in
+  `apps/api/src/lib/storage.ts` and answers 409 if the object is missing
+  or the wrong size; a drop already `uploaded`/`downloading`/`downloaded`
+  gets 200 (`{ updated: false }`) with nothing written, so an owned link's
+  quota is still charged exactly once, by the call that wins the CAS.
+
 ## 6. Links, contacts, and the "send to contact" flow
 
 - **Contacts** are established via mutual request/accept between two
