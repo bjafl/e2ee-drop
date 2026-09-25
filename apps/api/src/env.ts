@@ -1,25 +1,13 @@
 // apps/api/src/env.ts
-function required(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`Missing required env var: ${name}`);
-  return value;
-}
+import { required, requiredSecret, int, optionalInt, bool } from "./envParsers";
 
-function int(name: string, fallback: number): number {
-  const value = process.env[name];
-  return value ? parseInt(value, 10) : fallback;
-}
-
-function bool(name: string, fallback: boolean): boolean {
-  const value = process.env[name];
-  return value === undefined ? fallback : value === "true";
-}
-
+// Evaluated at module load: any missing or invalid value throws here and the
+// process refuses to start, naming the offending variable (see envParsers.ts).
 export const env = {
   DATABASE_URL: required("DATABASE_URL"),
-  PORT: int("PORT", 3000),
-  MAX_FILE_SIZE_BYTES: int("MAX_FILE_SIZE_BYTES", 500 * 1024 * 1024),
-  LINK_EXPIRY_HOURS: int("LINK_EXPIRY_HOURS", 24),
+  PORT: int("PORT", 3000, { min: 1, max: 65535 }),
+  MAX_FILE_SIZE_BYTES: int("MAX_FILE_SIZE_BYTES", 500 * 1024 * 1024, { min: 1 }),
+  LINK_EXPIRY_HOURS: int("LINK_EXPIRY_HOURS", 24, { min: 1 }),
   DROP_RETENTION_DAYS: int("DROP_RETENTION_DAYS", 7),
   // Internal endpoint for server-to-MinIO calls (bucket setup, deletes).
   MINIO_ENDPOINT: required("MINIO_ENDPOINT"),
@@ -31,8 +19,8 @@ export const env = {
   MINIO_BUCKET: required("MINIO_BUCKET"),
   MINIO_ACCESS_KEY: required("MINIO_ACCESS_KEY"),
   MINIO_SECRET_KEY: required("MINIO_SECRET_KEY"),
-  SESSION_SECRET: required("SESSION_SECRET"),
-  APP_SECRET_KEY: required("APP_SECRET_KEY"),
+  SESSION_SECRET: requiredSecret("SESSION_SECRET"),
+  APP_SECRET_KEY: requiredSecret("APP_SECRET_KEY"),
   ALLOW_REGISTRATION: bool("ALLOW_REGISTRATION", true),
   DEFAULT_STORAGE_QUOTA_BYTES: int("DEFAULT_STORAGE_QUOTA_BYTES", 5 * 1024 * 1024 * 1024),
   // Number of reverse-proxy hops in front of the API whose X-Forwarded-For
@@ -41,7 +29,7 @@ export const env = {
   TRUST_PROXY_HOPS: int("TRUST_PROXY_HOPS", 1),
   APP_URL: process.env.APP_URL ?? "http://localhost:8080",
   SMTP_HOST: process.env.SMTP_HOST,
-  SMTP_PORT: process.env.SMTP_PORT ? parseInt(process.env.SMTP_PORT, 10) : undefined,
+  SMTP_PORT: optionalInt("SMTP_PORT", { min: 1, max: 65535 }),
   SMTP_USER: process.env.SMTP_USER,
   SMTP_PASS: process.env.SMTP_PASS,
   SMTP_FROM: process.env.SMTP_FROM,
