@@ -17,12 +17,27 @@
 // — Fastify treats an undefined preHandler as "none", not an error — i.e.
 // auth would be silently bypassed rather than loudly broken.
 //
-// Calling this function directly against the root server instance runs
-// decorateRequest/addHook/decorate synchronously, so `server.requireAuth`
-// exists immediately, before any subsequent route registration in the same
-// buildServer() call. No encapsulation boundary needs to be crossed (unlike
-// a plugin nested via `.register()`), so `fastify-plugin`'s
-// encapsulation-skipping wrapper isn't needed here either.
+// Calling this function directly against the root server instance is what
+// fixes the specific problem above: `decorateRequest("user", ...)` and
+// `decorate("requireAuth", ...)` run synchronously the moment this function
+// is called, so `server.requireAuth` exists immediately, before any
+// subsequent route registration in the same buildServer() call — that's the
+// property route registration actually depends on.
+//
+// `addHook("onRequest", ...)` below is a separate matter: like
+// `.register()`, Fastify defers a hook's *installation* through its
+// internal boot queue (`this.after(...)`) rather than wiring it up
+// synchronously — hooks only start firing once the queue drains, i.e. once
+// boot completes (before the first real or injected request, same as
+// decorators added via `.register()`). That's fine for this hook, since
+// nothing reads `request.user` until a request actually arrives. But it
+// does mean this hook's relative *order* against other deferred
+// registrations — like @fastify/cookie's own hook that populates
+// `request.cookies` — still depends on call order in server.ts. See the
+// comment above `authPlugin(server)` in server.ts for why `cookie` must be
+// registered first. No encapsulation boundary needs to be crossed here
+// (unlike a plugin nested via `.register()`), so `fastify-plugin`'s
+// encapsulation-skipping wrapper isn't needed either.
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { getUserIdFromSession } from "../lib/sessions";
 

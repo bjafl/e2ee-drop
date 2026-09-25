@@ -10,6 +10,12 @@ import { env } from "./env";
 export function buildServer(): FastifyInstance {
   const server = Fastify({ logger: true });
 
+  // Must be registered before authPlugin(server): the auth plugin's
+  // onRequest hook reads request.cookies (populated by this plugin's own
+  // deferred hook). Both hooks are installed through Fastify's boot queue
+  // in call order, so if this line moved after authPlugin(server), the auth
+  // hook's cookie-reading hook would run before request.cookies has been
+  // set up — request.cookies would be null and every request would 500.
   server.register(cookie, { secret: env.SESSION_SECRET });
   // Called directly (not server.register(authPlugin)) so server.requireAuth
   // exists synchronously before the route registrations below run — see the
