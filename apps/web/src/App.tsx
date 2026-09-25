@@ -10,11 +10,13 @@ import { ConfirmPasswordResetPage } from "@/components/ConfirmPasswordResetPage"
 import { ContactsPage } from "@/components/ContactsPage";
 import { NewLinkPage } from "@/components/NewLinkPage";
 import { AccountPage } from "@/components/AccountPage";
+import { NavBar } from "@/components/NavBar";
 import { AuthProvider } from "@/hooks/useAuth";
 
 export default function App() {
   return (
     <AuthProvider>
+      <NavBar />
       <Routes>
         <Route path="/" element={<HomePage />} />
         <Route path="/create" element={<CreateLinkPage />} />
