@@ -1,5 +1,14 @@
 // apps/api/src/routes/downloads.test.ts
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+
+// /complete HEAD-verifies the upload in storage; these tests never PUT real
+// bytes, so report every object as present (see completeVerification.test.ts
+// for the real check).
+vi.mock("../lib/storage", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/storage")>()),
+  objectHasSize: vi.fn().mockResolvedValue(true),
+}));
+
 import { buildServer } from "../server";
 import { prisma } from "@e2ee-drop/db";
 import { subscribeToLink, type DropEvent } from "../lib/dropEvents";

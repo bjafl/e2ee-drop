@@ -2,12 +2,19 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { prisma } from "@e2ee-drop/db";
 
-const { getSignedUploadUrlSpy } = vi.hoisted(() => ({ getSignedUploadUrlSpy: vi.fn() }));
+const { getSignedUploadUrlSpy, objectHasSizeSpy } = vi.hoisted(() => ({
+  getSignedUploadUrlSpy: vi.fn(),
+  objectHasSizeSpy: vi.fn(),
+}));
 
+// /complete HEAD-verifies the upload (objectHasSize). These tests never PUT
+// real bytes, so the spy reports every object as present unless a test says
+// otherwise; completeVerification.test.ts exercises the real HEAD against
+// bytes actually uploaded to MinIO.
 vi.mock("../lib/storage", async (importOriginal) => {
   const original = await importOriginal<typeof import("../lib/storage")>();
   getSignedUploadUrlSpy.mockImplementation(original.getSignedUploadUrl);
-  return { ...original, getSignedUploadUrl: getSignedUploadUrlSpy };
+  return { ...original, getSignedUploadUrl: getSignedUploadUrlSpy, objectHasSize: objectHasSizeSpy };
 });
 
 import { buildServer } from "../server";
@@ -66,6 +73,8 @@ describe("upload routes", () => {
     await prisma.drop.deleteMany();
     await prisma.link.deleteMany();
     await prisma.user.deleteMany();
+    objectHasSizeSpy.mockReset();
+    objectHasSizeSpy.mockResolvedValue(true);
   });
 
   it("issues an upload url and creates a drop for a fresh link", async () => {
@@ -398,14 +407,29 @@ describe("upload routes", () => {
     expect(drop?.status).toBe("uploading");
   });
 
-  it("returns 404 when completing a drop that is not in the uploading state", async () => {
+  it("answers a repeat complete on an already-uploaded drop idempotently with 200", async () => {
     const server = buildServer();
     const { slug, dropId } = await createLinkWithUploadingDrop(server);
     const first = await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/complete` });
     expect(first.statusCode).toBe(200);
+    expect(first.json()).toEqual({ updated: true });
 
     const second = await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/complete` });
-    expect(second.statusCode).toBe(404);
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toEqual({ updated: false });
+  });
+
+  it("verifies the drop's object at its s3Key for exactly fileSize + 16 bytes, and 409s without changing it if absent", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithUploadingDrop(server);
+    const { s3Key } = await prisma.drop.findUniqueOrThrow({ where: { id: dropId } });
+    objectHasSizeSpy.mockResolvedValue(false);
+
+    const res = await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/complete` });
+
+    expect(res.statusCode).toBe(409);
+    expect(objectHasSizeSpy).toHaveBeenCalledWith(s3Key, validMetadata.fileSize + 16);
+    expect((await prisma.drop.findUnique({ where: { id: dropId } }))?.status).toBe("uploading");
   });
 
   it("does not regress a downloaded drop back to uploaded on a late complete call", async () => {
@@ -415,7 +439,8 @@ describe("upload routes", () => {
 
     const res = await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/complete` });
 
-    expect(res.statusCode).toBe(404);
+    // Idempotent success (the drop did complete, earlier), not a regression.
+    expect(res.statusCode).toBe(200);
     const drop = await prisma.drop.findUnique({ where: { id: dropId } });
     expect(drop?.status).toBe("downloaded");
   });
@@ -446,7 +471,7 @@ describe("upload routes", () => {
     });
     const { dropId } = uploadRes.json();
     await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/complete` });
-    // A second complete loses the CAS (already "uploaded") and must not emit.
+    // A second complete is an idempotent 200 (already "uploaded") and must not emit.
     await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/complete` });
     // A rejected second upload on a one-time link must not emit either.
     await server.inject({

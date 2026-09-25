@@ -6,11 +6,18 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { prisma } from "@e2ee-drop/db";
 
-// Only deleteObject is stubbed (the cascade test below would otherwise need a
-// reachable MinIO); presigning is a local computation and stays real.
+// deleteObject and objectHasSize are stubbed so this suite needs no reachable
+// MinIO: the cascade test deletes objects, and every /complete HEAD-verifies
+// its upload (always "present, right size" here — these tests are about the
+// accounting; completeVerification.test.ts exercises the real HEAD against
+// real uploaded bytes). Presigning is a local computation and stays real.
 vi.mock("../lib/storage", async (importOriginal) => {
   const original = await importOriginal<typeof import("../lib/storage")>();
-  return { ...original, deleteObject: vi.fn().mockResolvedValue(undefined) };
+  return {
+    ...original,
+    deleteObject: vi.fn().mockResolvedValue(undefined),
+    objectHasSize: vi.fn().mockResolvedValue(true),
+  };
 });
 
 import { buildServer } from "../server";
@@ -218,9 +225,10 @@ describe("storage quota", () => {
       const { dropId } = (await requestUpload(server, "double")).json();
 
       expect((await complete(server, "double", dropId)).statusCode).toBe(200);
-      expect((await complete(server, "double", dropId)).statusCode).toBe(404);
+      // Repeats are idempotent successes, but never charge again.
+      expect((await complete(server, "double", dropId)).statusCode).toBe(200);
       await prisma.drop.update({ where: { id: dropId }, data: { status: "downloaded" } });
-      expect((await complete(server, "double", dropId)).statusCode).toBe(404);
+      expect((await complete(server, "double", dropId)).statusCode).toBe(200);
 
       expect(await usedBytes(owner.id)).toBe(BigInt(CHARGE));
     });
@@ -287,7 +295,7 @@ describe("storage quota", () => {
       await backdate([dropId], 15 * 60 * 1000);
 
       expect((await complete(server, "slow-complete", dropId)).statusCode).toBe(200);
-      expect((await complete(server, "slow-complete", dropId)).statusCode).toBe(404);
+      expect((await complete(server, "slow-complete", dropId)).statusCode).toBe(200);
       expect(await usedBytes(owner.id)).toBe(BigInt(CHARGE));
     });
 
@@ -382,7 +390,11 @@ describe("storage quota", () => {
             fetch(`${baseUrl}/api/links/burst/drops/${dropId}/complete`, { method: "POST" })
           )
         );
-        expect(completes.filter((r) => r.status === 200)).toHaveLength(FITS);
+        // Every call succeeds (repeats idempotently), but exactly one per
+        // drop actually performs the transition and its charge.
+        expect(completes.map((r) => r.status)).toEqual(Array(2 * FITS).fill(200));
+        const bodies = await Promise.all(completes.map((r) => r.json()));
+        expect(bodies.filter((b) => b.updated === true)).toHaveLength(FITS);
         expect(await usedBytes(owner.id)).toBe(BigInt(FITS * CHARGE));
       });
     });

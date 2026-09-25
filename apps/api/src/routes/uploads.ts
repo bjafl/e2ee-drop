@@ -2,9 +2,9 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { nanoid } from "nanoid";
 import { prisma, Prisma, type Drop } from "@e2ee-drop/db";
-import type { RequestUploadUrlRequest, RequestUploadUrlResponse } from "@e2ee-drop/shared";
+import type { DropStatus, RequestUploadUrlRequest, RequestUploadUrlResponse } from "@e2ee-drop/shared";
 import { getLinkBySlug, isLinkExpired, toDropSummary, transitionDropStatus } from "../lib/links";
-import { getSignedUploadUrl } from "../lib/storage";
+import { getSignedUploadUrl, objectHasSize } from "../lib/storage";
 import { emitDropEvent } from "../lib/dropEvents";
 import { hasAcceptedContact } from "../lib/contacts";
 import {
@@ -23,6 +23,14 @@ import { env } from "../env";
 import { uploadUrlRateLimiter, rateLimitExceededBody } from "../lib/rateLimit";
 
 const MAX_MESSAGE_LENGTH = 500;
+
+// Statuses a drop only reaches after a successful /complete. A repeated or
+// late /complete on such a drop is answered idempotently (200), never re-run.
+const COMPLETED_STATUSES: readonly string[] = ["uploaded", "downloading", "downloaded"] satisfies DropStatus[];
+
+function isCompletedStatus(status: string): boolean {
+  return COMPLETED_STATUSES.includes(status);
+}
 
 // NACL_BOX_OVERHEAD_BYTES (lib/quota): the server knows the exact ciphertext byte
 // count from the declared plaintext `fileSize` alone, and signs it into the
@@ -229,30 +237,55 @@ export function registerUploadRoutes(server: FastifyInstance): void {
     async (request, reply) => {
       const link = await getLinkBySlug(request.params.slug);
       if (!link || isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+      const { dropId } = request.params;
+
+      // Scoped by link: a drop id alone must never act on another link's drop.
+      const drop = await prisma.drop.findFirst({
+        where: { id: dropId, linkId: link.id },
+        select: { status: true, s3Key: true, fileSize: true },
+      });
+      if (!drop) return reply.status(404).send({ error: "Drop not found" });
+      // Idempotent: a drop that is already complete (or further along) reports
+      // success again rather than 404. Otherwise a sender whose drop was
+      // completed first by someone else — a bystander holding an anonymous
+      // link's slug, or just its own retried request — sees "upload failed"
+      // with no way forward, even though its bytes landed. Nothing is written
+      // here, so an owned link's quota is not charged a second time.
+      if (isCompletedStatus(drop.status)) return reply.send({ updated: false });
+
+      // Verify, don't trust (spec §5.1): the caller's word that the upload
+      // finished is not enough. Only an object actually in storage with
+      // exactly the size the presigned PUT was signed for (upload-url above)
+      // may complete the drop. Without this, the sender on an OWNED link could
+      // skip the PUT and call /complete directly, charging the owner's quota
+      // for bytes that were never stored (and freeing its own reservation
+      // share for another round); and anyone holding an anonymous link's slug
+      // could flip the drop to "uploaded" before its bytes exist. Checked
+      // outside any transaction: no row lock is held across a network call.
+      // A missed race (object deleted between here and the CAS) can only
+      // happen with the drop row itself, so the CAS then simply misses.
+      if (!(await objectHasSize(drop.s3Key, drop.fileSize + NACL_BOX_OVERHEAD_BYTES))) {
+        // 409: the drop exists and the request is well-formed, but it
+        // conflicts with the current state of storage. The sender may retry
+        // once its PUT has actually succeeded.
+        return reply.status(409).send({ error: "Upload not received yet; finish uploading the file, then try again" });
+      }
+
       // Compare-and-swap: only "uploading" -> "uploaded", and only for a drop that
-      // belongs to this link. An anonymous link's drop id is visible to anyone
-      // holding the link (GET /api/links/:slug), so a blind update would let them flip a drop to "uploaded" before its bytes exist,
-      // or flip an already-"downloaded" drop back to "uploaded".
+      // belongs to this link, so a late call can never regress an already-
+      // "downloaded" drop back to "uploaded".
       const ownerId = link.ownerId;
       let updated: boolean;
       if (ownerId === null) {
         // Anonymous link: no owner, no quota to charge.
         //
-        // KNOWN, ACCEPTED TRADE-OFF (security review SEC10): the drop id is
-        // readable by every slug holder, so any of them can complete an
-        // "uploading" drop early. This doesn't just delay the recipient's
-        // download — it also makes the REAL sender's own later /complete
-        // call lose the CAS (404), so the real sender sees "upload failed"
-        // with no way to retry (a fresh upload-url on the same link then
-        // 409s), even though the bytes actually landed. A per-drop upload
-        // secret was considered and rejected because it closes nothing: the
-        // same bystander can DELETE the link (see links.ts) or, worse, claim
-        // the link's one upload slot before the real sender arrives — no
-        // token stops that. See spec §5.1, including the cheaper option of
-        // making this route verify-before-CAS (HEAD the object; only trust a
-        // Content-Length match) and idempotent on an already-`uploaded`
-        // drop, if this failure mode ever needs closing.
-        updated = await transitionDropStatus(request.params.dropId, link.id, ["uploading"], "uploaded");
+        // Any slug holder can read this drop's id (GET /api/links/:slug), and
+        // so can call /complete on it (security review SEC10). With the HEAD
+        // check above they can only report a completion that is already true,
+        // and the idempotent early return means the real sender's own call
+        // still succeeds afterwards. Slot-taking and DELETE by a slug holder
+        // remain accepted trade-offs (spec §5.1).
+        updated = await transitionDropStatus(dropId, link.id, ["uploading"], "uploaded");
       } else {
         // Owned link: the CAS and the owner's quota charge commit together, and
         // the charge happens only if this call won the CAS — so a drop is charged
@@ -275,7 +308,7 @@ export function registerUploadRoutes(server: FastifyInstance): void {
           if (!(await lockOwnerQuota(tx, ownerId))) return "not-found" as const;
           const { count } = await tx.drop.updateMany({
             where: {
-              id: request.params.dropId,
+              id: dropId,
               linkId: link.id,
               status: "uploading",
               createdAt: { gt: reservationCutoff() },
@@ -283,37 +316,34 @@ export function registerUploadRoutes(server: FastifyInstance): void {
             // No longer a reservation, so the sender tag has no further use.
             data: { status: "uploaded", reservationSenderKey: null },
           });
-          if (count !== 1) {
-            // Lost the CAS. Only to choose the error message: a drop that is
-            // still "uploading" here failed on age alone. Nothing is written.
-            const stale = await tx.drop.count({
-              where: { id: request.params.dropId, linkId: link.id, status: "uploading" },
-            });
-            return stale > 0 ? ("expired" as const) : ("not-found" as const);
-          }
-          const { fileSize } = await tx.drop.findUniqueOrThrow({
-            where: { id: request.params.dropId },
-            select: { fileSize: true },
-          });
+          if (count !== 1) return "lost" as const;
           await tx.user.update({
             where: { id: ownerId },
-            data: { storageUsedBytes: { increment: chargedBytes(fileSize) } },
+            data: { storageUsedBytes: { increment: chargedBytes(drop.fileSize) } },
           });
           return "completed" as const;
         }, QUOTA_TX_OPTIONS);
-        // 410 rather than 404: the drop exists, but the upload window it was
-        // granted has closed for good; the sender must start a new upload.
-        if (outcome === "expired") {
-          return reply.status(410).send({ error: "Upload window expired; please start the upload again" });
-        }
+        if (outcome === "not-found") return reply.status(404).send({ error: "Link not found" });
         updated = outcome === "completed";
       }
-      if (!updated) return reply.status(404).send({ error: "Drop not found" });
+
+      if (!updated) {
+        // Lost the CAS. Re-read only to choose the response; nothing is written.
+        const current = await prisma.drop.findFirst({ where: { id: dropId, linkId: link.id }, select: { status: true } });
+        if (!current) return reply.status(404).send({ error: "Drop not found" });
+        // A concurrent /complete for the same drop won: same idempotent success
+        // as the early return above, and it did the one and only charge.
+        if (isCompletedStatus(current.status)) return reply.send({ updated: false });
+        // Still "uploading", so (owned links only) the age condition failed.
+        // 410 rather than 404: the drop exists, but the upload window it was
+        // granted has closed for good; the sender must start a new upload.
+        return reply.status(410).send({ error: "Upload window expired; please start the upload again" });
+      }
       // Only emitted when this call actually won the CAS. The drop was created
       // (as "uploading") before this request fetched `link`, so it's in the snapshot.
-      const drop = link.drops.find((candidate) => candidate.id === request.params.dropId);
-      if (drop) {
-        emitDropEvent(link.id, { type: "drop-updated", drop: toDropSummary({ ...drop, status: "uploaded" }) });
+      const snapshot = link.drops.find((candidate) => candidate.id === dropId);
+      if (snapshot) {
+        emitDropEvent(link.id, { type: "drop-updated", drop: toDropSummary({ ...snapshot, status: "uploaded" }) });
       }
       return reply.send({ updated: true });
     }

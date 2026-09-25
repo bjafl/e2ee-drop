@@ -4,6 +4,7 @@ import {
   PutObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
+  HeadObjectCommand,
   HeadBucketCommand,
   CreateBucketCommand,
   PutBucketCorsCommand,
@@ -124,4 +125,25 @@ export async function getSignedDownloadUrl(s3Key: string, expiresIn = 600): Prom
 export async function deleteObject(s3Key: string): Promise<void> {
   const s3 = getClient();
   await s3.send(new DeleteObjectCommand({ Bucket: env.MINIO_BUCKET, Key: s3Key }));
+}
+
+// True iff an object exists at `s3Key` and holds exactly `expectedBytes` bytes.
+// /complete uses this to verify an upload actually landed before marking the
+// drop "uploaded" (and, on an owned link, charging the owner's quota), rather
+// than trusting the caller's word for it. A missing object is a plain `false`;
+// any other storage error (unreachable backend, bad credentials) is rethrown,
+// so an outage surfaces as a 500 instead of being misreported to the sender as
+// "your upload hasn't arrived".
+export async function objectHasSize(s3Key: string, expectedBytes: number): Promise<boolean> {
+  const s3 = getClient();
+  try {
+    const head = await s3.send(new HeadObjectCommand({ Bucket: env.MINIO_BUCKET, Key: s3Key }));
+    return head.ContentLength === expectedBytes;
+  } catch (err) {
+    // HEAD responses have no body, so the SDK can't read an S3 error code and
+    // reports a missing key as "NotFound"; match on the HTTP status as well.
+    const { name, $metadata } = err as { name?: string; $metadata?: { httpStatusCode?: number } };
+    if (name === "NotFound" || name === "NoSuchKey" || $metadata?.httpStatusCode === 404) return false;
+    throw err;
+  }
 }
