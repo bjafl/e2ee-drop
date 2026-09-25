@@ -414,4 +414,88 @@ describe("ConfirmPasswordResetPage", () => {
       await waitFor(() => expect(screen.getByText(/too many incorrect codes/i)).toBeInTheDocument());
     });
   });
+
+  // Minimum password length (lib/passwordPolicy.ts) is enforced client-side
+  // only — the server never sees the password — so the page must stop a
+  // too-short password before ANY /complete or /complete-fresh call (which
+  // would otherwise consume the reset token).
+  describe.each([
+    { path: "recovery", fresh: false },
+    { path: "fresh", fresh: true },
+  ])("minimum password length ($path path)", ({ fresh }) => {
+    const setup = () => {
+      const keyPair = nacl.box.keyPair();
+      const recoveryCode = generateRecoveryCode();
+      const recoveryWrapped = wrapPrivateKey(keyPair.secretKey, deriveRecoveryKey(recoveryCode));
+      const completeCalls: string[] = [];
+      vi.spyOn(global, "fetch").mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("/verify-token")) {
+          return new Response(
+            JSON.stringify({
+              email: "i@example.com",
+              passwordSalt: generateWrappingSalt(),
+              recoveryWrappedPrivateKey: recoveryWrapped,
+            }),
+            { status: 200 }
+          );
+        }
+        if (url.includes("/complete")) {
+          completeCalls.push(url);
+          return new Response(JSON.stringify({ reset: true }), { status: 200 });
+        }
+        throw new Error(`unexpected fetch ${url}`);
+      });
+      return { recoveryCode, completeCalls };
+    };
+
+    const submit = async (user: ReturnType<typeof userEvent.setup>, recoveryCode: string, password: string) => {
+      renderAt("/reset-password/confirm?token=abc");
+      if (fresh) {
+        await waitFor(() => screen.getByRole("button", { name: /don't have my recovery code/i }));
+        await user.click(screen.getByRole("button", { name: /don't have my recovery code/i }));
+        await user.type(screen.getByLabelText(/new password/i), password);
+        await user.click(screen.getByRole("button", { name: /start fresh and reset password/i }));
+      } else {
+        await waitFor(() => screen.getByLabelText(/recovery code/i));
+        await user.type(screen.getByLabelText(/recovery code/i), recoveryCode);
+        await user.type(screen.getByLabelText(/new password/i), password);
+        await user.click(screen.getByRole("button", { name: /reset with recovery code/i }));
+      }
+    };
+
+    it("shows the minimum-length hint next to the field", async () => {
+      setup();
+      const user = userEvent.setup();
+      renderAt("/reset-password/confirm?token=abc");
+      if (fresh) {
+        await waitFor(() => screen.getByRole("button", { name: /don't have my recovery code/i }));
+        await user.click(screen.getByRole("button", { name: /don't have my recovery code/i }));
+      } else {
+        await waitFor(() => screen.getByLabelText(/new password/i));
+      }
+      expect(screen.getByLabelText(/new password/i)).toHaveAccessibleDescription(/at least 12 characters/i);
+    });
+
+    it("rejects an 11-character password with a clear message and never calls the server", async () => {
+      const { recoveryCode, completeCalls } = setup();
+      const user = userEvent.setup();
+      await submit(user, recoveryCode, "a".repeat(11));
+
+      // (The fresh path also renders its data-loss warning as an Alert, so
+      // match the message text rather than a single role="alert".)
+      expect(await screen.findByText(/password must be at least 12 characters long/i)).toHaveAttribute("role", "alert");
+      expect(completeCalls).toEqual([]);
+      expect(screen.queryByText(/password has been reset/i)).not.toBeInTheDocument();
+    });
+
+    it("accepts a password of exactly 12 characters", async () => {
+      const { recoveryCode, completeCalls } = setup();
+      const user = userEvent.setup();
+      await submit(user, recoveryCode, "a".repeat(12));
+
+      await waitFor(() => expect(completeCalls).toHaveLength(1));
+      expect(screen.queryByText(/at least 12 characters long/i)).not.toBeInTheDocument();
+    });
+  });
 });

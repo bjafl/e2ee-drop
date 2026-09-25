@@ -176,6 +176,11 @@ export function registerAuthRoutes(server: FastifyInstance): void {
 
     // authKey (not the password) is what gets Argon2id-hashed and stored —
     // see RegisterRequest.authKey for why the server never sees the password.
+    // That is also why there is NO password-length check here: authKey is a
+    // fixed-size Argon2id output regardless of the password behind it, so the
+    // minimum-length policy can only be enforced client-side (see
+    // apps/web/src/lib/passwordPolicy.ts for the full reasoning). The same
+    // applies to both password-reset completion routes.
     const passwordHash = await hashPassword(authKey);
 
     // User + default Link in one transaction: if the link insert fails, the

@@ -25,6 +25,10 @@ import { getUsedCodesForUser } from "../lib/totpReplayGuard";
 
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 
+// Note: neither /complete nor /complete-fresh can check the new password's
+// length — they receive newAuthKey, never the password (see the comment at
+// /register in routes/auth.ts and apps/web/src/lib/passwordPolicy.ts).
+
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }

@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useAuth } from "@/hooks/useAuth";
+import { MIN_PASSWORD_LENGTH, isPasswordLongEnough } from "@/lib/passwordPolicy";
 import i18n from "@/i18n";
 import authEn from "@/locales/en/auth.json";
 import authNb from "@/locales/nb/auth.json";
@@ -26,6 +27,13 @@ export function RegisterPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    // Client-side only by necessity — the server never sees the password
+    // (see lib/passwordPolicy.ts). Checked before register() so a too-short
+    // password never pays the Argon2id derivations.
+    if (!isPasswordLongEnough(password)) {
+      setError(t("register.errors.passwordTooShort", { min: MIN_PASSWORD_LENGTH }));
+      return;
+    }
     try {
       const { recoveryCode: code } = await register({ email, username, name, password });
       setRecoveryCode(code);
@@ -104,10 +112,14 @@ export function RegisterPage() {
               id="password"
               type="password"
               autoComplete="new-password"
+              aria-describedby="password-hint"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="w-full rounded border p-2"
             />
+            <p id="password-hint" className="text-sm text-muted-foreground">
+              {t("register.passwordHint", { min: MIN_PASSWORD_LENGTH })}
+            </p>
           </div>
           <Button type="submit">{t("register.submit")}</Button>
         </form>

@@ -16,6 +16,7 @@ import {
   deriveRecoveryKey,
   generateRecoveryCode,
 } from "@/lib/keyWrapping";
+import { MIN_PASSWORD_LENGTH, isPasswordLongEnough } from "@/lib/passwordPolicy";
 import type { PasswordResetVerifyTokenResponse } from "@e2ee-drop/shared";
 import i18n from "@/i18n";
 import passwordResetEn from "@/locales/en/passwordReset.json";
@@ -102,6 +103,15 @@ export function ConfirmPasswordResetPage() {
     return hadCode ? t("confirm.errors.invalidTotp") : t("confirm.errors.totpRequired");
   };
 
+  // Client-side only by necessity — the server never sees the password (see
+  // lib/passwordPolicy.ts). Checked first on both paths, before any Argon2id
+  // work or network call, and before the reset token could be consumed.
+  const rejectShortPassword = (): boolean => {
+    if (isPasswordLongEnough(newPassword)) return false;
+    setError(t("confirm.errors.passwordTooShort", { min: MIN_PASSWORD_LENGTH }));
+    return true;
+  };
+
   const handleRecoverySubmit = (e: React.FormEvent) => {
     e.preventDefault();
     return runExclusive(submitWithRecovery);
@@ -110,6 +120,7 @@ export function ConfirmPasswordResetPage() {
   const submitWithRecovery = async () => {
     if (!info) return;
     setError(null);
+    if (rejectShortPassword()) return;
 
     // Deriving the recovery key and unwrapping the private key is kept in its
     // own try/catch, separate from the network call below: a failure here
@@ -163,6 +174,7 @@ export function ConfirmPasswordResetPage() {
 
   const submitFresh = async () => {
     setError(null);
+    if (rejectShortPassword()) return;
     const keyPair = nacl.box.keyPair();
     const newSalt = generateWrappingSalt();
     const newWrappingKey = await deriveWrappingKey(newPassword, newSalt);
@@ -240,10 +252,15 @@ export function ConfirmPasswordResetPage() {
               <input
                 id="new-password"
                 type="password"
+                autoComplete="new-password"
+                aria-describedby="new-password-hint"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 className="w-full rounded border p-2"
               />
+              <p id="new-password-hint" className="text-sm text-muted-foreground">
+                {t("confirm.passwordHint", { min: MIN_PASSWORD_LENGTH })}
+              </p>
             </div>
             {needsTotp && (
               <div>
@@ -277,10 +294,15 @@ export function ConfirmPasswordResetPage() {
               <input
                 id="fresh-new-password"
                 type="password"
+                autoComplete="new-password"
+                aria-describedby="fresh-new-password-hint"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 className="w-full rounded border p-2"
               />
+              <p id="fresh-new-password-hint" className="text-sm text-muted-foreground">
+                {t("confirm.passwordHint", { min: MIN_PASSWORD_LENGTH })}
+              </p>
             </div>
             {needsTotp && (
               <div>
