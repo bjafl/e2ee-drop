@@ -96,6 +96,25 @@ for `api`, so only `web` can talk to it. The API trusts whatever
 connects to it directly as a proxy, so a client that reached it
 directly could put any address it likes in `X-Forwarded-For`.
 
+**When `TRUST_PROXY_HOPS` is `2` or higher, the same reasoning applies
+to `web`'s own published port.** The shipped `docker-compose.yml`
+publishes `web` on `${WEB_PORT:-8080}` across all interfaces by
+default, so if your host is reachable from the internet, that port
+usually is too — even once your own reverse proxy is also pointed at
+it. A client that reaches `web` directly, bypassing your proxy, is
+then one fewer hop away than the API expects, so `TRUST_PROXY_HOPS`
+trusts an `X-Forwarded-For` value the client supplied itself: they can
+either fake a new IP on every login attempt (defeating the per-IP
+rate limit entirely) or put a real victim's IP in the header to lock
+that person out of logging in — the same spoofing risk the paragraph
+above describes for `api`, one hop further out. Make sure `web`'s port
+is reachable *only* from your own reverse proxy once you've set
+`TRUST_PROXY_HOPS` above `1` — for example, bind it to loopback
+(`WEB_PORT=127.0.0.1:8080` in `.env`, or a compose override) if your
+proxy runs on the same host, put both containers on a private Docker
+network your proxy also joins, or block the port at your firewall for
+everything except your proxy's own address.
+
 ## Development
 
 Each workspace package has its own `dev`/`test` scripts; see
