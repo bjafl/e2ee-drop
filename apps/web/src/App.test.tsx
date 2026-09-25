@@ -4,7 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import App from "./App";
 
 vi.mock("@/hooks/useAuth", async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal() as Record<string, unknown>;
   return {
     ...actual,
     useAuth: () => ({ user: { id: "u1", username: "me", publicKey: "x" }, login: vi.fn(), logout: vi.fn(), register: vi.fn() }),
