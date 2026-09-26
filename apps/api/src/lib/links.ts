@@ -10,7 +10,8 @@ const nanoid = customAlphabet("123456789abcdefghijkmnopqrstuvwxyz", 16);
 export async function createOneTimeLink(
   recipientPublicKey: string,
   retentionDays: number,
-  locale?: string
+  locale?: string,
+  ownerNote?: string
 ): Promise<Link> {
   return prisma.link.create({
     data: {
@@ -18,6 +19,7 @@ export async function createOneTimeLink(
       mode: "one-time",
       recipientPublicKey,
       retentionDays,
+      ownerNote,
       codewordLocale: resolveLocale(locale),
       expiresAt: new Date(Date.now() + env.LINK_EXPIRY_HOURS * 60 * 60 * 1000),
     },

@@ -10,6 +10,7 @@ vi.mock("../lib/storage", async (importOriginal) => ({
 }));
 
 import { buildServer } from "../server";
+import { env } from "../env";
 
 // The brief this suite was drafted from used a placeholder `x-test-user-id`
 // header to fake `request.user` in .inject() calls; that header doesn't exist
@@ -109,6 +110,29 @@ describe("link routes", () => {
       payload: { recipientPublicKey: 12345 },
     });
     expect(response.statusCode).toBe(400);
+  });
+
+  it("rejects retentionDays above the anonymous one-time link's own expiry", async () => {
+    const server = buildServer();
+    const res = await server.inject({
+      method: "POST",
+      url: "/api/links",
+      payload: { recipientPublicKey: "pk", retentionDays: 999 },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("stores ownerNote on an anonymous link and returns it from GET", async () => {
+    const server = buildServer();
+    const create = await server.inject({
+      method: "POST",
+      url: "/api/links",
+      payload: { recipientPublicKey: "pk", ownerNote: "please send the invoice" },
+    });
+    expect(create.statusCode).toBe(200);
+    const { slug } = create.json();
+    const get = await server.inject({ method: "GET", url: `/api/links/${slug}` });
+    expect(get.json().ownerNote).toBe("please send the invoice");
   });
 
   it("deletes a link", async () => {
@@ -432,13 +456,21 @@ describe("link routes", () => {
       const contactsOnly = await server.inject({
         method: "POST",
         url: "/api/links/custom",
-        payload: { slug: "friends-only", mode: "permanent", visibility: "contacts-only", retentionDays: 30 },
+        payload: {
+          slug: "friends-only",
+          mode: "permanent",
+          visibility: "contacts-only",
+          // resolveRetentionDays now caps a permanent link's retentionDays at
+          // env.DROP_RETENTION_DAYS_MAX (design spec §4.4), unlike the old
+          // MAX_RETENTION_DAYS check that only rejected values past the int4 range.
+          retentionDays: env.DROP_RETENTION_DAYS_MAX,
+        },
         cookies: owner.cookies,
       });
       expect(contactsOnly.statusCode).toBe(200);
       const created = await prisma.link.findUniqueOrThrow({ where: { slug: "friends-only" } });
       expect(created.visibility).toBe("contacts-only");
-      expect(created.retentionDays).toBe(30);
+      expect(created.retentionDays).toBe(env.DROP_RETENTION_DAYS_MAX);
 
       const omitted = await server.inject({
         method: "POST",
@@ -449,7 +481,9 @@ describe("link routes", () => {
       expect(omitted.statusCode).toBe(200);
       const defaulted = await prisma.link.findUniqueOrThrow({ where: { slug: "no-visibility" } });
       expect(defaulted.visibility).toBe("public");
-      expect(defaulted.retentionDays).toBeNull();
+      // Link.retentionDays is NOT NULL: an omitted value resolves to the global
+      // default (resolveRetentionDays), never a literal null.
+      expect(defaulted.retentionDays).toBe(env.DROP_RETENTION_DAYS_DEFAULT);
     });
 
     it.each([

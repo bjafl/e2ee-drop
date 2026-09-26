@@ -17,6 +17,7 @@ import {
 } from "../lib/links";
 import { deleteObject } from "../lib/storage";
 import { resolveLocale, deriveCodewords } from "../lib/codewords";
+import { resolveRetentionDays } from "../lib/retention";
 import { env } from "../env";
 
 export function registerLinkRoutes(server: FastifyInstance): void {
@@ -29,17 +30,26 @@ export function registerLinkRoutes(server: FastifyInstance): void {
           properties: {
             recipientPublicKey: { type: "string" },
             locale: { type: ["string", "null"] },
+            ownerNote: { type: ["string", "null"] },
+            retentionDays: { type: ["integer", "null"] },
           },
         },
       },
     },
     async (request, reply) => {
-      const { recipientPublicKey, locale } = request.body;
+      const { recipientPublicKey, locale, ownerNote, retentionDays } = request.body;
       if (!recipientPublicKey) {
         return reply.status(400).send({ error: "Missing recipientPublicKey" });
       }
-      // @ts-expect-error — rewritten in plan 2
-      const link = await createOneTimeLink(recipientPublicKey, locale);
+      // A one-time link's own expiry is fixed by LINK_EXPIRY_HOURS; resolve retentionDays
+      // against that same window before the link is created (createOneTimeLink no longer
+      // accepts an out-of-range value implicitly, since Link.retentionDays is NOT NULL).
+      const provisionalExpiresAt = new Date(Date.now() + env.LINK_EXPIRY_HOURS * 60 * 60 * 1000);
+      const resolvedRetention = resolveRetentionDays(retentionDays, provisionalExpiresAt);
+      if (typeof resolvedRetention !== "number") {
+        return reply.status(400).send(resolvedRetention);
+      }
+      const link = await createOneTimeLink(recipientPublicKey, resolvedRetention, locale, ownerNote ?? undefined);
       // One-time links always have an expiry (createOneTimeLink sets it); only
       // permanent links, which this route doesn't create, have a null expiresAt.
       if (!link.expiresAt) throw new Error("one-time link created without expiresAt");
@@ -60,7 +70,6 @@ export function registerLinkRoutes(server: FastifyInstance): void {
   );
 
   const SLUG_PATTERN = /^[a-z0-9-]{3,32}$/;
-  const MAX_RETENTION_DAYS = 2_147_483_647; // Link.retentionDays is a Postgres int4
 
   // Lets a logged-in user create an additional named link beyond their
   // default one (Plan 3, Task 5). Unlike the default link created at
@@ -78,6 +87,7 @@ export function registerLinkRoutes(server: FastifyInstance): void {
             mode: { type: "string" },
             visibility: { type: ["string", "null"] },
             retentionDays: { type: ["integer", "null"] },
+            ownerNote: { type: ["string", "null"] },
           },
         },
       },
@@ -97,17 +107,13 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       if (visibility !== undefined && visibility !== "public" && visibility !== "contacts-only") {
         return reply.status(400).send({ error: "Invalid visibility" });
       }
-      // Omitted/null means "use the global DROP_RETENTION_DAYS_DEFAULT" (see
-      // sweepExpiredDrops in jobs/cleanup.ts) — there is no "keep forever"
-      // option. Otherwise a whole number of
-      // days, at least 1, and within Postgres's 32-bit Int column range so an
-      // oversized value is a 400 rather than a database error.
-      if (
-        retentionDays !== undefined &&
-        retentionDays !== null &&
-        !(Number.isSafeInteger(retentionDays) && retentionDays >= 1 && retentionDays <= MAX_RETENTION_DAYS)
-      ) {
-        return reply.status(400).send({ error: "Invalid retentionDays" });
+      // A one-time custom link's own expiry is fixed by LINK_EXPIRY_HOURS, exactly like
+      // the anonymous POST /api/links route above; a permanent link has no expiry ceiling.
+      const provisionalExpiresAt =
+        mode === "one-time" ? new Date(Date.now() + env.LINK_EXPIRY_HOURS * 60 * 60 * 1000) : null;
+      const resolvedRetention = resolveRetentionDays(retentionDays, provisionalExpiresAt);
+      if (typeof resolvedRetention !== "number") {
+        return reply.status(400).send(resolvedRetention);
       }
 
       const owner = await prisma.user.findUnique({ where: { id: request.user!.id } });
@@ -128,11 +134,10 @@ export function registerLinkRoutes(server: FastifyInstance): void {
             slug,
             mode,
             visibility: visibility ?? "public",
-            // @ts-expect-error — rewritten in plan 2
-            retentionDays: retentionDays ?? null,
+            retentionDays: resolvedRetention,
+            ownerNote: request.body.ownerNote ?? undefined,
             recipientPublicKey: owner.publicKey,
-            expiresAt:
-              mode === "one-time" ? new Date(Date.now() + env.LINK_EXPIRY_HOURS * 60 * 60 * 1000) : null,
+            expiresAt: provisionalExpiresAt,
           },
         });
       } catch (error: unknown) {
