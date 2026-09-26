@@ -6,5 +6,8 @@
   "account": "Konto",
   "login": "Logg inn",
   "register": "Registrer deg",
-  "logout": "Logg ut"
+  "logout": "Logg ut",
+  "themeSystem": "Systemtema",
+  "themeLight": "Lyst tema",
+  "themeDark": "Mørkt tema"
 }

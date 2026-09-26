@@ -2,6 +2,7 @@
 import { Link, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { useAuth } from "@/hooks/useAuth";
 import i18n from "@/i18n";
 import navEn from "@/locales/en/nav.json";
@@ -30,6 +31,7 @@ export function NavBar() {
         {t("brand")}
       </Link>
       <div className="flex items-center gap-2">
+        <ThemeToggle />
         {user ? (
           <>
             <Button asChild variant="ghost" size="sm">
