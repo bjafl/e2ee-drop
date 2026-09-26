@@ -127,6 +127,10 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       const owner = await prisma.user.findUnique({ where: { id: request.user!.id } });
       if (!owner) return reply.status(404).send({ error: "User not found" });
 
+      if (!owner.emailVerified) {
+        return reply.status(403).send({ error: "Verify your email address before creating a link" });
+      }
+
       // No pre-check findUnique({ where: { slug } }) here: Link.slug is a
       // plain @unique column (schema.prisma), not a per-owner composite key,
       // so the create() below is the single, race-safe source of truth for

@@ -317,6 +317,7 @@ describe("link routes", () => {
   it("creates a custom named link for the authenticated owner", async () => {
     const server = buildServer();
     const owner = await registerAndGetCookie(server, "customownera");
+    await prisma.user.update({ where: { username: "customownera" }, data: { emailVerified: true } });
 
     const response = await server.inject({
       method: "POST",
@@ -338,6 +339,8 @@ describe("link routes", () => {
     const server = buildServer();
     const ownerA = await registerAndGetCookie(server, "customownerb");
     const ownerB = await registerAndGetCookie(server, "customownerc");
+    await prisma.user.update({ where: { username: "customownerb" }, data: { emailVerified: true } });
+    await prisma.user.update({ where: { username: "customownerc" }, data: { emailVerified: true } });
 
     const first = await server.inject({
       method: "POST",
@@ -472,6 +475,7 @@ describe("link routes", () => {
     it("accepts contacts-only and defaults an omitted visibility to public", async () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "visowner2");
+      await prisma.user.update({ where: { username: "visowner2" }, data: { emailVerified: true } });
 
       const contactsOnly = await server.inject({
         method: "POST",
@@ -526,6 +530,15 @@ describe("link routes", () => {
       expect(response.statusCode).toBe(400);
       expect(await prisma.link.findUnique({ where: { slug: "bad-retention" } })).toBeNull();
     });
+  });
+
+  it("rejects POST /api/links/custom from an unverified account", async () => {
+    const server = buildServer();
+    const { cookies } = await registerAndGetCookie(server, "unverified-creator");
+    // emailVerified defaults to false — no update call, unlike the other tests in this file.
+    const res = await server.inject({ method: "POST", url: "/api/links/custom", cookies, payload: { slug: "should-fail", mode: "permanent" } });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toMatch(/verif/i);
   });
 
   describe("GET /api/links/:slug never leaks an owned link's drop", () => {
