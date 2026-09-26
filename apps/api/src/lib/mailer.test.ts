@@ -44,4 +44,34 @@ describe("mailer", () => {
       "SMTP is not configured"
     );
   });
+
+  it("sends an email containing the verify URL", async () => {
+    vi.doMock("../env", () => ({
+      env: {
+        SMTP_HOST: "smtp.example.com",
+        SMTP_PORT: 587,
+        SMTP_USER: "user",
+        SMTP_PASS: "pass",
+        SMTP_FROM: "noreply@example.com",
+      },
+    }));
+    const { sendVerificationEmail } = await import("./mailer");
+    await sendVerificationEmail("alice@example.com", "https://app.example.com/verify-email/confirm?token=abc");
+
+    expect(sendMailMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "alice@example.com",
+        text: expect.stringContaining("https://app.example.com/verify-email/confirm?token=abc"),
+        html: expect.stringContaining("https://app.example.com/verify-email/confirm?token=abc"),
+      })
+    );
+  });
+
+  it("throws if SMTP is not configured for sendVerificationEmail", async () => {
+    vi.doMock("../env", () => ({ env: { SMTP_HOST: undefined } }));
+    const { sendVerificationEmail } = await import("./mailer");
+    await expect(sendVerificationEmail("alice@example.com", "https://x/y")).rejects.toThrow(
+      "SMTP is not configured"
+    );
+  });
 });
