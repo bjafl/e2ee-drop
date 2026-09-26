@@ -54,6 +54,7 @@ function makeLink(overrides: Partial<Link> = {}): Link {
     expiresAt: null,
     revokedAt: null,
     ownerNote: null,
+    lastSenderOpenedAt: null,
     ...overrides,
   };
 }
