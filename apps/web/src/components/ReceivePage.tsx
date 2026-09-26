@@ -256,7 +256,10 @@ function ReceivePageForLink() {
           // Keep ownerNote/codewords fresh from the same response the live
           // drop comes from, in addition to the one-off fetch above.
           setLink(data);
-          if (data.drop) setDrops((prev) => mergeDrops(prev, [data.drop]));
+          // Narrowed into a local const: TS doesn't carry the `if (data.drop)`
+          // narrowing into the setDrops callback closure below.
+          const drop = data.drop;
+          if (drop) setDrops((prev) => mergeDrops(prev, [drop]));
         }
       } catch {
         // Transient network failure — don't strand the recipient on a hard
