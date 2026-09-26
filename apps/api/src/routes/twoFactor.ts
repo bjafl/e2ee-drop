@@ -5,6 +5,7 @@ import type { TotpSetupResponse, TotpEnableRequest } from "@e2ee-drop/shared";
 import { generateTotpSecret, buildOtpauthUrl, verifyTotpCode, encryptTotpSecret, decryptTotpSecret } from "../lib/totp";
 import { getUsedCodesForUser } from "../lib/totpReplayGuard";
 import { twoFactorRateLimiter, rateLimitExceededBody } from "../lib/rateLimit";
+import { generateAndStoreBackupCodes } from "../lib/totpBackupCodes";
 
 // Keyed by the authenticated user's id (same convention as account.ts's
 // accountDeletionRateLimit): runs after requireAuth, so request.user is
@@ -98,7 +99,8 @@ export function registerTwoFactorRoutes(server: FastifyInstance): void {
       });
       pendingSetupSecrets.delete(user.id);
       if (count !== 1) return reply.status(409).send(alreadyEnabled);
-      return reply.send({ enabled: true });
+      const backupCodes = await generateAndStoreBackupCodes(user.id);
+      return reply.send({ enabled: true, backupCodes });
     }
   );
 
@@ -154,6 +156,28 @@ export function registerTwoFactorRoutes(server: FastifyInstance): void {
         data: { totpEnabled: false, totpSecretEncrypted: null },
       });
       return reply.send({ disabled: true });
+    }
+  );
+
+  server.post<{ Body: TotpEnableRequest }>(
+    "/api/auth/2fa/backup-codes/regenerate",
+    {
+      preHandler: [server.requireAuth, twoFactorRateLimit],
+      schema: { body: { type: ["object", "null"], properties: { code: { type: "string" } } } },
+    },
+    async (request, reply) => {
+      const user = await prisma.user.findUniqueOrThrow({ where: { id: request.user!.id } });
+      if (!user.totpEnabled || !user.totpSecretEncrypted) {
+        return reply.status(400).send({ error: "2FA is not enabled" });
+      }
+      const code = request.body?.code;
+      if (!code) return reply.status(401).send({ error: "TOTP code required" });
+      const secret = decryptTotpSecret(user.totpSecretEncrypted);
+      if (!verifyTotpCode(secret, code, getUsedCodesForUser(user.id))) {
+        return reply.status(401).send({ error: "Invalid TOTP code" });
+      }
+      const backupCodes = await generateAndStoreBackupCodes(user.id);
+      return reply.send({ backupCodes });
     }
   );
 }

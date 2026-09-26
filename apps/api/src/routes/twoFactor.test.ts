@@ -265,6 +265,73 @@ describe("2FA routes", () => {
       vi.useRealTimers();
     }
   });
+  it("returns 10 backup codes in the /2fa/enable response", async () => {
+    const server = buildServer();
+    const { userId, cookieValue } = await registerAndGetCookie(server);
+    const cookies = { e2ee_drop_session: cookieValue };
+
+    const setupRes = await server.inject({ method: "POST", url: "/api/auth/2fa/setup", cookies });
+    const { secretBase32 } = setupRes.json();
+    const validCode = new TOTP({ secret: Secret.fromBase32(secretBase32) }).generate();
+
+    const enableRes = await server.inject({
+      method: "POST",
+      url: "/api/auth/2fa/enable",
+      cookies,
+      payload: { code: validCode },
+    });
+
+    expect(enableRes.statusCode).toBe(200);
+    const body = enableRes.json();
+    expect(body.backupCodes).toHaveLength(10);
+
+    const count = await prisma.totpBackupCode.count({ where: { userId } });
+    expect(count).toBe(10);
+  });
+
+  it("regenerate requires a valid current TOTP code and invalidates the old batch", async () => {
+    const server = buildServer();
+    const { userId, cookieValue } = await registerAndGetCookie(server);
+    const cookies = { e2ee_drop_session: cookieValue };
+
+    const setupRes = await server.inject({ method: "POST", url: "/api/auth/2fa/setup", cookies });
+    const { secretBase32 } = setupRes.json();
+    const totp = new TOTP({ secret: Secret.fromBase32(secretBase32) });
+    const enableRes = await server.inject({
+      method: "POST",
+      url: "/api/auth/2fa/enable",
+      cookies,
+      payload: { code: totp.generate() },
+    });
+    const firstBatch: string[] = enableRes.json().backupCodes;
+
+    const rejected = await server.inject({
+      method: "POST",
+      url: "/api/auth/2fa/backup-codes/regenerate",
+      cookies,
+      payload: { code: "000000" },
+    });
+    expect(rejected.statusCode).toBe(401);
+
+    // A fresh code, not the one already consumed by /2fa/enable above — the
+    // replay guard (totpReplayGuard.ts) rejects a reused code even for a
+    // different route, the same reason the disable test above advances the
+    // timestamp by one 30s step.
+    const accepted = await server.inject({
+      method: "POST",
+      url: "/api/auth/2fa/backup-codes/regenerate",
+      cookies,
+      payload: { code: totp.generate({ timestamp: Date.now() + 30_000 }) },
+    });
+    expect(accepted.statusCode).toBe(200);
+    const secondBatch: string[] = accepted.json().backupCodes;
+    expect(secondBatch).toHaveLength(10);
+    expect(new Set([...firstBatch, ...secondBatch]).size).toBe(20);
+
+    const count = await prisma.totpBackupCode.count({ where: { userId } });
+    expect(count).toBe(10);
+  });
+
   describe("rate limiting (twoFactorRateLimiter: 5 per 15 min, keyed by user id, shared by /enable and /disable)", () => {
     // Every inject() below uses light-my-request's default remoteAddress, so
     // both users share one IP — proving the limiter is keyed by user, not IP.
