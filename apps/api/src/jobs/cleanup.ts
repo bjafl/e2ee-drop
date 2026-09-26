@@ -61,11 +61,41 @@ export async function sweepExpiredDrops(): Promise<{ deletedDrops: number }> {
 // still-otherwise-valid link. Since an "uploading" drop is never charged against quota
 // (isChargedStatus in lib/quota.ts), deleting it outright needs no quota release, unlike the other
 // two sweeps.
+//
+// Finding I2: a stale "uploading" row can still name a real object in storage
+// (the PUT landed, but /complete was never called) — deleting the row without
+// deleting its s3Key first would orphan that object forever, since the row
+// was the only record of the key.
+//
+// findMany, then a per-row CAS delete followed by deleteObject only if that
+// delete actually won (count === 1) — never the reverse order. An anonymous
+// link's /complete has no reservationCutoff guard (only an owned link's CAS
+// checks it — lib/quota.ts), so a drop that was stale-and-uploading at the
+// findMany above can still legitimately complete before this loop reaches it;
+// calling deleteObject unconditionally would then destroy the real, just-
+// verified object out from under that successful /complete. The per-row CAS
+// delete is what actually resolves that race (Postgres evaluates its WHERE
+// against the row's live state), and deleteObject only ever runs for a row
+// this call itself just deleted — mirrors the same reordering in the
+// /abandon route (uploads.ts).
 export async function sweepAbandonedUploads(): Promise<{ deletedDrops: number }> {
-  const { count } = await prisma.drop.deleteMany({
+  const stale = await prisma.drop.findMany({
     where: { fileUploadStatus: "uploading", createdAt: { lt: reservationCutoff() } },
+    select: { id: true, s3Key: true },
   });
-  return { deletedDrops: count };
+
+  let deletedDrops = 0;
+  for (const drop of stale) {
+    const { count } = await prisma.drop.deleteMany({
+      where: { id: drop.id, fileUploadStatus: "uploading" },
+    });
+    if (count === 1) {
+      await deleteObject(drop.s3Key);
+      deletedDrops++;
+    }
+  }
+
+  return { deletedDrops };
 }
 
 // Password-reset tokens are single-use and short-lived, but an unused one

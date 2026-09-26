@@ -4,8 +4,11 @@ import { prisma } from "@e2ee-drop/db";
 
 vi.mock("../lib/storage", () => ({ deleteObject: vi.fn().mockResolvedValue(undefined) }));
 
+import { deleteObject } from "../lib/storage";
 import { UPLOAD_RESERVATION_WINDOW_MS } from "../lib/quota";
 import { runCleanup, sweepExpiredDrops, sweepAbandonedUploads, pruneExpiredPasswordResetTokens } from "./cleanup";
+
+const deleteObjectMock = vi.mocked(deleteObject);
 
 describe("runCleanup", () => {
   beforeEach(async () => {
@@ -119,6 +122,7 @@ describe("sweepAbandonedUploads", () => {
   beforeEach(async () => {
     await prisma.drop.deleteMany();
     await prisma.link.deleteMany();
+    deleteObjectMock.mockClear();
   });
 
   const dropDefaults = {
@@ -152,6 +156,10 @@ describe("sweepAbandonedUploads", () => {
 
     expect(result.deletedDrops).toBe(1);
     expect(await prisma.drop.findUnique({ where: { id: drop.id } })).toBeNull();
+    // Finding I2: the row was the only record of s3Key — deleting it without
+    // also deleting the object would orphan it in storage forever.
+    expect(deleteObjectMock).toHaveBeenCalledTimes(1);
+    expect(deleteObjectMock).toHaveBeenCalledWith(drop.s3Key);
   });
 
   it("does not touch a recent uploading drop still inside its reservation window", async () => {
@@ -170,6 +178,7 @@ describe("sweepAbandonedUploads", () => {
 
     expect(result.deletedDrops).toBe(0);
     expect(await prisma.drop.findUnique({ where: { id: drop.id } })).not.toBeNull();
+    expect(deleteObjectMock).not.toHaveBeenCalled();
   });
 
   it("does not touch a complete drop regardless of age", async () => {
@@ -188,6 +197,7 @@ describe("sweepAbandonedUploads", () => {
 
     expect(result.deletedDrops).toBe(0);
     expect(await prisma.drop.findUnique({ where: { id: drop.id } })).not.toBeNull();
+    expect(deleteObjectMock).not.toHaveBeenCalled();
   });
 });
 
