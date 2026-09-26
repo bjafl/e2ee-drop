@@ -7,6 +7,7 @@ import { RegisterPage } from "@/components/RegisterPage";
 import { LoginPage } from "@/components/LoginPage";
 import { RequestPasswordResetPage } from "@/components/RequestPasswordResetPage";
 import { ConfirmPasswordResetPage } from "@/components/ConfirmPasswordResetPage";
+import { VerifyEmailPage } from "@/components/VerifyEmailPage";
 import { ContactsPage } from "@/components/ContactsPage";
 import { NewLinkPage } from "@/components/NewLinkPage";
 import { AccountPage } from "@/components/AccountPage";
@@ -29,6 +30,7 @@ export default function App() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/reset-password" element={<RequestPasswordResetPage />} />
         <Route path="/reset-password/confirm" element={<ConfirmPasswordResetPage />} />
+        <Route path="/verify-email/confirm" element={<VerifyEmailPage />} />
       </Routes>
     </AuthProvider>
   );
