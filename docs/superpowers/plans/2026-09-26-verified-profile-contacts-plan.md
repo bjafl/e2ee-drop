@@ -557,6 +557,35 @@ it("hides a blocked row from the blocked party's own contact list", async () => 
   expect(alicesList.statusCode).toBe(200); // blocker CAN still see it (not asserting shape here — block is visible to them)
 });
 
+it("resolves a same-direction concurrent double-submit to exactly one row (pre-existing TOCTOU, fixed here)", async () => {
+  // sendContactRequest's `findFirst` existing-relationship check and its
+  // `create` are not atomic — two requests racing between the check and the
+  // create could otherwise both see "no existing row" and both attempt to
+  // create one. Contact's `@@unique([userId, contactUserId])` constraint
+  // only spans this exact (userId, contactUserId) ordering, so this test
+  // (and the fix) covers the same-direction case: one caller submitting
+  // twice in quick succession (double-click, client retry after a timeout).
+  // It does NOT cover two different users requesting each other in opposite
+  // directions at the same moment — that's a different (userId,
+  // contactUserId) tuple each way, so this unique constraint can't catch
+  // it; the `findFirst` pre-check (both orderings) is the only guard there,
+  // and a sufficiently unlucky race could still produce two rows in that
+  // specific cross-direction case. Out of scope for this fix — flagging in
+  // case it matters later, not silently claiming full coverage.
+  const server = buildServer();
+  const alice = await registerAndGetCookie(server, "alice-race");
+  const bob = await registerAndGetCookie(server, "bob-race");
+
+  const [first, second] = await Promise.all([
+    server.inject({ method: "POST", url: "/api/contacts", cookies: alice.cookies, payload: { username: "bob-race" } }),
+    server.inject({ method: "POST", url: "/api/contacts", cookies: alice.cookies, payload: { username: "bob-race" } }),
+  ]);
+  const statuses = [first.statusCode, second.statusCode].sort();
+  expect(statuses).toEqual([200, 400]); // one succeeds, one gets the normal "already exists" error — never a 500
+  const rows = await prisma.contact.findMany({ where: { userId: alice.userId, contactUserId: bob.userId } });
+  expect(rows.length).toBe(1);
+});
+
 it("blocks from an already-accepted contact, and only the blocker can unblock", async () => {
   const server = buildServer();
   const alice = await registerAndGetCookie(server, "alice-block3");
@@ -617,7 +646,7 @@ export async function unblockContact(callerId: string, contactId: string): Promi
 }
 ```
 
-Update `sendContactRequest` — replace its `if (existing) throw new HttpError(...)` block with:
+Update `sendContactRequest` — replace its `if (existing) throw new HttpError(...)` block, **and** close the pre-existing TOCTOU gap between this `findFirst` check and the `create` call below it (flagged during spec 4's planning, fix required per review): the `findFirst` check stays (it gives a fast, friendly error in the common non-racing case, same as before), but the `create` call is now wrapped to catch Prisma's `P2002` unique-constraint violation as the actual race-safe guard — same idiom as `POST /api/links/custom`'s existing slug-collision handling in `apps/api/src/routes/links.ts`. This covers the same-direction race (one caller submitting the same request twice concurrently); it does not cover the cross-direction race (two different users requesting each other simultaneously), since `@@unique([userId, contactUserId])` doesn't span both orderings — noted as a known residual gap, not silently claimed as fully fixed:
 
 ```typescript
   if (existing) {
@@ -628,7 +657,21 @@ Update `sendContactRequest` — replace its `if (existing) throw new HttpError(.
     }
     throw new HttpError(400, "A contact relationship already exists");
   }
+
+  try {
+    return await prisma.contact.create({ data: { userId, contactUserId: target.id, status: "pending" } });
+  } catch (error: unknown) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      // Lost a same-direction race against another concurrent call for this
+      // exact (userId, contactUserId) pair (the findFirst above didn't see
+      // it in time) — same user-facing outcome as the pre-check catching it.
+      throw new HttpError(400, "A contact relationship already exists");
+    }
+    throw error;
+  }
 ```
+
+This replaces the function's final `return prisma.contact.create(...)` line entirely — remove that line, since the `try`/`catch` above now owns the create call. Also update `apps/api/src/lib/contacts.ts`'s existing `import { prisma, type Contact } from "@e2ee-drop/db";` to `import { prisma, Prisma, type Contact } from "@e2ee-drop/db";` — exact same import idiom `apps/api/src/routes/links.ts` already uses for its own `P2002` check (`import { prisma, Prisma } from "@e2ee-drop/db";`).
 
 Update `listContacts` — the `rows` query must exclude rows blocked *against* the caller (i.e. rows where `status === "blocked"` and `blockedByUserId !== userId`), while still including rows the caller themselves blocked (so they can see their own block list). Replace the `const rows = await prisma.contact.findMany(...)` call with:
 
