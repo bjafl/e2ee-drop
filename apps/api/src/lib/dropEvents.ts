@@ -1,10 +1,15 @@
 import { EventEmitter } from "node:events";
 import type { DropSummary } from "@e2ee-drop/shared";
 
-export interface DropEvent {
-  type: "drop-created" | "drop-updated";
-  drop: DropSummary;
-}
+export type DropEvent =
+  | { type: "drop-created"; drop: DropSummary }
+  | { type: "drop-updated"; drop: DropSummary }
+  // Design spec §4.2: emitted by POST /api/links/:slug/claim once the CAS that
+  // sets Link.recipientPublicKey wins, so /send/:slug's SSE subscriber (the
+  // sender-initiated flow's initiator, who is the only one authorized to
+  // subscribe — GET /api/links/:slug/events is owner-gated) can detect the
+  // claim without polling. No `drop` field: nothing drop-shaped happened.
+  | { type: "link-claimed"; recipientPublicKey: string };
 
 const emitter = new EventEmitter();
 emitter.setMaxListeners(0);

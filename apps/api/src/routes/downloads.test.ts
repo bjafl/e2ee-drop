@@ -334,6 +334,70 @@ describe("complete-download route", () => {
     expect(drop?.deliveryStatus).toBe("partial_delivery");
   });
 
+  // Finding I4: deliveryStatus must be derived fresh, not from a snapshot taken
+  // before this call's own CAS — otherwise the entirely normal "download, then
+  // reveal" / "reveal, then download" sequences leave it permanently wrong.
+  it("converges on delivered when the file is downloaded before the message is revealed", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithDrop(server, {
+      message: { encryptedMessage: "c2VjcmV0", messageNonce: "bm9uY2U=" },
+    });
+
+    const downloadRes = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/${dropId}/complete-download`,
+    });
+    expect(downloadRes.statusCode).toBe(200);
+    expect((await prisma.drop.findUnique({ where: { id: dropId } }))?.deliveryStatus).toBe("partial_delivery");
+
+    const revealRes = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/${dropId}/reveal-message`,
+    });
+    expect(revealRes.statusCode).toBe(200);
+    expect((await prisma.drop.findUnique({ where: { id: dropId } }))?.deliveryStatus).toBe("delivered");
+  });
+
+  it("converges on delivered when the message is revealed before the file is downloaded", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithDrop(server, {
+      message: { encryptedMessage: "c2VjcmV0", messageNonce: "bm9uY2U=" },
+    });
+
+    const revealRes = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/${dropId}/reveal-message`,
+    });
+    expect(revealRes.statusCode).toBe(200);
+    // Neither envelope has resolved the *file* side yet, so this stays whatever
+    // it was before (still "sent") — only complete-download below finishes it.
+    expect((await prisma.drop.findUnique({ where: { id: dropId } }))?.deliveryStatus).not.toBe("delivered");
+
+    const downloadRes = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/${dropId}/complete-download`,
+    });
+    expect(downloadRes.statusCode).toBe(200);
+    expect((await prisma.drop.findUnique({ where: { id: dropId } }))?.deliveryStatus).toBe("delivered");
+  });
+
+  // Finding I3: the old (now-removed) /downloaded route rejected a drop still
+  // "uploading"; complete-download lost that guard in the rewrite.
+  it("rejects completing a download while the drop is still uploading, and never deletes", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithDrop(server, { uploaded: false });
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/${dropId}/complete-download`,
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(deleteObjectMock).not.toHaveBeenCalled();
+    const drop = await prisma.drop.findUnique({ where: { id: dropId } });
+    expect(drop?.fileEnvelopeStatus).toBe("sealed");
+  });
+
   it("is idempotent-safe against a second call: reports completed:false and does not delete again", async () => {
     const server = buildServer();
     const { slug, dropId } = await createLinkWithDrop(server);
@@ -806,5 +870,258 @@ describe("reveal-message route", () => {
       url: `/api/links/${link.slug}/drops/${drop.id}/reveal-message`,
     });
     expect(res.statusCode).toBe(404);
+  });
+});
+
+// Finding I5: reveal-message previously had no ownership check at all — a
+// non-owner could reveal (and permanently scrub) an owned link's message.
+// Same pattern as "owned-link download-failed route" above.
+describe("owned-link reveal-message route", () => {
+  beforeEach(async () => {
+    await prisma.contact.deleteMany();
+    await prisma.session.deleteMany();
+    await prisma.drop.deleteMany();
+    await prisma.link.deleteMany();
+    await prisma.user.deleteMany();
+  });
+
+  async function createQueuedDropWithMessage(linkId: string) {
+    return prisma.drop.create({
+      data: {
+        linkId,
+        senderPublicKey: "c2VuZGVy",
+        s3Key: `${linkId}/with-message`,
+        archiveNonce: "YXJjaGl2ZQ==",
+        contentMD5: "bWQ1",
+        encryptedMetadata: "bWV0YWRhdGE=",
+        metadataNonce: "bWV0YW5vbmNl",
+        fileSize: 1024,
+        fileUploadStatus: "complete",
+        encryptedMessage: "c2VjcmV0",
+        messageNonce: "bm9uY2U=",
+      },
+    });
+  }
+
+  it("rejects a non-owner revealing an owned link's message, and never scrubs it", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "revealowner");
+    const link = (await prisma.link.findUnique({ where: { slug: "revealowner" } }))!;
+    const drop = await createQueuedDropWithMessage(link.id);
+    const intruder = await registerAndGetCookie(server, "revealintruder");
+    const url = `/api/links/${link.slug}/drops/${drop.id}/reveal-message`;
+
+    const anonymous = await server.inject({ method: "POST", url });
+    const otherUser = await server.inject({ method: "POST", url, cookies: intruder.cookies });
+
+    expect(anonymous.statusCode).toBe(403);
+    expect(otherUser.statusCode).toBe(403);
+    expect((await prisma.drop.findUnique({ where: { id: drop.id } }))?.encryptedMessage).not.toBeNull();
+  });
+
+  it("lets the owner reveal their own link's message", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "revealowner2");
+    const link = (await prisma.link.findUnique({ where: { slug: "revealowner2" } }))!;
+    const drop = await createQueuedDropWithMessage(link.id);
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/drops/${drop.id}/reveal-message`,
+      cookies: owner.cookies,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect((await prisma.drop.findUnique({ where: { id: drop.id } }))?.encryptedMessage).toBeNull();
+  });
+});
+
+// Finding C1: POST /api/links/request + /claim previously shipped a flow that
+// could never actually deliver anything — every receive-side route gated on
+// `request.user?.id === link.ownerId`, but the owner of a sender-initiated
+// link is the SENDER (the initiator who requested it), not the claimant who
+// is supposed to receive. canReceive (lib/links.ts) fixes this structurally.
+describe("sender-initiated link receive access (finding C1)", () => {
+  beforeEach(async () => {
+    deleteObjectMock.mockReset();
+    deleteObjectMock.mockResolvedValue(undefined);
+    await prisma.contact.deleteMany();
+    await prisma.session.deleteMany();
+    await prisma.drop.deleteMany();
+    await prisma.link.deleteMany();
+    await prisma.user.deleteMany();
+  });
+
+  async function createClaimedSenderInitiatedLink(
+    server: ReturnType<typeof buildServer>,
+    initiatorUsername: string,
+    claimantPublicKey = "claimant-pubkey"
+  ) {
+    const initiator = await registerAndGetCookie(server, initiatorUsername);
+    const requestRes = await server.inject({
+      method: "POST",
+      url: "/api/links/request",
+      payload: {},
+      cookies: initiator.cookies,
+    });
+    const { slug } = requestRes.json();
+    const claimRes = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/claim`,
+      payload: { recipientPublicKey: claimantPublicKey },
+    });
+    expect(claimRes.statusCode).toBe(200);
+    const link = await prisma.link.findUniqueOrThrow({ where: { slug } });
+    return { initiator, slug, link };
+  }
+
+  async function createDropOn(linkId: string, opts: { withMessage?: boolean } = {}) {
+    return prisma.drop.create({
+      data: {
+        linkId,
+        senderPublicKey: "c2VuZGVy",
+        s3Key: `${linkId}/sender-initiated-drop`,
+        archiveNonce: "YXJjaGl2ZQ==",
+        contentMD5: "bWQ1",
+        encryptedMetadata: "bWV0YWRhdGE=",
+        metadataNonce: "bWV0YW5vbmNl",
+        fileSize: 1024,
+        fileUploadStatus: "complete",
+        deliveryStatus: "sent",
+        ...(opts.withMessage ? { encryptedMessage: "c2VjcmV0", messageNonce: "bm9uY2U=" } : {}),
+      },
+    });
+  }
+
+  it("denies the initiator (owner) download-url access to their own claimed link", async () => {
+    const server = buildServer();
+    const { initiator, slug, link } = await createClaimedSenderInitiatedLink(server, "initiator1");
+    await createDropOn(link.id);
+
+    const res = await server.inject({
+      method: "GET",
+      url: `/api/links/${slug}/download-url`,
+      cookies: initiator.cookies,
+    });
+
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("allows the claimant (no session) download-url access once claimed", async () => {
+    const server = buildServer();
+    const { slug, link } = await createClaimedSenderInitiatedLink(server, "initiator2");
+    await createDropOn(link.id);
+
+    const res = await server.inject({ method: "GET", url: `/api/links/${slug}/download-url` });
+
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("denies the initiator complete-download access, and never deletes", async () => {
+    const server = buildServer();
+    const { initiator, slug, link } = await createClaimedSenderInitiatedLink(server, "initiator3");
+    const drop = await createDropOn(link.id);
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/${drop.id}/complete-download`,
+      cookies: initiator.cookies,
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(deleteObjectMock).not.toHaveBeenCalled();
+    expect((await prisma.drop.findUnique({ where: { id: drop.id } }))?.fileEnvelopeStatus).toBe("sealed");
+  });
+
+  it("allows a non-owner complete-download once claimed", async () => {
+    const server = buildServer();
+    const { slug, link } = await createClaimedSenderInitiatedLink(server, "initiator4");
+    const drop = await createDropOn(link.id);
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/${drop.id}/complete-download`,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(deleteObjectMock).toHaveBeenCalledWith(drop.s3Key);
+    expect((await prisma.drop.findUnique({ where: { id: drop.id } }))?.fileEnvelopeStatus).toBe("delivered");
+  });
+
+  it("denies the initiator reveal-message access, and never scrubs it", async () => {
+    const server = buildServer();
+    const { initiator, slug, link } = await createClaimedSenderInitiatedLink(server, "initiator5");
+    const drop = await createDropOn(link.id, { withMessage: true });
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/${drop.id}/reveal-message`,
+      cookies: initiator.cookies,
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect((await prisma.drop.findUnique({ where: { id: drop.id } }))?.encryptedMessage).not.toBeNull();
+  });
+
+  it("allows a non-owner reveal-message access once claimed", async () => {
+    const server = buildServer();
+    const { slug, link } = await createClaimedSenderInitiatedLink(server, "initiator6");
+    const drop = await createDropOn(link.id, { withMessage: true });
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/${drop.id}/reveal-message`,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect((await prisma.drop.findUnique({ where: { id: drop.id } }))?.encryptedMessage).toBeNull();
+  });
+
+  it("still denies a non-owner on an UNCLAIMED sender-initiated link (nothing to receive yet)", async () => {
+    const server = buildServer();
+    const initiator = await registerAndGetCookie(server, "initiator7");
+    const requestRes = await server.inject({
+      method: "POST",
+      url: "/api/links/request",
+      payload: {},
+      cookies: initiator.cookies,
+    });
+    const { slug } = requestRes.json();
+    const link = await prisma.link.findUniqueOrThrow({ where: { slug } });
+    const drop = await createDropOn(link.id);
+
+    const res = await server.inject({
+      method: "GET",
+      url: `/api/links/${slug}/download-url`,
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(drop).toBeTruthy(); // drop exists in DB but access is still denied pre-claim
+  });
+
+  it("still denies a stranger on a NORMAL owned link (custom, not sender-initiated) — no regression", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "normalowner1");
+    const link = await prisma.link.create({
+      data: {
+        ownerId: owner.userId,
+        slug: "normal-owned-link",
+        mode: "permanent",
+        recipientPublicKey: `normalowner1-pubkey`,
+        retentionDays: 7,
+      },
+    });
+    await createDropOn(link.id);
+
+    const anonymous = await server.inject({ method: "GET", url: `/api/links/${link.slug}/download-url` });
+    const stranger = await registerAndGetCookie(server, "normalstranger1");
+    const strangerRes = await server.inject({
+      method: "GET",
+      url: `/api/links/${link.slug}/download-url`,
+      cookies: stranger.cookies,
+    });
+
+    expect(anonymous.statusCode).toBe(403);
+    expect(strangerRes.statusCode).toBe(403);
   });
 });

@@ -257,8 +257,11 @@ describe("/complete verifies the upload in storage", () => {
       expect(sender.statusCode).toBe(200);
       expect(sender.json()).toEqual({ updated: false });
       expect(await statusOf(dropId)).toBe("complete");
-      // Only the call that actually won the transition announces it.
-      expect(events.map((e) => [e.type, e.drop.fileUploadStatus])).toEqual([["drop-updated", "complete"]]);
+      // Only the call that actually won the transition announces it. This route
+      // never emits "link-claimed", so narrowing to the drop-carrying variants
+      // here is safe.
+      const dropEvents = events as Exclude<DropEvent, { type: "link-claimed" }>[];
+      expect(dropEvents.map((e) => [e.type, e.drop.fileUploadStatus])).toEqual([["drop-updated", "complete"]]);
     });
 
     it("still 404s a drop id that doesn't exist on this link", async () => {

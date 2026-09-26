@@ -11,6 +11,7 @@ vi.mock("../lib/storage", async (importOriginal) => ({
 
 import { buildServer } from "../server";
 import { env } from "../env";
+import { subscribeToLink, type DropEvent } from "../lib/dropEvents";
 
 // The brief this suite was drafted from used a placeholder `x-test-user-id`
 // header to fake `request.user` in .inject() calls; that header doesn't exist
@@ -532,10 +533,18 @@ describe("link routes", () => {
       ownerId: string,
       slug: string,
       visibility: "public" | "contacts-only",
-      fileUploadStatus: "uploading" | "complete"
+      fileUploadStatus: "uploading" | "complete",
+      // Matches how a real owned link is actually created (POST
+      // /api/links/custom, createDefaultLinkForUser): recipientPublicKey is
+      // always the owner's own real publicKey, never an unrelated value — a
+      // link where it differs is what finding C1's canReceive/
+      // isClaimedSenderInitiatedLink (lib/links.ts) treats as a claimed
+      // sender-initiated link instead, so an arbitrary placeholder key here
+      // would misrepresent this as that other, deliberately-more-open case.
+      recipientPublicKey: string
     ) {
       const link = await prisma.link.create({
-        data: { ownerId, slug, mode: "permanent", visibility, recipientPublicKey: `${slug}-pubkey`, retentionDays: 7 },
+        data: { ownerId, slug, mode: "permanent", visibility, recipientPublicKey, retentionDays: 7 },
       });
       const drop = await prisma.drop.create({
         data: {
@@ -564,7 +573,13 @@ describe("link routes", () => {
     it("returns drop: null to an anonymous stranger on a contacts-only owned link with an in-progress drop", async () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "leakvictim");
-      const { link, drop } = await createOwnedLinkWithDrop(owner.userId, "leak-contacts", "contacts-only", "uploading");
+      const { link, drop } = await createOwnedLinkWithDrop(
+        owner.userId,
+        "leak-contacts",
+        "contacts-only",
+        "uploading",
+        owner.publicKey
+      );
 
       const response = await server.inject({ method: "GET", url: `/api/links/${link.slug}` });
 
@@ -577,7 +592,13 @@ describe("link routes", () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "leakvictim2");
       const stranger = await registerAndGetCookie(server, "leakstranger");
-      const { link, drop } = await createOwnedLinkWithDrop(owner.userId, "leak-public", "public", "complete");
+      const { link, drop } = await createOwnedLinkWithDrop(
+        owner.userId,
+        "leak-public",
+        "public",
+        "complete",
+        owner.publicKey
+      );
 
       const anon = await server.inject({ method: "GET", url: `/api/links/${link.slug}` });
       expect(anon.json().drop).toBeNull();
@@ -619,7 +640,13 @@ describe("link routes", () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "leakvictim4");
       const link = await prisma.link.create({
-        data: { ownerId: owner.userId, slug: "leak-empty", mode: "permanent", recipientPublicKey: "k", retentionDays: 7 },
+        data: {
+          ownerId: owner.userId,
+          slug: "leak-empty",
+          mode: "permanent",
+          recipientPublicKey: owner.publicKey,
+          retentionDays: 7,
+        },
       });
 
       const response = await server.inject({ method: "GET", url: `/api/links/${link.slug}` });
@@ -717,6 +744,64 @@ describe("link routes", () => {
         url: "/api/links/does-not-exist/mark-receiver-opened",
       });
       expect(response.statusCode).toBe(404);
+    });
+
+    // Finding C1: acts for a claimed sender-initiated link too (the claimant is
+    // the real recipient there, unlike the link's owner/initiator).
+    it("advances deliveryStatus for a non-owner on a claimed sender-initiated link", async () => {
+      const server = buildServer();
+      const initiator = await registerAndGetCookie(server, "markopenedinitiator");
+      const requestRes = await server.inject({
+        method: "POST",
+        url: "/api/links/request",
+        payload: {},
+        cookies: initiator.cookies,
+      });
+      const { slug } = requestRes.json();
+      await server.inject({
+        method: "POST",
+        url: `/api/links/${slug}/claim`,
+        payload: { recipientPublicKey: "claimant-pubkey" },
+      });
+      const link = await prisma.link.findUniqueOrThrow({ where: { slug } });
+      await createSentDrop(link.id);
+
+      const markResponse = await server.inject({ method: "POST", url: `/api/links/${slug}/mark-receiver-opened` });
+      expect(markResponse.statusCode).toBe(200);
+
+      const res = await server.inject({ method: "GET", url: `/api/links/${slug}` });
+      expect(res.json().drop.deliveryStatus).toBe("receiver_opened");
+    });
+
+    it("does not advance deliveryStatus when the caller is the initiator/owner of a claimed sender-initiated link", async () => {
+      const server = buildServer();
+      const initiator = await registerAndGetCookie(server, "markopenedinitiator2");
+      const requestRes = await server.inject({
+        method: "POST",
+        url: "/api/links/request",
+        payload: {},
+        cookies: initiator.cookies,
+      });
+      const { slug } = requestRes.json();
+      await server.inject({
+        method: "POST",
+        url: `/api/links/${slug}/claim`,
+        payload: { recipientPublicKey: "claimant-pubkey" },
+      });
+      const link = await prisma.link.findUniqueOrThrow({ where: { slug } });
+      await createSentDrop(link.id);
+
+      const markResponse = await server.inject({
+        method: "POST",
+        url: `/api/links/${slug}/mark-receiver-opened`,
+        cookies: initiator.cookies,
+      });
+      expect(markResponse.statusCode).toBe(200);
+
+      // The initiator can't read `drop` back from GET /:slug (finding C1 keeps
+      // that hidden from them), so check the underlying row directly.
+      const drop = await prisma.drop.findFirstOrThrow({ where: { linkId: link.id } });
+      expect(drop.deliveryStatus).toBe("sent");
     });
   });
 
@@ -879,6 +964,85 @@ describe("link routes", () => {
       expect(statusCodes).toEqual([200, 409]);
       const link = await prisma.link.findUniqueOrThrow({ where: { slug } });
       expect(["racer-a", "racer-b"]).toContain(link.recipientPublicKey);
+    });
+
+    // Finding I6: design spec §4.2 — /send/:slug detects a claim over the
+    // existing per-link SSE channel. Only emitted once the CAS actually wins.
+    it("emits a link-claimed SSE event once the claim CAS wins, and not on a losing claim", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "claimeventowner");
+      const requestRes = await server.inject({
+        method: "POST",
+        url: "/api/links/request",
+        payload: {},
+        cookies: owner.cookies,
+      });
+      const { slug } = requestRes.json();
+      const link = await prisma.link.findUniqueOrThrow({ where: { slug } });
+
+      const events: DropEvent[] = [];
+      const unsubscribe = subscribeToLink(link.id, (event) => events.push(event));
+
+      const first = await server.inject({
+        method: "POST",
+        url: `/api/links/${slug}/claim`,
+        payload: { recipientPublicKey: "claimant-pubkey" },
+      });
+      const second = await server.inject({
+        method: "POST",
+        url: `/api/links/${slug}/claim`,
+        payload: { recipientPublicKey: "someone-elses-key" },
+      });
+      unsubscribe();
+
+      expect(first.statusCode).toBe(200);
+      expect(second.statusCode).toBe(409);
+      expect(events).toEqual([{ type: "link-claimed", recipientPublicKey: "claimant-pubkey" }]);
+    });
+  });
+
+  // Finding C1 end-to-end: the sender-initiated flow must actually deliver
+  // something — the claimant (not the initiator) can see the drop via the
+  // same unauthenticated GET the anonymous flow uses.
+  describe("finding C1: sender-initiated flow is reachable end-to-end via GET /api/links/:slug", () => {
+    async function requestAndClaim(server: ReturnType<typeof buildServer>, username: string) {
+      const initiator = await registerAndGetCookie(server, username);
+      const requestRes = await server.inject({
+        method: "POST",
+        url: "/api/links/request",
+        payload: {},
+        cookies: initiator.cookies,
+      });
+      const { slug } = requestRes.json();
+      await server.inject({
+        method: "POST",
+        url: `/api/links/${slug}/claim`,
+        payload: { recipientPublicKey: "claimant-pubkey" },
+      });
+      const link = await prisma.link.findUniqueOrThrow({ where: { slug } });
+      return { initiator, slug, link };
+    }
+
+    it("exposes the drop to a non-owner caller once claimed", async () => {
+      const server = buildServer();
+      const { slug, link } = await requestAndClaim(server, "e2einitiator1");
+      const drop = await createSentDrop(link.id);
+
+      const res = await server.inject({ method: "GET", url: `/api/links/${slug}` });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().drop).toMatchObject({ id: drop.id });
+    });
+
+    it("still hides the drop from the initiator/owner themselves once claimed", async () => {
+      const server = buildServer();
+      const { initiator, slug, link } = await requestAndClaim(server, "e2einitiator2");
+      await createSentDrop(link.id);
+
+      const res = await server.inject({ method: "GET", url: `/api/links/${slug}`, cookies: initiator.cookies });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().drop).toBeNull();
     });
   });
 });

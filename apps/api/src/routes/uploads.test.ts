@@ -2,19 +2,27 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { prisma } from "@e2ee-drop/db";
 
-const { getSignedUploadUrlSpy, objectHasSizeSpy } = vi.hoisted(() => ({
+const { getSignedUploadUrlSpy, objectHasSizeSpy, deleteObjectSpy } = vi.hoisted(() => ({
   getSignedUploadUrlSpy: vi.fn(),
   objectHasSizeSpy: vi.fn(),
+  deleteObjectSpy: vi.fn().mockResolvedValue(undefined),
 }));
 
 // /complete HEAD-verifies the upload (objectHasSize). These tests never PUT
 // real bytes, so the spy reports every object as present unless a test says
 // otherwise; completeVerification.test.ts exercises the real HEAD against
-// bytes actually uploaded to MinIO.
+// bytes actually uploaded to MinIO. deleteObject is mocked so /abandon tests
+// (finding I2) can assert it was — or was not — called, without touching
+// real MinIO.
 vi.mock("../lib/storage", async (importOriginal) => {
   const original = await importOriginal<typeof import("../lib/storage")>();
   getSignedUploadUrlSpy.mockImplementation(original.getSignedUploadUrl);
-  return { ...original, getSignedUploadUrl: getSignedUploadUrlSpy, objectHasSize: objectHasSizeSpy };
+  return {
+    ...original,
+    getSignedUploadUrl: getSignedUploadUrlSpy,
+    objectHasSize: objectHasSizeSpy,
+    deleteObject: deleteObjectSpy,
+  };
 });
 
 import { buildServer } from "../server";
@@ -85,6 +93,8 @@ describe("upload routes", () => {
     await prisma.user.deleteMany();
     objectHasSizeSpy.mockReset();
     objectHasSizeSpy.mockResolvedValue(true);
+    deleteObjectSpy.mockReset();
+    deleteObjectSpy.mockResolvedValue(undefined);
   });
 
   it("issues an upload url and creates a drop for a fresh link", async () => {
@@ -527,6 +537,7 @@ describe("upload routes", () => {
   it("abandon deletes a still-uploading drop and frees a one-time link's slot", async () => {
     const server = buildServer();
     const { slug, dropId } = await createLinkWithUploadingDrop(server);
+    const drop = await prisma.drop.findUniqueOrThrow({ where: { id: dropId } });
 
     const abandon = await server.inject({
       method: "POST",
@@ -535,6 +546,11 @@ describe("upload routes", () => {
     expect(abandon.statusCode).toBe(200);
     expect(abandon.json()).toEqual({ abandoned: true });
     expect(await prisma.drop.findUnique({ where: { id: dropId } })).toBeNull();
+    // Finding I2: a PUT can already have landed in storage by the time abandon is
+    // called; without deleting the object, the row — the only record of its
+    // s3Key — is gone the moment abandon succeeds, orphaning the object forever.
+    expect(deleteObjectSpy).toHaveBeenCalledTimes(1);
+    expect(deleteObjectSpy).toHaveBeenCalledWith(drop.s3Key);
 
     // A fresh upload-url call must now succeed again (the slot was freed).
     const retry = await server.inject({
@@ -545,11 +561,12 @@ describe("upload routes", () => {
     expect(retry.statusCode).toBe(200);
   });
 
-  it("abandon does nothing to an already-complete drop", async () => {
+  it("abandon does nothing to an already-complete drop, and never calls deleteObject", async () => {
     const server = buildServer();
     const { slug, dropId } = await createLinkWithUploadingDrop(server);
     const complete = await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/complete` });
     expect(complete.statusCode).toBe(200);
+    deleteObjectSpy.mockClear();
 
     const res = await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/abandon` });
 
@@ -557,9 +574,11 @@ describe("upload routes", () => {
     expect(res.json()).toEqual({ abandoned: false });
     const drop = await prisma.drop.findUnique({ where: { id: dropId } });
     expect(drop?.fileUploadStatus).toBe("complete");
+    // Must never delete a completed drop's real, already-served object.
+    expect(deleteObjectSpy).not.toHaveBeenCalled();
   });
 
-  it("does nothing when abandoning via a link the drop does not belong to (scoped CAS, not a lookup)", async () => {
+  it("does nothing when abandoning via a link the drop does not belong to (scoped CAS, not a lookup), and never calls deleteObject", async () => {
     const server = buildServer();
     const { dropId } = await createLinkWithUploadingDrop(server);
     const otherSlug = await createLink(server);
@@ -575,9 +594,10 @@ describe("upload routes", () => {
     expect(res.json()).toEqual({ abandoned: false });
     const drop = await prisma.drop.findUnique({ where: { id: dropId } });
     expect(drop?.fileUploadStatus).toBe("uploading");
+    expect(deleteObjectSpy).not.toHaveBeenCalled();
   });
 
-  it("returns 404 when abandoning a drop on an expired link", async () => {
+  it("returns 404 when abandoning a drop on an expired link, and never calls deleteObject", async () => {
     const server = buildServer();
     const { slug, dropId } = await createLinkWithUploadingDrop(server);
     await prisma.link.updateMany({ where: { slug }, data: { expiresAt: new Date(Date.now() - 1000) } });
@@ -587,6 +607,7 @@ describe("upload routes", () => {
     expect(res.statusCode).toBe(404);
     const drop = await prisma.drop.findUnique({ where: { id: dropId } });
     expect(drop?.fileUploadStatus).toBe("uploading");
+    expect(deleteObjectSpy).not.toHaveBeenCalled();
   });
 
   it("emits drop-created on upload-url and drop-updated(complete) on a successful complete only", async () => {
@@ -613,7 +634,11 @@ describe("upload routes", () => {
     });
     unsubscribe();
 
-    expect(events.map((e) => [e.type, e.drop.id, e.drop.fileUploadStatus, e.drop.deliveryStatus])).toEqual([
+    // This route never emits "link-claimed" (that's POST /api/links/:slug/claim,
+    // see routes/links.test.ts), so narrowing to the drop-carrying variants here
+    // is safe and lets the map below access `.drop` without a per-element guard.
+    const dropEvents = events as Exclude<DropEvent, { type: "link-claimed" }>[];
+    expect(dropEvents.map((e) => [e.type, e.drop.id, e.drop.fileUploadStatus, e.drop.deliveryStatus])).toEqual([
       ["drop-created", dropId, "uploading", "sender_opened"],
       ["drop-updated", dropId, "complete", "sent"],
     ]);

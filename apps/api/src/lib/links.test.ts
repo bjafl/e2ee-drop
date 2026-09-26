@@ -19,7 +19,25 @@ vi.mock("./codewords", async (importOriginal) => {
   };
 });
 
-import { deleteLinkIfExists, toDropSummary, toLinkStatusResponse } from "./links";
+import { canReceive, deleteLinkIfExists, toDropSummary, toLinkStatusResponse } from "./links";
+
+async function makeOwner(overrides: Partial<Parameters<typeof prisma.user.create>[0]["data"]> = {}) {
+  return prisma.user.create({
+    data: {
+      email: "owner@example.com",
+      emailVerified: true,
+      username: "owner",
+      name: "Owner Name",
+      passwordHash: "x",
+      passwordSalt: "x",
+      passwordWrappedPrivateKey: "x",
+      recoveryWrappedPrivateKey: "x",
+      publicKey: "b3duZXJrZXk=",
+      storageQuotaBytes: BigInt(1024 * 1024 * 1024), // 1GB
+      ...overrides,
+    },
+  });
+}
 
 function makeLink(overrides: Partial<Link> = {}): Link {
   return {
@@ -141,24 +159,6 @@ describe("toLinkStatusResponse", () => {
     await prisma.user.deleteMany();
   });
 
-  async function makeOwner(overrides: Partial<Parameters<typeof prisma.user.create>[0]["data"]> = {}) {
-    return prisma.user.create({
-      data: {
-        email: "owner@example.com",
-        emailVerified: true,
-        username: "owner",
-        name: "Owner Name",
-        passwordHash: "x",
-        passwordSalt: "x",
-        passwordWrappedPrivateKey: "x",
-        recoveryWrappedPrivateKey: "x",
-        publicKey: "b3duZXJrZXk=",
-        storageQuotaBytes: BigInt(1024 * 1024 * 1024), // 1GB
-        ...overrides,
-      },
-    });
-  }
-
   it("returns only the base response fields for an unverified owner — no recipient* keys at all", async () => {
     const owner = await makeOwner({ emailVerified: false, showEmailOnPublicProfile: true });
     const link = { ...makeLink({ ownerId: owner.id, recipientPublicKey: owner.publicKey }), drops: [] };
@@ -235,5 +235,88 @@ describe("toLinkStatusResponse", () => {
 
     expect(response.codewords).toEqual([]);
     expect(deriveCodewordsSpy).not.toHaveBeenCalled();
+  });
+
+  describe("finding C1: a claimed sender-initiated link exposes its drop like an anonymous link, except to the owner", () => {
+    it("exposes the drop to a non-owner (anonymous caller) on a claimed sender-initiated link", async () => {
+      const owner = await makeOwner({ username: "initiator", email: "initiator@example.com" });
+      const drop = makeDrop({ linkId: "link1" });
+      const link = {
+        ...makeLink({ ownerId: owner.id, recipientPublicKey: "claimant-key" }),
+        drops: [drop],
+      };
+
+      const response = await toLinkStatusResponse(link, undefined);
+
+      expect(response.drop).not.toBeNull();
+      expect(response.drop?.id).toBe(drop.id);
+    });
+
+    it("still hides the drop from the initiator/owner themselves on a claimed sender-initiated link", async () => {
+      const owner = await makeOwner({ username: "initiator2", email: "initiator2@example.com" });
+      const drop = makeDrop({ linkId: "link1" });
+      const link = {
+        ...makeLink({ ownerId: owner.id, recipientPublicKey: "claimant-key" }),
+        drops: [drop],
+      };
+
+      const response = await toLinkStatusResponse(link, owner.id);
+
+      expect(response.drop).toBeNull();
+    });
+
+    it("still hides the drop on a NORMAL owned link even when userId is the true owner (no regression)", async () => {
+      const owner = await makeOwner({ username: "normalowner", email: "normalowner@example.com" });
+      const drop = makeDrop({ linkId: "link1" });
+      const link = {
+        ...makeLink({ ownerId: owner.id, recipientPublicKey: owner.publicKey }),
+        drops: [drop],
+      };
+
+      const response = await toLinkStatusResponse(link, owner.id);
+
+      expect(response.drop).toBeNull();
+    });
+  });
+});
+
+describe("canReceive", () => {
+  beforeEach(async () => {
+    await prisma.drop.deleteMany();
+    await prisma.link.deleteMany();
+    await prisma.user.deleteMany();
+  });
+
+  it("is always true for an anonymous link, regardless of caller identity", async () => {
+    const link = makeLink({ ownerId: null });
+
+    expect(await canReceive(link, undefined)).toBe(true);
+    expect(await canReceive(link, "some-random-id")).toBe(true);
+  });
+
+  it("is true only for the true owner on a normal owned link (default/custom) — non-owner denied", async () => {
+    const owner = await makeOwner({ username: "normalowner2", email: "normalowner2@example.com" });
+    const link = makeLink({ ownerId: owner.id, recipientPublicKey: owner.publicKey });
+
+    expect(await canReceive(link, owner.id)).toBe(true);
+    expect(await canReceive(link, "intruder-id")).toBe(false);
+    expect(await canReceive(link, undefined)).toBe(false);
+  });
+
+  it("is true only for a non-owner on a claimed sender-initiated link — the initiator/owner is denied", async () => {
+    const owner = await makeOwner({ username: "initiator3", email: "initiator3@example.com" });
+    const link = makeLink({ ownerId: owner.id, recipientPublicKey: "claimant-key" });
+
+    expect(await canReceive(link, owner.id)).toBe(false);
+    expect(await canReceive(link, "claimant-session-id")).toBe(true);
+    expect(await canReceive(link, undefined)).toBe(true);
+  });
+
+  it("is true only for the owner on an UNCLAIMED sender-initiated link (nothing to receive yet)", async () => {
+    const owner = await makeOwner({ username: "initiator4", email: "initiator4@example.com" });
+    const link = makeLink({ ownerId: owner.id, recipientPublicKey: null });
+
+    expect(await canReceive(link, owner.id)).toBe(true);
+    expect(await canReceive(link, "stranger-id")).toBe(false);
   });
 });

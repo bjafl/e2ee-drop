@@ -16,12 +16,14 @@ import {
   generateAnonymousSlug,
   getLinkBySlug,
   isLinkExpired,
+  isSenderInitiatedReceiveCapability,
   toDropSummary,
   toLinkStatusResponse,
 } from "../lib/links";
 import { deleteObject } from "../lib/storage";
 import { resolveLocale, deriveCodewords } from "../lib/codewords";
 import { resolveRetentionDays } from "../lib/retention";
+import { emitDropEvent } from "../lib/dropEvents";
 import { env } from "../env";
 
 export function registerLinkRoutes(server: FastifyInstance): void {
@@ -240,6 +242,11 @@ export function registerLinkRoutes(server: FastifyInstance): void {
         data: { recipientPublicKey },
       });
       if (count !== 1) return reply.status(409).send({ error: "This link has already been claimed" });
+      // Design spec §4.2: lets /send/:slug (the initiator's page, subscribed via
+      // GET /api/links/:slug/events — owner-gated, so only the initiator hears
+      // this) detect the claim over the existing per-link SSE channel instead of
+      // polling. Emitted only after the CAS above actually won.
+      emitDropEvent(link.id, { type: "link-claimed", recipientPublicKey });
       return reply.send({ claimed: true });
     }
   );
@@ -252,7 +259,7 @@ export function registerLinkRoutes(server: FastifyInstance): void {
     // each drop's storage object before the row. Deleting the row lazily here would
     // lose the s3Key and orphan the object in storage forever.
     if (isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
-    return reply.send(await toLinkStatusResponse(link));
+    return reply.send(await toLinkStatusResponse(link, request.user?.id));
   });
 
   // Owner-only queue listing (Plan 3, Task 6). Returns every non-downloaded drop
@@ -278,19 +285,23 @@ export function registerLinkRoutes(server: FastifyInstance): void {
     }
   );
 
-  // Anonymous link's receive-side signal (design spec §6.1). This replaces a
-  // spoofable `?role=receiver` query param on the shared GET above: any
-  // client can call this, so it's still not cryptographic proof of receipt,
-  // but it narrows the surface from "flip a param on any GET" to "call the
-  // one endpoint whose entire purpose is this action". No-op for an owned
+  // Receive-side signal (design spec §6.1). This replaces a spoofable
+  // `?role=receiver` query param on the shared GET above: any client can
+  // call this, so it's still not cryptographic proof of receipt, but it
+  // narrows the surface from "flip a param on any GET" to "call the one
+  // endpoint whose entire purpose is this action". No-op for a NORMAL owned
   // link — that queue's delivery state is spec 5's concern (GET .../drops).
+  // Acts for an anonymous link (as before) and now also for a claimed
+  // sender-initiated link's non-owner caller (the claimant) — see
+  // isSenderInitiatedReceiveCapability in lib/links.ts for why the
+  // initiator/owner themselves must still be excluded even there.
   server.post<{ Params: { slug: string } }>(
     "/api/links/:slug/mark-receiver-opened",
     async (request, reply) => {
       const link = await getLinkBySlug(request.params.slug);
       if (!link) return reply.status(404).send({ error: "Link not found" });
       if (isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
-      if (link.ownerId === null) {
+      if (link.ownerId === null || (await isSenderInitiatedReceiveCapability(link, request.user?.id))) {
         const drop = link.drops[0];
         if (drop) {
           await prisma.drop.updateMany({

@@ -2,7 +2,7 @@
 import type { FastifyInstance } from "fastify";
 import { prisma } from "@e2ee-drop/db";
 import type { DownloadUrlResponse, RevealMessageResponse } from "@e2ee-drop/shared";
-import { getLinkBySlug, isLinkExpired } from "../lib/links";
+import { canReceive, getLinkBySlug, isLinkExpired } from "../lib/links";
 import { getSignedDownloadUrl, deleteObject } from "../lib/storage";
 
 // fileEnvelopeStatus values that mean "this drop's file bytes are gone/spoken
@@ -20,11 +20,13 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
       // Not deleted here — see the GET /api/links/:slug handler: only the cleanup
       // job deletes expired links, so storage objects are never orphaned.
       if (isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
-      // Owned links: only the owner may download. Anonymous (ownerId === null)
-      // links are untouched — any link holder may download, as in Plan 1.
-      // request.user is always set (null without a valid session) by the global
-      // onRequest hook in plugins/auth.ts.
-      if (link.ownerId && link.ownerId !== request.user?.id) {
+      // Anonymous (ownerId === null) links stay open to any link holder, as in
+      // Plan 1. A normal owned link is restricted to its true owner; a claimed
+      // sender-initiated link's receive actions are open to any non-owner slug
+      // holder instead (see canReceive in lib/links.ts). request.user is always
+      // set (null without a valid session) by the global onRequest hook in
+      // plugins/auth.ts.
+      if (!(await canReceive(link, request.user?.id))) {
         return reply.status(403).send({ error: "Forbidden" });
       }
       // A permanent link can hold a queue of drops, so the client names the one it
@@ -66,14 +68,24 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
     async (request, reply) => {
       const link = await getLinkBySlug(request.params.slug);
       if (!link || isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
-      // Same ownership rule as download-url: only the owner may complete a
-      // download on an owned link; anonymous links stay open to any link holder.
-      if (link.ownerId && link.ownerId !== request.user?.id) {
+      // Same receive-side rule as download-url: see canReceive in lib/links.ts.
+      if (!(await canReceive(link, request.user?.id))) {
         return reply.status(403).send({ error: "Forbidden" });
       }
       const { dropId } = request.params;
       const drop = link.drops.find((candidate) => candidate.id === dropId);
       if (!drop) return reply.status(404).send({ error: "Drop not found" });
+      // The old (now-removed) /downloaded route rejected a drop still
+      // "uploading"; this route needs the same guard — without it, a link
+      // holder could call complete-download mid-upload (deleting nothing
+      // useful, since the real object isn't there yet under this drop's s3Key
+      // convention) and mark the drop "delivered" — so when the real upload
+      // later completes and the real receiver downloads it, the CAS below's
+      // fast path (and its own CAS) would treat the drop as already resolved
+      // and never delete the real object from storage.
+      if (drop.fileUploadStatus !== "complete") {
+        return reply.status(403).send({ error: "File is not ready for download yet" });
+      }
       // Fast path only, not a correctness gate: skips a pointless deleteObject +
       // DB round trip when this request's own snapshot already shows the drop
       // resolved. A drop that reaches this point despite already being terminal
@@ -99,7 +111,12 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
       // reveal-message CAS, and its fix for a stale-snapshot response bug, for
       // why this must be the count, not the snapshot).
       const { count } = await prisma.drop.updateMany({
-        where: { id: dropId, linkId: link.id, fileEnvelopeStatus: { notIn: [...TERMINAL_FILE_ENVELOPE_STATUSES] } },
+        where: {
+          id: dropId,
+          linkId: link.id,
+          fileUploadStatus: "complete",
+          fileEnvelopeStatus: { notIn: [...TERMINAL_FILE_ENVELOPE_STATUSES] },
+        },
         data: { fileEnvelopeStatus: "delivered", contentDeletedAt: new Date() },
       });
       if (count !== 1) {
@@ -110,15 +127,31 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
         return reply.send({ completed: false });
       }
 
-      // Derive the overall deliveryStatus from both envelope statuses (design
-      // spec's partial_delivery/delivered derivation — owned by this plan's
-      // endpoints per the design spec's note that plan 1/2 write these fields
-      // even though spec 2 owns the full read side). Only the call that actually
-      // won the CAS above runs this.
-      const messageDone = drop.messageEnvelopeStatus === "delivered" || drop.encryptedMessage === null;
+      // Derive the overall deliveryStatus fresh from current DB state — NOT
+      // from `drop`, the snapshot fetched before this call's own CAS above —
+      // after each envelope CAS win (reveal-message below does the mirror
+      // image of this same pair of updates). A snapshot taken before this
+      // call's own await gap would get this wrong whenever the *other*
+      // envelope (message here) was resolved by a different, already-
+      // committed request — the entirely normal "download file, then reveal
+      // message" and "reveal message, then download file" sequences.
       await prisma.drop.updateMany({
-        where: { id: dropId, linkId: link.id },
-        data: { deliveryStatus: messageDone ? "delivered" : "partial_delivery" },
+        where: {
+          id: dropId,
+          linkId: link.id,
+          fileEnvelopeStatus: "delivered",
+          OR: [{ messageEnvelopeStatus: "delivered" }, { encryptedMessage: null }],
+        },
+        data: { deliveryStatus: "delivered" },
+      });
+      await prisma.drop.updateMany({
+        where: {
+          id: dropId,
+          linkId: link.id,
+          deliveryStatus: { notIn: ["delivered"] },
+          OR: [{ fileEnvelopeStatus: "delivered" }, { messageEnvelopeStatus: "delivered" }],
+        },
+        data: { deliveryStatus: "partial_delivery" },
       });
 
       return reply.send({ completed: true });
@@ -136,10 +169,9 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
     async (request, reply) => {
       const link = await getLinkBySlug(request.params.slug);
       if (!link || isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
-      // Same ownership rule as download-url/complete-download: only the owner
-      // may report a failure on an owned link's drop; anonymous links stay open
-      // to any link holder.
-      if (link.ownerId && link.ownerId !== request.user?.id) {
+      // Same receive-side rule as download-url/complete-download: see
+      // canReceive in lib/links.ts.
+      if (!(await canReceive(link, request.user?.id))) {
         return reply.status(403).send({ error: "Forbidden" });
       }
       const { dropId } = request.params;
@@ -167,6 +199,13 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
     async (request, reply) => {
       const link = await getLinkBySlug(request.params.slug);
       if (!link || isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+      // Same receive-side rule as this route's siblings: see canReceive in
+      // lib/links.ts. Previously missing entirely (finding I5) — this route had
+      // no ownership check at all, so a non-owner could reveal (and permanently
+      // scrub) an owned link's message.
+      if (!(await canReceive(link, request.user?.id))) {
+        return reply.status(403).send({ error: "Forbidden" });
+      }
       const { dropId } = request.params;
 
       const drop = link.drops.find((candidate) => candidate.id === dropId);
@@ -198,6 +237,29 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
         // Lost the race to a concurrent reveal call, or the message was already gone.
         return reply.status(409).send({ error: "Message already revealed" });
       }
+
+      // Mirror image of complete-download's deliveryStatus recompute (finding
+      // I4): derive fresh from current DB state, not a pre-CAS snapshot, so
+      // "reveal message, then download file" and "download file, then reveal
+      // message" both converge on "delivered" regardless of order.
+      await prisma.drop.updateMany({
+        where: {
+          id: dropId,
+          linkId: link.id,
+          messageEnvelopeStatus: "delivered",
+          fileEnvelopeStatus: "delivered",
+        },
+        data: { deliveryStatus: "delivered" },
+      });
+      await prisma.drop.updateMany({
+        where: {
+          id: dropId,
+          linkId: link.id,
+          deliveryStatus: { notIn: ["delivered"] },
+          OR: [{ fileEnvelopeStatus: "delivered" }, { messageEnvelopeStatus: "delivered" }],
+        },
+        data: { deliveryStatus: "partial_delivery" },
+      });
 
       const body: RevealMessageResponse = { encryptedMessage, messageNonce: messageNonce! };
       return reply.send(body);

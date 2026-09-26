@@ -77,6 +77,80 @@ export async function transitionFileUploadStatus(
   return count === 1;
 }
 
+// Distinguishes a claimed sender-initiated link (POST /api/links/request,
+// followed by a winning POST /api/links/:slug/claim) from a normal owned
+// link (the default link from registration, or POST /api/links/custom) —
+// both have `ownerId !== null`, so that alone can't tell them apart.
+//
+// A normal owned link's recipientPublicKey is set to the owner's own
+// publicKey at creation (createDefaultLinkForUser, POST /api/links/custom)
+// and nothing in this codebase ever changes an owned link's
+// recipientPublicKey once it is non-null. POST /api/links/request is the
+// only route that creates an owned link with recipientPublicKey: null, and
+// /claim is the only route that ever sets it afterward — via a CAS
+// (`where: { recipientPublicKey: null }`) that only succeeds while it is
+// still null. So: an owned link whose CURRENT recipientPublicKey differs
+// from its owner's own actual publicKey can only be a sender-initiated link
+// that has since been claimed by someone else. This costs one extra query
+// (the owner's own publicKey) but needs no schema change and no new column.
+async function isClaimedSenderInitiatedLink(link: Link): Promise<boolean> {
+  if (link.ownerId === null || link.recipientPublicKey === null) return false;
+  const owner = await prisma.user.findUnique({
+    where: { id: link.ownerId },
+    select: { publicKey: true },
+  });
+  if (!owner) return false; // owner row gone (cascade will take the link with it)
+  return link.recipientPublicKey !== owner.publicKey;
+}
+
+// Authorizes the receive-side actions on a link: download-url,
+// complete-download, download-failed, and reveal-message (routes/downloads.ts).
+// Three link shapes:
+//  - anonymous (ownerId === null): the slug alone is the capability (Plan 1)
+//    — any holder of the slug may act, regardless of session.
+//  - a normal owned link (default, or POST /api/links/custom): the owner IS
+//    the intended recipient (their own publicKey is on the link from
+//    creation), so only the true owner may act.
+//  - a claimed sender-initiated link (POST /api/links/request + /claim): the
+//    owner is the SENDER/initiator, not the recipient — the actual recipient
+//    is whoever claimed it, identified structurally (an anonymous claimant
+//    has no session to check). The slug is therefore the receive capability
+//    here too, same trust model as an anonymous link — EXCEPT for the
+//    initiator/owner themselves, who must be denied: they are the uploader,
+//    and granting them these actions (complete-download's delete,
+//    reveal-message's one-time read) would let the sender destroy or consume
+//    content before the real recipient ever gets to it.
+//
+// Deliberately never used for quota/management operations (delete link, edit
+// ownerNote, etc.) — those stay strictly gated on true ownership
+// (request.user?.id === link.ownerId), unaffected by this helper.
+export async function canReceive(link: Link, userId: string | null | undefined): Promise<boolean> {
+  if (link.ownerId === null) return true;
+
+  const isOwner = userId != null && userId === link.ownerId;
+  const senderInitiatedClaim = await isClaimedSenderInitiatedLink(link);
+
+  if (isOwner) return !senderInitiatedClaim;
+  return senderInitiatedClaim;
+}
+
+// Narrower variant of the same structural check, used only by
+// toLinkStatusResponse and mark-receiver-opened: those two routes must keep
+// treating a NORMAL owned link exactly as before (never act/expose,
+// regardless of caller identity — the owner uses GET .../drops or the queue
+// view instead), and only additionally act for a claimed sender-initiated
+// link's non-owner caller. canReceive's "true owner of a normal owned link"
+// branch does not apply here — that link shape doesn't use this signal at
+// this pair of routes.
+export async function isSenderInitiatedReceiveCapability(
+  link: Link,
+  userId: string | null | undefined
+): Promise<boolean> {
+  const isOwner = userId != null && userId === link.ownerId;
+  if (isOwner) return false;
+  return isClaimedSenderInitiatedLink(link);
+}
+
 export function toDropSummary(drop: Drop, link: { retentionDays: number }): DropSummary {
   return {
     id: drop.id,
@@ -117,17 +191,29 @@ export async function createDefaultLinkForUser(
 }
 
 export async function toLinkStatusResponse(
-  link: Link & { drops: Drop[] }
+  link: Link & { drops: Drop[] },
+  userId?: string | null
 ): Promise<LinkStatusResponse> {
   // This response is served unauthenticated (GET /api/links/:slug). For an
   // anonymous link that's fine: its random slug IS the capability, and Plan 1's
   // anonymous flow reads `drop` from here. An owned link's slug is public (the
   // default one is the owner's username), so exposing its drop here would hand
   // any stranger a queued drop's id, fileName, message and status — and the id
-  // is what the /complete route acts on. Owned links never report a drop here;
+  // is what the /complete route acts on. A NORMAL owned link never reports a
+  // drop here regardless of who's asking (even the true owner, if logged in) —
   // the owner reads their queue from the owner-gated GET /api/links/:slug/drops
   // and GET /api/links/:slug/events instead.
-  const activeDrop = link.ownerId === null ? (link.drops[0] ?? null) : null;
+  //
+  // A claimed sender-initiated link (POST /api/links/request + /claim) is the
+  // one exception: the slug is the receive capability there (same trust model
+  // as an anonymous link), so its drop IS exposed here — to the claimant, or
+  // any other non-owner slug holder, but never to the initiator/owner
+  // themselves (they use GET .../drops for their own, sender-side view, same
+  // as any other owned link's owner).
+  const activeDrop =
+    link.ownerId === null || (await isSenderInitiatedReceiveCapability(link, userId))
+      ? (link.drops[0] ?? null)
+      : null;
   const base: LinkStatusResponse = {
     slug: link.slug,
     mode: link.mode as LinkStatusResponse["mode"],

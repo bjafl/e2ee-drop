@@ -4,7 +4,7 @@ import { nanoid } from "nanoid";
 import { prisma, Prisma, type Drop } from "@e2ee-drop/db";
 import type { RequestUploadUrlRequest, RequestUploadUrlResponse } from "@e2ee-drop/shared";
 import { getLinkBySlug, isLinkExpired, toDropSummary, transitionFileUploadStatus } from "../lib/links";
-import { getSignedUploadUrl, objectHasSize } from "../lib/storage";
+import { deleteObject, getSignedUploadUrl, objectHasSize } from "../lib/storage";
 import { emitDropEvent } from "../lib/dropEvents";
 import { hasAcceptedContact } from "../lib/contacts";
 import {
@@ -409,12 +409,37 @@ export function registerUploadRoutes(server: FastifyInstance): void {
       const link = await getLinkBySlug(request.params.slug);
       if (!link || isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
       const { dropId } = request.params;
+      // s3Key is immutable once set at creation, so it's safe to read it here —
+      // *before* this call has proven anything — and still use it *after* the
+      // CAS below, which is the step that actually re-validates fileUploadStatus.
+      const candidate = await prisma.drop.findFirst({
+        where: { id: dropId, linkId: link.id, fileUploadStatus: "uploading" },
+        select: { s3Key: true },
+      });
+      if (!candidate) return reply.send({ abandoned: false });
+
       // Same CAS discipline as everywhere else: only a drop still "uploading" for THIS link is
       // eligible, so a late abandon call on an already-completed drop is a harmless no-op, never
-      // a race that deletes real, delivered content.
+      // a race that deletes real, delivered content. This is also the step that resolves a
+      // concurrent race against /complete: if /complete's own CAS wins first (transitions this
+      // row to "complete" between the findFirst above and here), this simply matches 0 rows.
       const { count } = await prisma.drop.deleteMany({
         where: { id: dropId, linkId: link.id, fileUploadStatus: "uploading" },
       });
+      if (count === 1) {
+        // Finding I2: only now — after this call has proven, via the CAS above,
+        // that the row was still "uploading" (i.e. never legitimately completed)
+        // at the moment it was deleted — is it safe to delete its storage
+        // object too. A PUT can already have landed in storage by the time a
+        // client abandons (or crashes, and the sweep in jobs/cleanup.ts catches
+        // it later); without this, the row — the only record of its s3Key — is
+        // gone the moment the delete above wins, orphaning the object in
+        // storage forever. Deleting storage only after confirming the row-CAS
+        // won (never unconditionally, and never before) is what prevents a
+        // concurrent, legitimately-completed /complete call from having its
+        // real, already-verified object destroyed out from under it.
+        await deleteObject(candidate.s3Key);
+      }
       return reply.send({ abandoned: count === 1 });
     }
   );
