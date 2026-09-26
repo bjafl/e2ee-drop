@@ -154,6 +154,9 @@ importers:
       '@vitejs/plugin-react':
         specifier: ^6.1.1
         version: 6.1.1(vite@8.3.0(@types/node@24.13.6)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15))
+      '@vitest/web-worker':
+        specifier: ^2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@24.13.6)(jsdom@25.0.1)(lightningcss@1.33.0))
       jsdom:
         specifier: ^25.0.1
         version: 25.0.1
@@ -1502,6 +1505,11 @@ packages:
 
   '@vitest/utils@2.1.9':
     resolution: {integrity: sha512-v0psaMSkNJ3A2NMrUEHFRzJtDPFn+/VWZ5WxImB21T9fjucJRmS7xCS3ppEnARb9y11OAzaD+P2Ps+b+BGX5iQ==}
+
+  '@vitest/web-worker@2.1.9':
+    resolution: {integrity: sha512-b2RRiiSzQPGGH3hfVW1lzMG1L6t5dmQPSUBtyhFwHIV03risqbR73BigsWQ0QVNCU3Q+MueErBH1m3w4QGK3SA==}
+    peerDependencies:
+      vitest: 2.1.9
 
   abstract-logging@2.0.1:
     resolution: {integrity: sha512-2BjRTZxTPvheOvGbBslFSYOUkr+SjPtOnrLP33f+VIWLzezQpZcqVg7ja3L4dBXmzzgwT+a029jRx5PCi3JuiA==}
@@ -4687,6 +4695,13 @@ snapshots:
       '@vitest/pretty-format': 2.1.9
       loupe: 3.2.1
       tinyrainbow: 1.2.0
+
+  '@vitest/web-worker@2.1.9(vitest@2.1.9(@types/node@24.13.6)(jsdom@25.0.1)(lightningcss@1.33.0))':
+    dependencies:
+      debug: 4.4.3
+      vitest: 2.1.9(@types/node@24.13.6)(jsdom@25.0.1)(lightningcss@1.33.0)
+    transitivePeerDependencies:
+      - supports-color
 
   abstract-logging@2.0.1: {}
 
