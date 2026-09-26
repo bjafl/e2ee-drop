@@ -497,6 +497,25 @@ describe("reveal-message route", () => {
     expect(second.statusCode).toBe(409);
   });
 
+  it("concurrent reveal calls resolve to exactly one winner", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithMessage(server, {
+      encryptedMessage: "c2VjcmV0IG1lc3NhZ2U=",
+      messageNonce: "bXNnbm9uY2U=",
+    });
+
+    const [a, b] = await Promise.all([
+      server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/reveal-message` }),
+      server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/reveal-message` }),
+    ]);
+
+    const codes = [a.statusCode, b.statusCode].sort();
+    expect(codes).toEqual([200, 409]);
+    const drop = await prisma.drop.findUnique({ where: { id: dropId } });
+    expect(drop?.encryptedMessage).toBeNull();
+    expect(drop?.messageNonce).toBeNull();
+  });
+
   it("404s for a drop with no message", async () => {
     const server = buildServer();
     const { slug, dropId } = await createLinkWithMessage(server, null);
