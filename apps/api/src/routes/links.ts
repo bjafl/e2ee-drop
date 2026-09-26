@@ -1,5 +1,5 @@
 // apps/api/src/routes/links.ts
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import type {
   CreateLinkRequest,
   CreateLinkResponse,
@@ -343,4 +343,62 @@ export function registerLinkRoutes(server: FastifyInstance): void {
     await deleteLinkIfExists(link.id);
     return reply.send({ deleted: true });
   });
+
+  async function requireOwnedLink(slug: string, userId: string, reply: FastifyReply) {
+    const link = await getLinkBySlug(slug);
+    if (!link) {
+      reply.status(404).send({ error: "Link not found" });
+      return null;
+    }
+    if (link.ownerId !== userId) {
+      reply.status(403).send({ error: "Forbidden" });
+      return null;
+    }
+    return link;
+  }
+
+  server.post<{ Params: { slug: string } }>(
+    "/api/links/:slug/revoke",
+    { preHandler: server.requireAuth },
+    async (request, reply) => {
+      const link = await requireOwnedLink(request.params.slug, request.user!.id, reply);
+      if (!link) return;
+      await prisma.link.update({ where: { id: link.id }, data: { revokedAt: new Date() } });
+      // NOTE (see plan self-review / spec §3.1): shredding this link's still-
+      // sealed/delivery_failed drops on revoke is spec 2's job (owner-cancel
+      // mechanism) and is intentionally NOT done here — spec 2's plan should
+      // add that call once its shred function exists. Revoke here only makes
+      // the link stop being servable; it does not touch existing drops.
+      return reply.send({ revoked: true });
+    }
+  );
+
+  server.post<{ Params: { slug: string } }>(
+    "/api/links/:slug/unrevoke",
+    { preHandler: server.requireAuth },
+    async (request, reply) => {
+      const link = await requireOwnedLink(request.params.slug, request.user!.id, reply);
+      if (!link) return;
+      await prisma.link.update({ where: { id: link.id }, data: { revokedAt: null } });
+      return reply.send({ revoked: false });
+    }
+  );
+
+  server.patch<{ Params: { slug: string }; Body: { visibility?: string } }>(
+    "/api/links/:slug",
+    {
+      preHandler: server.requireAuth,
+      schema: { body: { type: "object", properties: { visibility: { type: "string" } } } },
+    },
+    async (request, reply) => {
+      const link = await requireOwnedLink(request.params.slug, request.user!.id, reply);
+      if (!link) return;
+      const { visibility } = request.body;
+      if (visibility !== "public" && visibility !== "contacts-only") {
+        return reply.status(400).send({ error: "Invalid visibility" });
+      }
+      await prisma.link.update({ where: { id: link.id }, data: { visibility } });
+      return reply.send({ visibility });
+    }
+  );
 }

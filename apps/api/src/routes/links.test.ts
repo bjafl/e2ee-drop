@@ -1045,4 +1045,59 @@ describe("link routes", () => {
       expect(res.json().drop).toBeNull();
     });
   });
+
+  describe("POST /api/links/:slug/revoke, /unrevoke, and PATCH /api/links/:slug", () => {
+    it("lets the owner revoke and unrevoke their own link", async () => {
+      const server = buildServer();
+      const { cookies } = await registerAndGetCookie(server, "revoker");
+      await prisma.user.update({ where: { username: "revoker" }, data: { emailVerified: true } });
+      const create = await server.inject({
+        method: "POST", url: "/api/links/custom", cookies,
+        payload: { slug: "revoke-me", mode: "permanent" },
+      });
+      expect(create.statusCode).toBe(200);
+
+      const revoke = await server.inject({ method: "POST", url: "/api/links/revoke-me/revoke", cookies });
+      expect(revoke.statusCode).toBe(200);
+      const link = await prisma.link.findUniqueOrThrow({ where: { slug: "revoke-me" } });
+      expect(link.revokedAt).not.toBeNull();
+
+      const unrevoke = await server.inject({ method: "POST", url: "/api/links/revoke-me/unrevoke", cookies });
+      expect(unrevoke.statusCode).toBe(200);
+      const relinked = await prisma.link.findUniqueOrThrow({ where: { slug: "revoke-me" } });
+      expect(relinked.revokedAt).toBeNull();
+    });
+
+    it("rejects revoke from a non-owner", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "owner1");
+      await prisma.user.update({ where: { username: "owner1" }, data: { emailVerified: true } });
+      await server.inject({ method: "POST", url: "/api/links/custom", cookies: owner.cookies, payload: { slug: "not-yours", mode: "permanent" } });
+
+      const stranger = await registerAndGetCookie(server, "stranger1");
+      const attempt = await server.inject({ method: "POST", url: "/api/links/not-yours/revoke", cookies: stranger.cookies });
+      expect(attempt.statusCode).toBe(403);
+    });
+
+    it("lets the owner change visibility via PATCH", async () => {
+      const server = buildServer();
+      const { cookies } = await registerAndGetCookie(server, "patcher");
+      await prisma.user.update({ where: { username: "patcher" }, data: { emailVerified: true } });
+      await server.inject({ method: "POST", url: "/api/links/custom", cookies, payload: { slug: "patch-me", mode: "permanent" } });
+
+      const patch = await server.inject({ method: "PATCH", url: "/api/links/patch-me", cookies, payload: { visibility: "contacts-only" } });
+      expect(patch.statusCode).toBe(200);
+      const link = await prisma.link.findUniqueOrThrow({ where: { slug: "patch-me" } });
+      expect(link.visibility).toBe("contacts-only");
+    });
+
+    it("rejects an unowned (anonymous) link revoke with 403, never a silent success", async () => {
+      const server = buildServer();
+      const anon = await server.inject({ method: "POST", url: "/api/links", payload: { recipientPublicKey: "anon-pk" } });
+      const slug = anon.json().slug as string;
+      const { cookies } = await registerAndGetCookie(server, "someuser");
+      const revoke = await server.inject({ method: "POST", url: `/api/links/${slug}/revoke`, cookies });
+      expect(revoke.statusCode).toBe(403);
+    });
+  });
 });
