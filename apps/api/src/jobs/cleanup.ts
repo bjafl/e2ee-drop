@@ -2,7 +2,7 @@
 import { prisma } from "@e2ee-drop/db";
 import { deleteObject } from "../lib/storage";
 import { deleteLinkIfExists } from "../lib/links";
-import { deleteDropReleasingQuota, deleteLinkReleasingQuota } from "../lib/quota";
+import { deleteDropReleasingQuota, deleteLinkReleasingQuota, reservationCutoff } from "../lib/quota";
 
 export async function runCleanup(): Promise<{ deletedLinks: number }> {
   const now = new Date();
@@ -54,6 +54,20 @@ export async function sweepExpiredDrops(): Promise<{ deletedDrops: number }> {
   return { deletedDrops };
 }
 
+// No equivalent existed before this plan: sweepExpiredDrops only ever covered
+// mode: "permanent" links on their retentionDays timer, and runCleanup only covers a whole
+// one-time link once IT expires (up to LINK_EXPIRY_HOURS later). Neither one catches a drop stuck
+// in fileUploadStatus "uploading" — e.g. a crashed tab that never got to call /abandon — on a
+// still-otherwise-valid link. Since an "uploading" drop is never charged against quota
+// (isChargedStatus in lib/quota.ts), deleting it outright needs no quota release, unlike the other
+// two sweeps.
+export async function sweepAbandonedUploads(): Promise<{ deletedDrops: number }> {
+  const { count } = await prisma.drop.deleteMany({
+    where: { fileUploadStatus: "uploading", createdAt: { lt: reservationCutoff() } },
+  });
+  return { deletedDrops: count };
+}
+
 // Password-reset tokens are single-use and short-lived, but an unused one
 // is never deleted by the reset flow itself, so expired rows are pruned here.
 export async function pruneExpiredPasswordResetTokens(): Promise<{ deletedTokens: number }> {
@@ -68,10 +82,11 @@ async function main() {
     try {
       const linkResult = await runCleanup();
       const dropResult = await sweepExpiredDrops();
+      const abandonedResult = await sweepAbandonedUploads();
       const tokenResult = await pruneExpiredPasswordResetTokens();
       console.log(
         `[cleanup] removed ${linkResult.deletedLinks} expired link(s), ${dropResult.deletedDrops} expired drop(s), ` +
-          `${tokenResult.deletedTokens} expired password-reset token(s)`
+          `${abandonedResult.deletedDrops} abandoned upload(s), ${tokenResult.deletedTokens} expired password-reset token(s)`
       );
     } catch (error) {
       console.error("[cleanup] sweep failed", error);

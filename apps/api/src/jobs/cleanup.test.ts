@@ -4,7 +4,8 @@ import { prisma } from "@e2ee-drop/db";
 
 vi.mock("../lib/storage", () => ({ deleteObject: vi.fn().mockResolvedValue(undefined) }));
 
-import { runCleanup, sweepExpiredDrops, pruneExpiredPasswordResetTokens } from "./cleanup";
+import { UPLOAD_RESERVATION_WINDOW_MS } from "../lib/quota";
+import { runCleanup, sweepExpiredDrops, sweepAbandonedUploads, pruneExpiredPasswordResetTokens } from "./cleanup";
 
 describe("runCleanup", () => {
   beforeEach(async () => {
@@ -111,6 +112,82 @@ describe("sweepExpiredDrops", () => {
 
     expect(result.deletedDrops).toBe(1);
     expect(await prisma.drop.findUnique({ where: { id: drop.id } })).toBeNull();
+  });
+});
+
+describe("sweepAbandonedUploads", () => {
+  beforeEach(async () => {
+    await prisma.drop.deleteMany();
+    await prisma.link.deleteMany();
+  });
+
+  const dropDefaults = {
+    senderPublicKey: "c2VuZGVy",
+    archiveNonce: "bm9uY2U=",
+    encryptedMetadata: "ZW5jcnlwdGVkLW1ldGFkYXRh",
+    metadataNonce: "bWV0YWRhdGEtbm9uY2U=",
+    fileSize: 1024,
+    contentMD5: "bWQ1",
+  };
+
+  async function createLink(slug: string) {
+    return prisma.link.create({
+      data: { slug, mode: "one-time", recipientPublicKey: "x", retentionDays: 7, expiresAt: new Date(Date.now() + 60_000) },
+    });
+  }
+
+  it("deletes a stale uploading drop past the reservation window", async () => {
+    const link = await createLink("stale-uploading");
+    const drop = await prisma.drop.create({
+      data: {
+        ...dropDefaults,
+        linkId: link.id,
+        s3Key: `${link.id}/stale`,
+        fileUploadStatus: "uploading",
+        createdAt: new Date(Date.now() - UPLOAD_RESERVATION_WINDOW_MS - 60_000),
+      },
+    });
+
+    const result = await sweepAbandonedUploads();
+
+    expect(result.deletedDrops).toBe(1);
+    expect(await prisma.drop.findUnique({ where: { id: drop.id } })).toBeNull();
+  });
+
+  it("does not touch a recent uploading drop still inside its reservation window", async () => {
+    const link = await createLink("fresh-uploading");
+    const drop = await prisma.drop.create({
+      data: {
+        ...dropDefaults,
+        linkId: link.id,
+        s3Key: `${link.id}/fresh`,
+        fileUploadStatus: "uploading",
+        createdAt: new Date(),
+      },
+    });
+
+    const result = await sweepAbandonedUploads();
+
+    expect(result.deletedDrops).toBe(0);
+    expect(await prisma.drop.findUnique({ where: { id: drop.id } })).not.toBeNull();
+  });
+
+  it("does not touch a complete drop regardless of age", async () => {
+    const link = await createLink("old-complete");
+    const drop = await prisma.drop.create({
+      data: {
+        ...dropDefaults,
+        linkId: link.id,
+        s3Key: `${link.id}/complete`,
+        fileUploadStatus: "complete",
+        createdAt: new Date(Date.now() - UPLOAD_RESERVATION_WINDOW_MS - 60_000),
+      },
+    });
+
+    const result = await sweepAbandonedUploads();
+
+    expect(result.deletedDrops).toBe(0);
+    expect(await prisma.drop.findUnique({ where: { id: drop.id } })).not.toBeNull();
   });
 });
 
