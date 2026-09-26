@@ -871,6 +871,43 @@ describe("reveal-message route", () => {
     });
     expect(res.statusCode).toBe(404);
   });
+
+  it("reveal-message also advances deliveryStatus toward partial_delivery/delivered", async () => {
+    const server = buildServer();
+    const createRes = await server.inject({
+      method: "POST",
+      url: "/api/links",
+      payload: { recipientPublicKey: "cmVjaXBpZW50" },
+    });
+    const { slug } = createRes.json();
+
+    // Drop has a message and an already-"delivered" fileEnvelopeStatus (file downloaded first)
+    const link = (await prisma.link.findUnique({ where: { slug } }))!;
+    const drop = await prisma.drop.create({
+      data: {
+        linkId: link.id,
+        senderPublicKey: "c2VuZGVy",
+        s3Key: `${link.id}/with-message`,
+        archiveNonce: "YXJjaGl2ZQ==",
+        contentMD5: "bWQ1",
+        encryptedMetadata: "bWV0YWRhdGE=",
+        metadataNonce: "bWV0YW5vbmNl",
+        fileSize: 1024,
+        fileUploadStatus: "complete",
+        encryptedMessage: "c2VjcmV0",
+        messageNonce: "bm9uY2U=",
+        fileEnvelopeStatus: "delivered",
+      },
+    });
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/${drop.id}/reveal-message`,
+    });
+    expect(res.statusCode).toBe(200);
+    const status = await server.inject({ method: "GET", url: `/api/links/${slug}` });
+    expect(status.json().drop.deliveryStatus).toBe("delivered");
+  });
 });
 
 // Finding I5: reveal-message previously had no ownership check at all — a

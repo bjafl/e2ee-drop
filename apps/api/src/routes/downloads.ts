@@ -2,7 +2,7 @@
 import type { FastifyInstance } from "fastify";
 import { prisma } from "@e2ee-drop/db";
 import type { DownloadUrlResponse, RevealMessageResponse } from "@e2ee-drop/shared";
-import { canReceive, getLinkBySlug, isLinkExpired } from "../lib/links";
+import { canReceive, getLinkBySlug, isLinkExpired, recomputeDeliveryStatus } from "../lib/links";
 import { getSignedDownloadUrl, deleteObject } from "../lib/storage";
 
 // fileEnvelopeStatus values that mean "this drop's file bytes are gone/spoken
@@ -242,24 +242,7 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
       // I4): derive fresh from current DB state, not a pre-CAS snapshot, so
       // "reveal message, then download file" and "download file, then reveal
       // message" both converge on "delivered" regardless of order.
-      await prisma.drop.updateMany({
-        where: {
-          id: dropId,
-          linkId: link.id,
-          messageEnvelopeStatus: "delivered",
-          fileEnvelopeStatus: "delivered",
-        },
-        data: { deliveryStatus: "delivered" },
-      });
-      await prisma.drop.updateMany({
-        where: {
-          id: dropId,
-          linkId: link.id,
-          deliveryStatus: { notIn: ["delivered"] },
-          OR: [{ fileEnvelopeStatus: "delivered" }, { messageEnvelopeStatus: "delivered" }],
-        },
-        data: { deliveryStatus: "partial_delivery" },
-      });
+      await recomputeDeliveryStatus(dropId, link.id);
 
       const body: RevealMessageResponse = { encryptedMessage, messageNonce: messageNonce! };
       return reply.send(body);
