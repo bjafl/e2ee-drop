@@ -205,7 +205,7 @@ export async function assertWithinSenderShare(
   }
 }
 
-async function releaseCharged(
+export async function releaseCharged(
   tx: Prisma.TransactionClient,
   userId: string,
   deleted: { fileSize: number; fileUploadStatus: string }[]
@@ -259,4 +259,67 @@ export async function deleteDropReleasingQuota(dropId: string, ownerId: string):
     if (owner) await releaseCharged(tx, ownerId, deleted);
     return deleted.length > 0;
   }, QUOTA_TX_OPTIONS);
+}
+
+// Scrubs one drop's content in place — the row survives as the audit trail (design spec §5).
+// Unlike deleteDropReleasingQuota/deleteLinkReleasingQuota (which DELETE the row), this always
+// UPDATEs it, so it works identically for anonymous and owned drops (only the quota-release step
+// differs). The caller is responsible for actually deleting the returned s3Key from storage —
+// this function only ever touches the database.
+export async function scrubDropContent(
+  dropId: string
+): Promise<{ ownerId: string | null; s3Key: string } | null> {
+  const drop = await prisma.drop.findUnique({
+    where: { id: dropId },
+    select: {
+      s3Key: true,
+      fileSize: true,
+      fileUploadStatus: true,
+      encryptedMessage: true,
+      messageEnvelopeStatus: true,
+      fileEnvelopeStatus: true,
+      link: { select: { id: true, ownerId: true } },
+    },
+  });
+  if (!drop) return null;
+
+  // hasMessage disambiguates a message-less drop (messageEnvelopeStatus stuck at its schema
+  // default "sealed" forever, since nothing ever writes to it when there was no message) from
+  // one whose message is still sealed and unretrieved. Without this, a message-less drop whose
+  // file was already fully delivered would never be seen as "both sides terminal": this function
+  // would then needlessly stamp messageEnvelopeStatus: "shredded" on a drop that never had a
+  // message, and worse, reset contentDeletedAt on every subsequent cleanup-sweep tick over an
+  // already-fully-resolved row, permanently defeating Task 9's audit-retention purge (which ages
+  // rows off of contentDeletedAt). Same disambiguation recomputeDeliveryStatus uses (lib/links.ts).
+  const hasMessage = drop.encryptedMessage !== null || drop.messageEnvelopeStatus !== "sealed";
+  const messageAlreadyTerminal =
+    !hasMessage || drop.messageEnvelopeStatus === "delivered" || drop.messageEnvelopeStatus === "shredded";
+  const fileAlreadyTerminal =
+    drop.fileEnvelopeStatus === "delivered" || drop.fileEnvelopeStatus === "shredded";
+  if (messageAlreadyTerminal && fileAlreadyTerminal) return null;
+
+  const ownerId = drop.link.ownerId;
+  const scrub = async (tx: Prisma.TransactionClient) => {
+    await tx.drop.updateMany({
+      where: { id: dropId },
+      data: {
+        encryptedMessage: null,
+        messageNonce: null,
+        contentDeletedAt: new Date(),
+        ...(messageAlreadyTerminal ? {} : { messageEnvelopeStatus: "shredded" }),
+        ...(fileAlreadyTerminal ? {} : { fileEnvelopeStatus: "shredded" }),
+      },
+    });
+    if (ownerId) {
+      const owner = await lockOwnerQuota(tx, ownerId);
+      if (owner) await releaseCharged(tx, ownerId, [{ fileSize: drop.fileSize, fileUploadStatus: drop.fileUploadStatus }]);
+    }
+  };
+
+  if (ownerId) {
+    await prisma.$transaction(scrub, QUOTA_TX_OPTIONS);
+  } else {
+    await scrub(prisma as unknown as Prisma.TransactionClient);
+  }
+  return { ownerId, s3Key: drop.s3Key };
 }
