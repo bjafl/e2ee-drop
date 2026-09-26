@@ -756,7 +756,7 @@ describe("upload routes", () => {
 
     // The stranger's only view of the link: it must not reveal the drop id.
     const status = await server.inject({ method: "GET", url: `/api/links/${link.slug}` });
-    expect(status.json().drop).toBeNull();
+    expect(status.statusCode).toBe(404);
     expect(status.body).not.toContain(dropId);
 
     // Without the id, a complete call can only name some other id, which the
