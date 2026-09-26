@@ -10,7 +10,8 @@ export const env = {
   PORT: int("PORT", 3000, { min: 1, max: 65535 }),
   MAX_FILE_SIZE_BYTES: int("MAX_FILE_SIZE_BYTES", 500 * 1024 * 1024, { min: 1 }),
   LINK_EXPIRY_HOURS: int("LINK_EXPIRY_HOURS", 24, { min: 1 }),
-  DROP_RETENTION_DAYS: int("DROP_RETENTION_DAYS", 7),
+  DROP_RETENTION_DAYS_DEFAULT: int("DROP_RETENTION_DAYS_DEFAULT", 1),
+  DROP_RETENTION_DAYS_MAX: int("DROP_RETENTION_DAYS_MAX", 7),
   // Internal endpoint for server-to-MinIO calls (bucket setup, deletes).
   MINIO_ENDPOINT: required("MINIO_ENDPOINT"),
   // Browser-reachable endpoint embedded in presigned upload/download URLs.
