@@ -8,11 +8,23 @@ import { env } from "../env";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
+// Callers typically compute `expiresAt` from their own `Date.now() + someWindow` a moment
+// before calling this function, which re-reads `Date.now()` itself. Even a sub-millisecond
+// gap between those two reads can make (expiresAt.getTime() - Date.now()) a hair under a
+// whole number of days, and Math.floor would then collapse an intended "1 day of retention"
+// window down to 0 — silently minting an already-expired link. This tolerance absorbs that
+// realistic synchronous-code drift (up to a few seconds) while staying negligible relative to
+// a day, so it can never turn a real rejection (see retention.test.ts's ~12h-short case) into
+// an acceptance.
+const RETENTION_CEILING_TOLERANCE_MS = 5_000;
+
 export function resolveRetentionDays(
   requested: number | null | undefined,
   expiresAt: Date | null
 ): number | { error: string } {
-  const maxByExpiry = expiresAt ? Math.floor((expiresAt.getTime() - Date.now()) / MS_PER_DAY) : Infinity;
+  const maxByExpiry = expiresAt
+    ? Math.floor((expiresAt.getTime() - Date.now() + RETENTION_CEILING_TOLERANCE_MS) / MS_PER_DAY)
+    : Infinity;
   const ceiling = Math.min(env.DROP_RETENTION_DAYS_MAX, maxByExpiry);
 
   if (requested === null || requested === undefined) {
