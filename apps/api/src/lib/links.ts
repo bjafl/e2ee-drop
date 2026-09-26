@@ -164,12 +164,8 @@ const DELIVERY_STATUS_RANK: Record<string, number> = {
 // row itself rather than trusting a caller's snapshot: this is what makes it safe to call from two
 // endpoints (reveal-message, complete-download) that can race each other on the same drop.
 export async function recomputeDeliveryStatus(dropId: string, linkId: string): Promise<void> {
-  // Use a transaction to ensure we check the current rank at update time, not at read time.
-  // This prevents the race condition where two concurrent calls both read the same initial
-  // state, derive different values, and the second one fails its CAS because the first one
-  // already updated the deliveryStatus.
-  await prisma.$transaction(async (tx) => {
-    const drop = await tx.drop.findFirst({
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const drop = await prisma.drop.findFirst({
       where: { id: dropId, linkId },
       select: {
         deliveryStatus: true,
@@ -200,15 +196,18 @@ export async function recomputeDeliveryStatus(dropId: string, linkId: string): P
 
     if (DELIVERY_STATUS_RANK[derived] <= DELIVERY_STATUS_RANK[drop.deliveryStatus]) return;
 
-    // Update unconditionally within the transaction: the rank check ensures we only
-    // update if the derived value is strictly ahead of the value we just read.
-    // Multiple concurrent transactions will serialize, so the last one to commit
-    // (re-reading at that point) will see the current envelope statuses.
-    await tx.drop.updateMany({
-      where: { id: dropId, linkId },
+    // CAS on the value just read. A miss means a concurrent call changed deliveryStatus between
+    // our read and this write — re-read live state and re-derive (loop) rather than silently
+    // giving up, so a legitimate advance is never lost to a race. Bounded to 5 attempts: more
+    // than enough for realistic concurrency (at most two endpoints — reveal-message,
+    // complete-download — ever call this for the same drop).
+    const { count } = await prisma.drop.updateMany({
+      where: { id: dropId, linkId, deliveryStatus: drop.deliveryStatus },
       data: { deliveryStatus: derived },
     });
-  });
+    if (count === 1) return; // won
+    // else: lost the race — loop and retry against fresh state.
+  }
 }
 
 export function toDropSummary(drop: Drop, link: { retentionDays: number }): DropSummary {
