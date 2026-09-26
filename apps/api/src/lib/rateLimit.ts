@@ -171,6 +171,15 @@ export const passwordResetRequestRateLimiter = createRateLimiter({ windowMs: 15 
 // submit a code count; a bare "code required" prompt does not.
 export const passwordResetTotpRateLimiter = createRateLimiter({ windowMs: 15 * 60_000, maxAttempts: 5 });
 
+// POST /api/auth/verify-email/resend, keyed by the authenticated caller's user id
+// (not IP — unlike passwordResetRequestRateLimiter, this is an authenticated
+// action and the caller already knows their own email, so there's no
+// enumeration concern to key around). Each accepted call sends a real email
+// when a mailer is configured; 3 per 15 minutes is enough for a legitimate
+// "I didn't get it, resend" click or two without letting a bored user (or a
+// stolen session) email-bomb an address.
+export const emailVerificationResendRateLimiter = createRateLimiter({ windowMs: 15 * 60_000, maxAttempts: 3 });
+
 // POST /api/links/:slug/upload-url, keyed by request.ip (the unauthenticated
 // sender), NOT by the link or its owner: a public inbox is legitimately hit
 // by many different senders, and keying by the target would let one abusive
