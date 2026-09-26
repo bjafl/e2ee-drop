@@ -42,6 +42,10 @@ async function registerAndGetCookie(server: ReturnType<typeof buildServer>, user
   };
 }
 
+// Creates a Drop against the current schema. Mirrors the fields uploads.ts's
+// /complete route actually writes, with fileUploadStatus/deliveryStatus set
+// directly to their post-upload values so these tests don't need to drive a
+// full upload-url + complete round trip just to reach that state.
 async function createLinkWithDrop(slug: string, expiresAt: Date) {
   const link = await prisma.link.create({
     data: { slug, mode: "one-time", recipientPublicKey: "x", retentionDays: 7, expiresAt },
@@ -51,23 +55,20 @@ async function createLinkWithDrop(slug: string, expiresAt: Date) {
       linkId: link.id,
       senderPublicKey: "c2VuZGVy",
       s3Key: `${link.id}/drop1`,
-      // @ts-expect-error — rewritten in plan 2
-      nonce: "bm9uY2U=",
-      fileName: "report.pdf",
-      fileSize: 1024,
-      mimeType: "application/pdf",
+      archiveNonce: "YXJjaGl2ZQ==",
       contentMD5: "bWQ1",
-      status: "uploaded",
+      encryptedMetadata: "bWV0YWRhdGE=",
+      metadataNonce: "bWV0YS1ub25jZQ==",
+      fileSize: 1024,
+      fileUploadStatus: "complete",
+      deliveryStatus: "sent",
     },
   });
   return { link, drop };
 }
 
-// Creates a Drop against the current schema (unlike createLinkWithDrop above,
-// which still targets a pre-rewrite shape — see its `@ts-expect-error`s —
-// and is broken until Task 11/plan 2 catches it up; not this task's job to
-// fix). Mirrors the fields uploads.ts's /complete route actually writes,
-// with deliveryStatus set directly to "sent" so these tests don't need to
+// Mirrors the fields uploads.ts's /complete route actually writes, with
+// deliveryStatus set directly to "sent" so these tests don't need to
 // drive a full upload-url + complete round trip just to reach that state.
 async function createSentDrop(linkId: string) {
   return prisma.drop.create({
@@ -380,13 +381,11 @@ describe("link routes", () => {
         linkId: link.id,
         senderPublicKey: "a",
         s3Key: "k1",
-        // @ts-expect-error — rewritten in plan 2
-        nonce: "n",
-        fileName: "old.txt",
-        fileSize: 1,
-        mimeType: "text/plain",
+        archiveNonce: "bg==",
         contentMD5: "m",
-        status: "uploaded",
+        encryptedMetadata: "b2xkLnR4dA==",
+        metadataNonce: "bg==",
+        fileSize: 1,
         createdAt: new Date(Date.now() - 60_000),
       },
     });
@@ -395,27 +394,24 @@ describe("link routes", () => {
         linkId: link.id,
         senderPublicKey: "b",
         s3Key: "k2",
-        // @ts-expect-error — rewritten in plan 2
-        nonce: "n",
-        fileName: "new.txt",
-        fileSize: 1,
-        mimeType: "text/plain",
+        archiveNonce: "bg==",
         contentMD5: "m",
-        status: "uploaded",
+        encryptedMetadata: "bmV3LnR4dA==",
+        metadataNonce: "bg==",
+        fileSize: 1,
       },
     });
-    await prisma.drop.create({
+    const gone = await prisma.drop.create({
       data: {
         linkId: link.id,
         senderPublicKey: "c",
         s3Key: "k3",
-        // @ts-expect-error — rewritten in plan 2
-        nonce: "n",
-        fileName: "gone.txt",
-        fileSize: 1,
-        mimeType: "text/plain",
+        archiveNonce: "bg==",
         contentMD5: "m",
-        status: "downloaded",
+        encryptedMetadata: "Z29uZS50eHQ=",
+        metadataNonce: "bg==",
+        fileSize: 1,
+        fileEnvelopeStatus: "delivered",
       },
     });
 
@@ -429,7 +425,7 @@ describe("link routes", () => {
     const { drops } = response.json();
     expect(drops).toHaveLength(2);
     expect(drops[0].id).toBe(older.id);
-    expect(drops.map((drop: { fileName: string }) => drop.fileName)).not.toContain("gone.txt");
+    expect(drops.map((drop: { id: string }) => drop.id)).not.toContain(gone.id);
   });
 
   it("rejects a non-owner from listing another user's queue", async () => {
@@ -536,7 +532,7 @@ describe("link routes", () => {
       ownerId: string,
       slug: string,
       visibility: "public" | "contacts-only",
-      status: "uploading" | "uploaded"
+      fileUploadStatus: "uploading" | "complete"
     ) {
       const link = await prisma.link.create({
         data: { ownerId, slug, mode: "permanent", visibility, recipientPublicKey: `${slug}-pubkey`, retentionDays: 7 },
@@ -546,14 +542,14 @@ describe("link routes", () => {
           linkId: link.id,
           senderPublicKey: "c2VuZGVy",
           s3Key: `${link.id}/secret-drop`,
-          // @ts-expect-error — rewritten in plan 2
-          nonce: "bm9uY2U=",
-          fileName: "salary-2026.pdf",
-          fileSize: 1024,
-          mimeType: "application/pdf",
+          archiveNonce: "bm9uY2U=",
           contentMD5: "bWQ1",
-          message: "secret plaintext note",
-          status,
+          encryptedMetadata: "LEAKED-SALARY-METADATA-MARKER",
+          metadataNonce: "bWV0YS1ub25jZQ==",
+          fileSize: 1024,
+          encryptedMessage: "LEAKED-MESSAGE-MARKER",
+          messageNonce: "bWVzc2FnZS1ub25jZQ==",
+          fileUploadStatus,
         },
       });
       return { link, drop };
@@ -561,8 +557,8 @@ describe("link routes", () => {
 
     function expectNoLeak(body: string, drop: { id: string }) {
       expect(body).not.toContain(drop.id);
-      expect(body).not.toContain("salary-2026.pdf");
-      expect(body).not.toContain("secret plaintext note");
+      expect(body).not.toContain("LEAKED-SALARY-METADATA-MARKER");
+      expect(body).not.toContain("LEAKED-MESSAGE-MARKER");
     }
 
     it("returns drop: null to an anonymous stranger on a contacts-only owned link with an in-progress drop", async () => {
@@ -581,7 +577,7 @@ describe("link routes", () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "leakvictim2");
       const stranger = await registerAndGetCookie(server, "leakstranger");
-      const { link, drop } = await createOwnedLinkWithDrop(owner.userId, "leak-public", "public", "uploaded");
+      const { link, drop } = await createOwnedLinkWithDrop(owner.userId, "leak-public", "public", "complete");
 
       const anon = await server.inject({ method: "GET", url: `/api/links/${link.slug}` });
       expect(anon.json().drop).toBeNull();
@@ -601,14 +597,14 @@ describe("link routes", () => {
           linkId: link.id,
           senderPublicKey: "c2VuZGVy",
           s3Key: `${link.id}/secret-drop`,
-          // @ts-expect-error — rewritten in plan 2
-          nonce: "bm9uY2U=",
-          fileName: "salary-2026.pdf",
-          fileSize: 1024,
-          mimeType: "application/pdf",
+          archiveNonce: "bm9uY2U=",
           contentMD5: "bWQ1",
-          message: "secret plaintext note",
-          status: "uploading",
+          encryptedMetadata: "LEAKED-SALARY-METADATA-MARKER",
+          metadataNonce: "bWV0YS1ub25jZQ==",
+          fileSize: 1024,
+          encryptedMessage: "LEAKED-MESSAGE-MARKER",
+          messageNonce: "bWVzc2FnZS1ub25jZQ==",
+          fileUploadStatus: "uploading",
         },
       });
 
@@ -640,7 +636,7 @@ describe("link routes", () => {
       expect(response.statusCode).toBe(200);
       const body = response.json();
       expect(body.isAnonymous).toBe(true);
-      expect(body.drop).toMatchObject({ id: drop.id, status: "uploaded", fileName: "report.pdf" });
+      expect(body.drop).toMatchObject({ id: drop.id, fileUploadStatus: "complete", deliveryStatus: "sent" });
     });
   });
 

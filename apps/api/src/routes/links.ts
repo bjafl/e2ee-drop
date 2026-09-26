@@ -270,12 +270,10 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       if (link.ownerId !== request.user!.id) return reply.status(403).send({ error: "Forbidden" });
 
       const drops = link.drops
-        // @ts-expect-error — rewritten in plan 2
-        .filter((drop) => drop.status !== "downloaded")
+        .filter((drop) => drop.fileEnvelopeStatus !== "delivered" && drop.fileEnvelopeStatus !== "shredded")
         .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
 
-      // @ts-expect-error — rewritten in plan 2
-      const body: ListDropsResponse = { drops: drops.map(toDropSummary) };
+      const body: ListDropsResponse = { drops: drops.map((drop) => toDropSummary(drop, link)) };
       return reply.send(body);
     }
   );

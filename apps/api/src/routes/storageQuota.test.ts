@@ -31,11 +31,18 @@ const FILE_SIZE = 100;
 const CHARGE = FILE_SIZE + OVERHEAD; // 116: what one drop of FILE_SIZE costs
 
 const metadata = (fileSize = FILE_SIZE) => ({
-  fileName: "report.pdf",
   fileSize,
-  nonce: "bm9uY2U=",
-  mimeType: "application/pdf",
   contentMD5: "bWQ1",
+});
+
+// Body for POST /api/links/:slug/upload-url (RequestUploadUrlRequest, three-envelope
+// shape — see packages/shared/src/api.ts and uploads.test.ts's established pattern).
+const uploadPayload = (fileSize = FILE_SIZE) => ({
+  senderPublicKey: "c2VuZGVy",
+  archiveNonce: "YXJjaGl2ZS1ub25jZQ==",
+  encryptedMetadata: "ZW5jcnlwdGVkLW1ldGFkYXRh",
+  metadataNonce: "bWV0YWRhdGEtbm9uY2U=",
+  metadata: metadata(fileSize),
 });
 
 type Server = ReturnType<typeof buildServer>;
@@ -81,7 +88,7 @@ function requestUpload(server: Server, slug: string, fileSize = FILE_SIZE) {
   return server.inject({
     method: "POST",
     url: `/api/links/${slug}/upload-url`,
-    payload: { senderPublicKey: "c2VuZGVy", metadata: metadata(fileSize) },
+    payload: uploadPayload(fileSize),
   });
 }
 
@@ -183,13 +190,12 @@ describe("storage quota", () => {
           linkId: link.id,
           senderPublicKey: "s",
           s3Key: `${link.id}/stale`,
-          // @ts-expect-error — rewritten in plan 2
-          nonce: "n",
-          fileName: "f",
-          fileSize: FILE_SIZE,
-          mimeType: "text/plain",
+          archiveNonce: "bg==",
           contentMD5: "m",
-          status: "uploading",
+          encryptedMetadata: "Zg==",
+          metadataNonce: "bg==",
+          fileSize: FILE_SIZE,
+          fileUploadStatus: "uploading",
           createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
         },
       });
@@ -227,10 +233,10 @@ describe("storage quota", () => {
       const { dropId } = (await requestUpload(server, "double")).json();
 
       expect((await complete(server, "double", dropId)).statusCode).toBe(200);
-      // Repeats are idempotent successes, but never charge again.
+      // Repeats are idempotent successes, but never charge again — even once the
+      // drop has progressed further down the delivery lifecycle (a "late" complete).
       expect((await complete(server, "double", dropId)).statusCode).toBe(200);
-      // @ts-expect-error — rewritten in plan 2
-      await prisma.drop.update({ where: { id: dropId }, data: { status: "downloaded" } });
+      await prisma.drop.update({ where: { id: dropId }, data: { deliveryStatus: "delivered" } });
       expect((await complete(server, "double", dropId)).statusCode).toBe(200);
 
       expect(await usedBytes(owner.id)).toBe(BigInt(CHARGE));
@@ -286,8 +292,7 @@ describe("storage quota", () => {
       expect(response.json().error).toMatch(/expired/i);
       expect(await usedBytes(owner.id)).toBe(0n);
       const drop = await prisma.drop.findUniqueOrThrow({ where: { id: dropId } });
-      // @ts-expect-error — rewritten in plan 2
-      expect(drop.status).toBe("uploading");
+      expect(drop.fileUploadStatus).toBe("uploading");
     });
 
     it("still completes (and charges exactly once) a slow upload that finishes inside the window", async () => {
@@ -376,7 +381,7 @@ describe("storage quota", () => {
           fetch(`${baseUrl}/api/links/burst/upload-url`, {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ senderPublicKey: "c2VuZGVy", metadata: metadata() }),
+            body: JSON.stringify(uploadPayload()),
           });
         const CONCURRENT_REQUESTS = 12;
         const responses = await Promise.all(Array.from({ length: CONCURRENT_REQUESTS }, fire));
@@ -413,7 +418,7 @@ describe("storage quota", () => {
             fetch(`${baseUrl}/api/links/${link.slug}/upload-url`, {
               method: "POST",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify({ senderPublicKey: "c2VuZGVy", metadata: metadata() }),
+              body: JSON.stringify(uploadPayload()),
             })
           )
         );
@@ -469,7 +474,7 @@ describe("storage quota", () => {
         method: "POST",
         url: `/api/links/${slug}/upload-url`,
         remoteAddress: ip,
-        payload: { senderPublicKey: "c2VuZGVy", metadata: metadata(fileSize) },
+        payload: uploadPayload(fileSize),
       });
     }
 
@@ -480,7 +485,7 @@ describe("storage quota", () => {
       return fetch(`${baseUrl}/api/links/${slug}/upload-url`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-forwarded-for": ip },
-        body: JSON.stringify({ senderPublicKey: "c2VuZGVy", metadata: metadata(fileSize) }),
+        body: JSON.stringify(uploadPayload(fileSize)),
       });
     }
 
@@ -488,8 +493,7 @@ describe("storage quota", () => {
     async function reservedBytes(ownerId: string, ip?: string): Promise<bigint> {
       const drops = await prisma.drop.findMany({
         where: {
-          // @ts-expect-error — rewritten in plan 2
-          status: "uploading",
+          fileUploadStatus: "uploading",
           link: { ownerId },
           ...(ip === undefined ? {} : { reservationSenderKey: reservationSenderKey(ip) }),
         },

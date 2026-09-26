@@ -23,10 +23,7 @@ const FILE_SIZE = 100;
 const CHARGE = BigInt(FILE_SIZE + OVERHEAD);
 
 const metadata = {
-  fileName: "report.pdf",
   fileSize: FILE_SIZE,
-  nonce: "bm9uY2U=",
-  mimeType: "application/pdf",
   contentMD5: "bWQ1",
 };
 
@@ -63,7 +60,13 @@ async function requestUpload(server: Server, slug: string) {
   const res = await server.inject({
     method: "POST",
     url: `/api/links/${slug}/upload-url`,
-    payload: { senderPublicKey: "c2VuZGVy", metadata },
+    payload: {
+      senderPublicKey: "c2VuZGVy",
+      archiveNonce: "YXJjaGl2ZS1ub25jZQ==",
+      encryptedMetadata: "ZW5jcnlwdGVkLW1ldGFkYXRh",
+      metadataNonce: "bWV0YWRhdGEtbm9uY2U=",
+      metadata,
+    },
   });
   expect(res.statusCode).toBe(200);
   const { dropId, uploadUrl } = res.json() as { dropId: string; uploadUrl: string };
@@ -83,8 +86,7 @@ function complete(server: Server, slug: string, dropId: string) {
 }
 
 async function statusOf(dropId: string) {
-  // @ts-expect-error — rewritten in plan 2
-  return (await prisma.drop.findUniqueOrThrow({ where: { id: dropId } })).status;
+  return (await prisma.drop.findUniqueOrThrow({ where: { id: dropId } })).fileUploadStatus;
 }
 
 async function usedBytes(userId: string) {
@@ -166,7 +168,7 @@ describe("/complete verifies the upload in storage", () => {
       const first = await complete(server, "real", dropId);
       expect(first.statusCode).toBe(200);
       expect(first.json()).toEqual({ updated: true });
-      expect(await statusOf(dropId)).toBe("uploaded");
+      expect(await statusOf(dropId)).toBe("complete");
       expect(await usedBytes(owner.id)).toBe(CHARGE);
 
       const second = await complete(server, "real", dropId);
@@ -175,19 +177,21 @@ describe("/complete verifies the upload in storage", () => {
       expect(await usedBytes(owner.id)).toBe(CHARGE);
     });
 
-    it("is idempotent on a downloaded drop: 200, no charge, no status regression", async () => {
+    it("is idempotent on a fully-delivered drop: 200, no charge, no status regression", async () => {
       const server = buildServer();
       const owner = await createOwnedLink("downloaded");
       const { dropId, uploadUrl } = await requestUpload(server, "downloaded");
       await putBytes(uploadUrl);
       expect((await complete(server, "downloaded", dropId)).statusCode).toBe(200);
-      // @ts-expect-error — rewritten in plan 2
-      await prisma.drop.update({ where: { id: dropId }, data: { status: "downloaded" } });
+      // Simulates the drop having progressed further down the delivery
+      // lifecycle (fileUploadStatus itself has no "downloaded" state anymore —
+      // see schema.prisma's Drop model — that's now tracked on deliveryStatus).
+      await prisma.drop.update({ where: { id: dropId }, data: { deliveryStatus: "delivered" } });
 
       const late = await complete(server, "downloaded", dropId);
 
       expect(late.statusCode).toBe(200);
-      expect(await statusOf(dropId)).toBe("downloaded");
+      expect(await statusOf(dropId)).toBe("complete");
       expect(await usedBytes(owner.id)).toBe(CHARGE);
     });
 
@@ -233,7 +237,7 @@ describe("/complete verifies the upload in storage", () => {
       const real = await complete(server, slug, dropId);
       expect(real.statusCode).toBe(200);
       expect(real.json()).toEqual({ updated: true });
-      expect(await statusOf(dropId)).toBe("uploaded");
+      expect(await statusOf(dropId)).toBe("complete");
     });
 
     it("lets the real sender's /complete succeed after a bystander already completed it", async () => {
@@ -252,10 +256,9 @@ describe("/complete verifies the upload in storage", () => {
       expect(bystander.statusCode).toBe(200);
       expect(sender.statusCode).toBe(200);
       expect(sender.json()).toEqual({ updated: false });
-      expect(await statusOf(dropId)).toBe("uploaded");
+      expect(await statusOf(dropId)).toBe("complete");
       // Only the call that actually won the transition announces it.
-      // @ts-expect-error — rewritten in plan 2
-      expect(events.map((e) => [e.type, e.drop.status])).toEqual([["drop-updated", "uploaded"]]);
+      expect(events.map((e) => [e.type, e.drop.fileUploadStatus])).toEqual([["drop-updated", "complete"]]);
     });
 
     it("still 404s a drop id that doesn't exist on this link", async () => {
