@@ -1489,6 +1489,11 @@ export function UploadPage() {
       .catch(() => {
         if (!cancelled) setError(t("errors.linkNotFound"));
       });
+    // Fire-and-forget: records this visit on Link.lastSenderOpenedAt (delivery-lifecycle-retention
+    // plan Task 5). Deliberately not awaited or gated on the status fetch above succeeding — this is
+    // pure telemetry with no effect on whether the send flow itself works, and every visit is
+    // meaningful (the endpoint unconditionally overwrites the timestamp, no CAS), not just the first.
+    fetch(`/api/links/${slug}/mark-sender-opened`, { method: "POST" }).catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -1737,9 +1742,11 @@ git mv apps/web/src/locales/nb/download.json apps/web/src/locales/nb/receive.jso
 - [ ] **Step 2: Rewrite the component**
 
 Keep the existing `mode`/ownership/SSE-subscription structure (design spec §6's changes are additive
-on top of it, not a replacement of the owned/anonymous branching) but add: the claim view, the
-`?role=receiver` query param on the status fetch, automatic metadata decryption, one-time message
-reveal, gated+progress-tracked download, and the auto-save toggle.
+on top of it, not a replacement of the owned/anonymous branching) but add: the claim view, a
+dedicated `POST .../mark-receiver-opened` call alongside the plain status fetch (replacing an
+earlier `?role=receiver` query-param design — see spec 1 plan 2 Task 9's amendment for why),
+automatic metadata decryption, one-time message reveal, gated+progress-tracked download, and the
+auto-save toggle.
 
 ```typescript
 // apps/web/src/components/ReceivePage.tsx
@@ -1839,18 +1846,23 @@ function ReceivePageForLink() {
     }
   };
 
-  // Status fetch with ?role=receiver — see design spec §6.1/plan 2 Task 9 for why this parameter
-  // exists: this same GET also serves the sender's page, and only the receiver's visit should
-  // advance deliveryStatus.
+  // Plain status fetch — this same GET also serves the sender's page, so it has no side effect of
+  // its own. Advancing deliveryStatus to receiver_opened is a separate, dedicated action (see plan
+  // 2 Task 9's amendment: a shared query param on this GET was spoofable — a sender could pass
+  // ?role=receiver on their own request — so it was replaced with this single-purpose endpoint).
   useEffect(() => {
     if (!slug) return;
-    fetch(`/api/links/${slug}?role=receiver`)
+    fetch(`/api/links/${slug}`)
       .then((res) => {
         if (!res.ok) throw new Error("not found");
         return res.json() as Promise<LinkStatusResponse>;
       })
       .then(setLink)
       .catch(() => setLinkNotFound(true));
+    // Fire-and-forget, same treatment as UploadPage's mark-sender-opened (Task 11): the endpoint
+    // itself no-ops for an owned link or a link with no drop yet, so it's safe to call
+    // unconditionally rather than gating it on the status fetch above resolving first.
+    fetch(`/api/links/${slug}/mark-receiver-opened`, { method: "POST" }).catch(() => {});
   }, [slug]);
 
   // Decrypt metadata automatically once both the link and the key pair are available — no gate,
@@ -2074,7 +2086,11 @@ function ClaimView({
     // Permanent by default (design spec's request-link flow has no fixed expiry) — a far-future
     // expiry keeps useLocalLinks' own pruning from dropping it prematurely.
     await saveLink(slug, encodeBase64(keyPair.secretKey), Date.now() + 365 * 24 * 60 * 60 * 1000, pin || undefined);
-    const statusRes = await fetch(`/api/links/${slug}?role=receiver`);
+    const statusRes = await fetch(`/api/links/${slug}`);
+    // No drop exists yet immediately after claiming, so this is a harmless no-op today (the
+    // backend only acts when link.drops[0] is present) — called anyway for consistency with the
+    // main status-fetch effect above, rather than special-casing the claim path.
+    fetch(`/api/links/${slug}/mark-receiver-opened`, { method: "POST" }).catch(() => {});
     onClaimed(await statusRes.json());
   };
 
@@ -2090,7 +2106,8 @@ function ClaimView({
       setError(t("errors.claimFailed"));
       return;
     }
-    const statusRes = await fetch(`/api/links/${slug}?role=receiver`);
+    const statusRes = await fetch(`/api/links/${slug}`);
+    fetch(`/api/links/${slug}/mark-receiver-opened`, { method: "POST" }).catch(() => {});
     onClaimed(await statusRes.json());
   };
 
