@@ -18,6 +18,7 @@ describe("runCleanup", () => {
         slug: "expired-link",
         mode: "one-time",
         recipientPublicKey: "x",
+        retentionDays: 7,
         expiresAt: new Date(Date.now() - 1000),
       },
     });
@@ -26,6 +27,7 @@ describe("runCleanup", () => {
         slug: "fresh-link",
         mode: "one-time",
         recipientPublicKey: "x",
+        retentionDays: 7,
         expiresAt: new Date(Date.now() + 60_000),
       },
     });
@@ -46,17 +48,16 @@ describe("sweepExpiredDrops", () => {
 
   const dropDefaults = {
     senderPublicKey: "c2VuZGVy",
-    nonce: "bm9uY2U=",
-    fileName: "report.pdf",
+    archiveNonce: "bm9uY2U=",
+    encryptedMetadata: "ZW5jcnlwdGVkLW1ldGFkYXRh",
+    metadataNonce: "bWV0YWRhdGEtbm9uY2U=",
     fileSize: 1024,
-    mimeType: "application/pdf",
     contentMD5: "bWQ1",
-    status: "uploaded" as const,
   };
 
   it("deletes a drop on a permanent link once it is older than the global retention default", async () => {
     const link = await prisma.link.create({
-      data: { slug: "perm-1", mode: "permanent", recipientPublicKey: "x" },
+      data: { slug: "perm-1", mode: "permanent", recipientPublicKey: "x", retentionDays: 7 },
     });
     const oldDrop = await prisma.drop.create({
       data: {
@@ -76,7 +77,7 @@ describe("sweepExpiredDrops", () => {
 
   it("keeps a drop that is still within the retention window", async () => {
     const link = await prisma.link.create({
-      data: { slug: "perm-2", mode: "permanent", recipientPublicKey: "x" },
+      data: { slug: "perm-2", mode: "permanent", recipientPublicKey: "x", retentionDays: 7 },
     });
     const freshDrop = await prisma.drop.create({
       data: {
@@ -141,17 +142,22 @@ describe("storage quota release", () => {
     });
   }
 
+  // `status` here is the old, pre-migration Drop.status value the test cases
+  // document (e.g. "downloading"). It maps to the new fileUploadStatus the
+  // same way lib/quota.ts's isChargedStatus does: anything but "uploading" is
+  // charged ("complete"); deliveryStatus/envelope fields don't matter to
+  // cleanup.ts or quota.ts and are left at their schema defaults.
   function dropData(linkId: string, name: string, fileSize: number, status: string, createdAt = new Date()) {
     return {
       linkId,
       senderPublicKey: "s",
       s3Key: `${linkId}/${name}`,
-      nonce: "n",
-      fileName: name,
+      archiveNonce: "n",
+      encryptedMetadata: "e",
+      metadataNonce: "m",
       fileSize,
-      mimeType: "text/plain",
       contentMD5: "m",
-      status,
+      fileUploadStatus: status === "uploading" ? "uploading" : "complete",
       createdAt,
     };
   }
@@ -163,7 +169,7 @@ describe("storage quota release", () => {
   it("runCleanup releases an owned expired one-time link's charged drop (fileSize + 16)", async () => {
     const owner = await createOwner("ot-charged", BASELINE + 516n);
     const link = await prisma.link.create({
-      data: { ownerId: owner.id, slug: "quota-ot-1", mode: "one-time", recipientPublicKey: "x", expiresAt: new Date(Date.now() - 1000) },
+      data: { ownerId: owner.id, slug: "quota-ot-1", mode: "one-time", recipientPublicKey: "x", retentionDays: 7, expiresAt: new Date(Date.now() - 1000) },
     });
     await prisma.drop.create({ data: dropData(link.id, "a", 500, "downloaded") });
 
@@ -176,7 +182,7 @@ describe("storage quota release", () => {
   it("runCleanup does not release anything for a never-confirmed (uploading) drop", async () => {
     const owner = await createOwner("ot-uploading", BASELINE);
     const link = await prisma.link.create({
-      data: { ownerId: owner.id, slug: "quota-ot-2", mode: "one-time", recipientPublicKey: "x", expiresAt: new Date(Date.now() - 1000) },
+      data: { ownerId: owner.id, slug: "quota-ot-2", mode: "one-time", recipientPublicKey: "x", retentionDays: 7, expiresAt: new Date(Date.now() - 1000) },
     });
     await prisma.drop.create({ data: dropData(link.id, "a", 500, "uploading") });
 
@@ -189,7 +195,7 @@ describe("storage quota release", () => {
   it("runCleanup leaves anonymous expired links' cleanup unchanged and touches no user", async () => {
     const bystander = await createOwner("anon-bystander", BASELINE);
     const link = await prisma.link.create({
-      data: { slug: "quota-anon-ot", mode: "one-time", recipientPublicKey: "x", expiresAt: new Date(Date.now() - 1000) },
+      data: { slug: "quota-anon-ot", mode: "one-time", recipientPublicKey: "x", retentionDays: 7, expiresAt: new Date(Date.now() - 1000) },
     });
     await prisma.drop.create({ data: dropData(link.id, "a", 500, "uploaded") });
 
@@ -204,7 +210,7 @@ describe("storage quota release", () => {
     // Charged: 300+16 (uploaded, expired), 400+16 (downloading, expired), 900+16 (uploaded, fresh).
     const owner = await createOwner("perm", BASELINE + 316n + 416n + 916n);
     const link = await prisma.link.create({
-      data: { ownerId: owner.id, slug: "quota-perm", mode: "permanent", recipientPublicKey: "x" },
+      data: { ownerId: owner.id, slug: "quota-perm", mode: "permanent", recipientPublicKey: "x", retentionDays: 7 },
     });
     await prisma.drop.create({ data: dropData(link.id, "uploaded-old", 300, "uploaded", old) });
     await prisma.drop.create({ data: dropData(link.id, "downloading-old", 400, "downloading", old) });

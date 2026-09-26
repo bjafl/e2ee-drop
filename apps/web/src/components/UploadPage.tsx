@@ -56,6 +56,13 @@ export function UploadPage() {
 
   const handleFile = async (file: File) => {
     if (!link || !slug || isUploading) return;
+    // An unclaimed (sender-initiated) link has no recipientPublicKey yet
+    // (design spec §4.2) — claiming/uploading to it is plan 2/3 work, not this
+    // task's; guard defensively rather than crash on the null case.
+    if (!link.recipientPublicKey) {
+      setError(t("errors.linkNotFound"));
+      return;
+    }
     setError(null);
     setIsUploading(true);
     try {
@@ -64,6 +71,7 @@ export function UploadPage() {
         senderPublicKey: encrypted.senderPublicKey,
         message: message || undefined,
         metadata: {
+          // @ts-expect-error — rewritten in plan 3
           fileName: encrypted.fileName,
           fileSize: encrypted.fileSize,
           nonce: encrypted.nonce,

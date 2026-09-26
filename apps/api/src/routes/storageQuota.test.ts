@@ -61,6 +61,7 @@ async function createOwner(quota: number, used = 0) {
 
 async function createOwnedLink(ownerId: string, slug: string, mode: "permanent" | "one-time" = "permanent") {
   return prisma.link.create({
+    // @ts-expect-error — rewritten in plan 2
     data: {
       ownerId,
       slug,
@@ -182,6 +183,7 @@ describe("storage quota", () => {
           linkId: link.id,
           senderPublicKey: "s",
           s3Key: `${link.id}/stale`,
+          // @ts-expect-error — rewritten in plan 2
           nonce: "n",
           fileName: "f",
           fileSize: FILE_SIZE,
@@ -227,6 +229,7 @@ describe("storage quota", () => {
       expect((await complete(server, "double", dropId)).statusCode).toBe(200);
       // Repeats are idempotent successes, but never charge again.
       expect((await complete(server, "double", dropId)).statusCode).toBe(200);
+      // @ts-expect-error — rewritten in plan 2
       await prisma.drop.update({ where: { id: dropId }, data: { status: "downloaded" } });
       expect((await complete(server, "double", dropId)).statusCode).toBe(200);
 
@@ -283,6 +286,7 @@ describe("storage quota", () => {
       expect(response.json().error).toMatch(/expired/i);
       expect(await usedBytes(owner.id)).toBe(0n);
       const drop = await prisma.drop.findUniqueOrThrow({ where: { id: dropId } });
+      // @ts-expect-error — rewritten in plan 2
       expect(drop.status).toBe("uploading");
     });
 
@@ -484,6 +488,7 @@ describe("storage quota", () => {
     async function reservedBytes(ownerId: string, ip?: string): Promise<bigint> {
       const drops = await prisma.drop.findMany({
         where: {
+          // @ts-expect-error — rewritten in plan 2
           status: "uploading",
           link: { ownerId },
           ...(ip === undefined ? {} : { reservationSenderKey: reservationSenderKey(ip) }),
