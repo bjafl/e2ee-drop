@@ -3,8 +3,10 @@
   "ownerNoteLabel": "Notat til mottakeren",
   "ownerNotePlaceholder": "Valgfritt notat (ikke kryptert)",
   "ownerNoteWarning": "Dette notatet er ikke kryptert og er synlig for alle med lenken.",
-  "retentionDaysLabel": "Lenken utløper etter (dager)",
+  "retentionDaysLabel": "Slett mottatte filer etter (dager)",
   "createButton": "Opprett lenke",
   "success": "Lenke opprettet:",
+  "sendPageHint": "Dette er din egen side — kom tilbake hit når mottakeren har tatt i bruk lenken under, for å faktisk sende filen.",
+  "goToSendPage": "Gå til sendesiden din",
   "errors": { "createFailed": "Kunne ikke opprette lenken. Prøv igjen." }
 }

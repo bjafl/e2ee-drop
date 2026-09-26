@@ -3,8 +3,10 @@
   "ownerNoteLabel": "Note for the recipient",
   "ownerNotePlaceholder": "Optional note (not encrypted)",
   "ownerNoteWarning": "This note is not encrypted and is visible to anyone with the link.",
-  "retentionDaysLabel": "Link expires after (days)",
+  "retentionDaysLabel": "Delete received files after (days)",
   "createButton": "Create link",
   "success": "Link created:",
+  "sendPageHint": "This is your own page — come back here once your recipient has claimed the link below, to actually send the file.",
+  "goToSendPage": "Go to your send page",
   "errors": { "createFailed": "Could not create that link. Please try again." }
 }
