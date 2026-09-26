@@ -5,7 +5,9 @@ import type { FileUploadStatus, DropSummary, LinkStatusResponse } from "@e2ee-dr
 import { env } from "../env";
 import { resolveLocale, deriveCodewords } from "./codewords";
 
-const nanoid = customAlphabet("123456789abcdefghijkmnopqrstuvwxyz", 16);
+// Also used by routes/links.ts's sender-initiated POST /api/links/request (Task 12), which
+// needs the same anonymous-slug shape but isn't creating a one-time link.
+export const generateAnonymousSlug = customAlphabet("123456789abcdefghijkmnopqrstuvwxyz", 16);
 
 export async function createOneTimeLink(
   recipientPublicKey: string,
@@ -15,7 +17,7 @@ export async function createOneTimeLink(
 ): Promise<Link> {
   return prisma.link.create({
     data: {
-      slug: nanoid(),
+      slug: generateAnonymousSlug(),
       mode: "one-time",
       recipientPublicKey,
       retentionDays,

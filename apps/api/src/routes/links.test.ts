@@ -723,4 +723,52 @@ describe("link routes", () => {
       expect(response.statusCode).toBe(404);
     });
   });
+
+  describe("POST /api/links/request", () => {
+    it("creates an unclaimed link owned by the authenticated user", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "requester");
+
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/links/request",
+        payload: { ownerNote: "please claim this" },
+        cookies: owner.cookies,
+      });
+      expect(res.statusCode).toBe(200);
+      const { slug } = res.json();
+      expect(slug).toBeTruthy();
+
+      const status = await server.inject({ method: "GET", url: `/api/links/${slug}` });
+      expect(status.json().recipientPublicKey).toBeNull();
+      expect(status.json().ownerNote).toBe("please claim this");
+
+      const link = await prisma.link.findUniqueOrThrow({ where: { slug } });
+      expect(link.ownerId).toBe(owner.userId);
+      expect(link.mode).toBe("permanent");
+      expect(link.recipientPublicKey).toBeNull();
+    });
+
+    it("rejects an anonymous caller", async () => {
+      // requireAuth (plugins/auth.ts) replies 403 for an unauthenticated caller — same as
+      // every other requireAuth-protected route in this codebase (e.g. the "rejects a
+      // non-owner..." test above, downloads.test.ts) — not 401.
+      const server = buildServer();
+      const res = await server.inject({ method: "POST", url: "/api/links/request", payload: {} });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it("rejects retentionDays above the global max", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "requesterbad");
+
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/links/request",
+        payload: { retentionDays: env.DROP_RETENTION_DAYS_MAX + 1 },
+        cookies: owner.cookies,
+      });
+      expect(res.statusCode).toBe(400);
+    });
+  });
 });

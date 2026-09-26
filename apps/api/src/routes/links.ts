@@ -4,12 +4,15 @@ import type {
   CreateLinkRequest,
   CreateLinkResponse,
   CreateCustomLinkRequest,
+  CreateRequestLinkRequest,
+  CreateRequestLinkResponse,
   ListDropsResponse,
 } from "@e2ee-drop/shared";
 import { prisma, Prisma } from "@e2ee-drop/db";
 import {
   createOneTimeLink,
   deleteLinkIfExists,
+  generateAnonymousSlug,
   getLinkBySlug,
   isLinkExpired,
   toDropSummary,
@@ -165,6 +168,46 @@ export function registerLinkRoutes(server: FastifyInstance): void {
         // a fake epoch-0 "already expired" timestamp.
         ...(link.expiresAt ? { expiresAt: link.expiresAt.getTime() } : {}),
       };
+      return reply.send(body);
+    }
+  );
+
+  // Design spec §4.1: the initiator here becomes the link's owner and therefore the party
+  // charged for quota once content flows (lib/quota.ts already keys everything off
+  // Link.ownerId, unchanged by this endpoint) — the eventual recipient is unknown at creation
+  // time and supplies their own key later via /claim (Task 13).
+  server.post<{ Body: CreateRequestLinkRequest }>(
+    "/api/links/request",
+    {
+      preHandler: server.requireAuth,
+      schema: {
+        body: {
+          type: "object",
+          properties: {
+            ownerNote: { type: ["string", "null"] },
+            retentionDays: { type: ["integer", "null"] },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { ownerNote, retentionDays } = request.body ?? {};
+      const resolvedRetention = resolveRetentionDays(retentionDays, null); // permanent by default
+      if (typeof resolvedRetention !== "number") {
+        return reply.status(400).send(resolvedRetention);
+      }
+      const link = await prisma.link.create({
+        data: {
+          ownerId: request.user!.id,
+          slug: generateAnonymousSlug(),
+          mode: "permanent",
+          visibility: "public",
+          retentionDays: resolvedRetention,
+          ownerNote: ownerNote ?? undefined,
+          recipientPublicKey: null,
+        },
+      });
+      const body: CreateRequestLinkResponse = { slug: link.slug };
       return reply.send(body);
     }
   );
