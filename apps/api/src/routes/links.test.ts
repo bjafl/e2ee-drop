@@ -63,6 +63,29 @@ async function createLinkWithDrop(slug: string, expiresAt: Date) {
   return { link, drop };
 }
 
+// Creates a Drop against the current schema (unlike createLinkWithDrop above,
+// which still targets a pre-rewrite shape — see its `@ts-expect-error`s —
+// and is broken until Task 11/plan 2 catches it up; not this task's job to
+// fix). Mirrors the fields uploads.ts's /complete route actually writes,
+// with deliveryStatus set directly to "sent" so these tests don't need to
+// drive a full upload-url + complete round trip just to reach that state.
+async function createSentDrop(linkId: string) {
+  return prisma.drop.create({
+    data: {
+      linkId,
+      senderPublicKey: "c2VuZGVy",
+      s3Key: `${linkId}/sent-drop`,
+      archiveNonce: "bm9uY2U=",
+      contentMD5: "bWQ1",
+      encryptedMetadata: "ZW5jcnlwdGVkLW1ldGFkYXRh",
+      metadataNonce: "bWV0YS1ub25jZQ==",
+      fileSize: 1024,
+      fileUploadStatus: "complete",
+      deliveryStatus: "sent",
+    },
+  });
+}
+
 describe("link routes", () => {
   beforeEach(async () => {
     deleteObjectMock.mockReset();
@@ -618,6 +641,86 @@ describe("link routes", () => {
       const body = response.json();
       expect(body.isAnonymous).toBe(true);
       expect(body.drop).toMatchObject({ id: drop.id, status: "uploaded", fileName: "report.pdf" });
+    });
+  });
+
+  describe("POST /api/links/:slug/mark-receiver-opened", () => {
+    it("advances deliveryStatus from sent to receiver_opened", async () => {
+      const server = buildServer();
+      const link = await prisma.link.create({
+        data: {
+          slug: "mark-opened-anon",
+          mode: "one-time",
+          recipientPublicKey: "x",
+          retentionDays: 7,
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+      });
+      await createSentDrop(link.id);
+
+      const markResponse = await server.inject({
+        method: "POST",
+        url: `/api/links/${link.slug}/mark-receiver-opened`,
+      });
+      expect(markResponse.statusCode).toBe(200);
+
+      const res = await server.inject({ method: "GET", url: `/api/links/${link.slug}` });
+      expect(res.json().drop.deliveryStatus).toBe("receiver_opened");
+    });
+
+    it("plain GET never advances deliveryStatus on its own", async () => {
+      const server = buildServer();
+      const link = await prisma.link.create({
+        data: {
+          slug: "no-side-effect-get",
+          mode: "one-time",
+          recipientPublicKey: "x",
+          retentionDays: 7,
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+      });
+      await createSentDrop(link.id);
+
+      await server.inject({ method: "GET", url: `/api/links/${link.slug}` });
+      const res = await server.inject({ method: "GET", url: `/api/links/${link.slug}` });
+      expect(res.json().drop.deliveryStatus).toBe("sent");
+    });
+
+    it("is a no-op for an owned link", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "markopenedowner");
+      const ownedLink = await prisma.link.create({
+        data: {
+          ownerId: owner.userId,
+          slug: "mark-opened-owned",
+          mode: "permanent",
+          recipientPublicKey: owner.publicKey,
+          retentionDays: 7,
+        },
+      });
+      await createSentDrop(ownedLink.id);
+
+      const markResponse = await server.inject({
+        method: "POST",
+        url: `/api/links/${ownedLink.slug}/mark-receiver-opened`,
+      });
+      expect(markResponse.statusCode).toBe(200);
+
+      const res = await server.inject({
+        method: "GET",
+        url: `/api/links/${ownedLink.slug}/drops`,
+        cookies: owner.cookies,
+      });
+      expect(res.json().drops[0].deliveryStatus).toBe("sent");
+    });
+
+    it("returns 404 for an unknown slug", async () => {
+      const server = buildServer();
+      const response = await server.inject({
+        method: "POST",
+        url: "/api/links/does-not-exist/mark-receiver-opened",
+      });
+      expect(response.statusCode).toBe(404);
     });
   });
 });

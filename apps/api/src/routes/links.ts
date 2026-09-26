@@ -205,6 +205,31 @@ export function registerLinkRoutes(server: FastifyInstance): void {
     }
   );
 
+  // Anonymous link's receive-side signal (design spec §6.1). This replaces a
+  // spoofable `?role=receiver` query param on the shared GET above: any
+  // client can call this, so it's still not cryptographic proof of receipt,
+  // but it narrows the surface from "flip a param on any GET" to "call the
+  // one endpoint whose entire purpose is this action". No-op for an owned
+  // link — that queue's delivery state is spec 5's concern (GET .../drops).
+  server.post<{ Params: { slug: string } }>(
+    "/api/links/:slug/mark-receiver-opened",
+    async (request, reply) => {
+      const link = await getLinkBySlug(request.params.slug);
+      if (!link) return reply.status(404).send({ error: "Link not found" });
+      if (isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+      if (link.ownerId === null) {
+        const drop = link.drops[0];
+        if (drop) {
+          await prisma.drop.updateMany({
+            where: { id: drop.id, linkId: link.id, deliveryStatus: "sent" },
+            data: { deliveryStatus: "receiver_opened" },
+          });
+        }
+      }
+      return reply.send({ acknowledged: true });
+    }
+  );
+
   server.delete<{ Params: { slug: string } }>("/api/links/:slug", async (request, reply) => {
     const link = await getLinkBySlug(request.params.slug);
     if (!link) return reply.status(404).send({ error: "Link not found" });
