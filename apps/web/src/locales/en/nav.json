@@ -9,5 +9,8 @@
   "logout": "Log out",
   "themeSystem": "System theme",
   "themeLight": "Light theme",
-  "themeDark": "Dark theme"
+  "themeDark": "Dark theme",
+  "verifyEmailBanner": "Please verify your email address to unlock full account features.",
+  "resendVerification": "Resend verification email",
+  "resendVerificationCooldown": "Resend available in {{seconds}}s"
 }
