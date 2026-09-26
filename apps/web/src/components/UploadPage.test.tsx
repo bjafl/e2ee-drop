@@ -1,6 +1,42 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+
+// Minimal controllable EventSource, mirroring ReceivePage.test.tsx's fake —
+// only what UploadPage's claim-detection effect (I3) needs: opens
+// asynchronously, and emit() delivers a message.
+class FakeEventSource {
+  static instances: FakeEventSource[] = [];
+  url: string;
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  onopen: ((event: Event) => void) | null = null;
+  onerror: ((event: Event) => void) | null = null;
+  closed = false;
+  constructor(url: string) {
+    this.url = url;
+    FakeEventSource.instances.push(this);
+  }
+  close() {
+    this.closed = true;
+  }
+  emit(payload: unknown) {
+    this.onmessage?.({ data: JSON.stringify(payload) } as MessageEvent);
+  }
+}
+
+function latestEventSource(): FakeEventSource {
+  const source = FakeEventSource.instances.at(-1);
+  if (!source) throw new Error("no EventSource was created");
+  return source;
+}
+
+// Renders at /login and surfaces `location.state.returnTo`, so tests can
+// assert on the I8 returnTo mechanism without a real LoginPage.
+function LoginRouteStub() {
+  const location = useLocation();
+  const state = location.state as { returnTo?: string } | null;
+  return <p>login page{state?.returnTo ? ` returnTo=${state.returnTo}` : ""}</p>;
+}
 
 // jsdom's Blob/File implementation doesn't provide `.arrayBuffer()` (see the identical
 // workaround/comment in useFileEncryption.test.ts). UploadPage's doSend calls
@@ -78,7 +114,7 @@ function renderAt(slug: string) {
     <MemoryRouter initialEntries={[`/send/${slug}`]}>
       <Routes>
         <Route path="/send/:slug" element={<UploadPage />} />
-        <Route path="/login" element={<p>login page</p>} />
+        <Route path="/login" element={<LoginRouteStub />} />
       </Routes>
     </MemoryRouter>
   );
@@ -110,6 +146,8 @@ describe("UploadPage", () => {
     uploadWithProgressMock.mockResolvedValue(undefined);
     authState.user = null;
     authState.loading = false;
+    FakeEventSource.instances = [];
+    vi.stubGlobal("EventSource", FakeEventSource);
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
@@ -259,6 +297,9 @@ describe("UploadPage", () => {
       expect(screen.getByText(/login page/i)).toBeInTheDocument();
     });
     expect(encryptForSendMock).not.toHaveBeenCalled();
+    // I8: the sender should land back on this same send page after logging in,
+    // not a generic dead end.
+    expect(screen.getByText(/returnTo=\/send\/abc123/)).toBeInTheDocument();
   });
 
   it("sends immediately without a consent dialog for a freshly-logged-in sender with an unlocked key", async () => {
@@ -320,6 +361,9 @@ describe("UploadPage", () => {
     await waitFor(() => {
       expect(screen.getByText(/login page/i)).toBeInTheDocument();
     });
+    // I8: this sender should land back on this same send page after
+    // re-authenticating, not a generic dead end.
+    expect(screen.getByText(/returnTo=\/send\/abc123/)).toBeInTheDocument();
   });
 
   it("does not affect a genuinely anonymous visitor (no session at all)", async () => {
@@ -459,5 +503,85 @@ describe("UploadPage", () => {
     await waitFor(() => {
       expect(screen.getByText(/file sent successfully/i)).toBeInTheDocument();
     });
+  });
+
+  it("I3: detects a link-claimed SSE event while waiting for the recipient, and shows the normal send form afterward", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...LINK_RESPONSE, recipientPublicKey: null }) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAt("abc123");
+    await waitFor(() => {
+      expect(screen.getByText(/hasn't been claimed/i)).toBeInTheDocument();
+    });
+    expect(latestEventSource().url).toBe("/api/links/abc123/events");
+
+    // Once claimed, the SSE handler re-fetches the plain status endpoint to
+    // pick up the new recipientPublicKey.
+    fetchMock.mockResolvedValue({ ok: true, json: async () => LINK_RESPONSE });
+    act(() => {
+      latestEventSource().emit({ type: "link-claimed", recipientPublicKey: LINK_RESPONSE.recipientPublicKey });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("recipient-badge")).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/hasn't been claimed/i)).not.toBeInTheDocument();
+  });
+
+  it("I3: closes the claim-detection SSE connection once the link is no longer waiting for claim", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...LINK_RESPONSE, recipientPublicKey: null }) })
+    );
+    renderAt("abc123");
+    await waitFor(() => {
+      expect(screen.getByText(/hasn't been claimed/i)).toBeInTheDocument();
+    });
+    const source = latestEventSource();
+    expect(source.closed).toBe(false);
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => LINK_RESPONSE }));
+    act(() => {
+      source.emit({ type: "link-claimed", recipientPublicKey: LINK_RESPONSE.recipientPublicKey });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("recipient-badge")).toBeInTheDocument();
+    });
+    expect(source.closed).toBe(true);
+  });
+
+  it("I10: removes a single file from the dropzone list without touching the others", async () => {
+    renderAt("abc123");
+    await waitFor(() => {
+      expect(screen.getByTestId("recipient-badge")).toBeInTheDocument();
+    });
+
+    await selectFile("first.txt");
+    const input = screen.getByTestId("file-input") as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [new File(["b"], "second.txt")] } });
+    await waitFor(() => {
+      expect(screen.getByText("second.txt")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /remove first\.txt/i }));
+
+    expect(screen.queryByText("first.txt")).not.toBeInTheDocument();
+    expect(screen.getByText("second.txt")).toBeInTheDocument();
+  });
+
+  it("I10: re-disables the send button after removing the only selected file", async () => {
+    renderAt("abc123");
+    await waitFor(() => {
+      expect(screen.getByTestId("recipient-badge")).toBeInTheDocument();
+    });
+
+    await selectFile("only.txt");
+    expect(screen.getByRole("button", { name: /^send$/i })).not.toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: /remove only\.txt/i }));
+
+    expect(screen.queryByText("only.txt")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^send$/i })).toBeDisabled();
   });
 });

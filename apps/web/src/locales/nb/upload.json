@@ -14,6 +14,7 @@
   "waitingForClaim": "Denne lenken er ikke tatt i bruk av mottakeren ennå. Vennligst vent til de har satt den opp før du sender.",
   "dropActive": "Slipp filene her …",
   "dropInstructions": "Dra og slipp filer her, eller klikk for å velge filer",
+  "removeFile": "Fjern {{name}}",
   "retentionInfo": "Filer slettes automatisk {{days}} dager etter de er sendt.",
   "encrypting": "Krypterer …",
   "uploading": "Laster opp …",

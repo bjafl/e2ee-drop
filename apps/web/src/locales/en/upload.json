@@ -14,6 +14,7 @@
   "waitingForClaim": "This link hasn't been claimed by its recipient yet. Please wait until they've set it up before sending.",
   "dropActive": "Drop the files here…",
   "dropInstructions": "Drag and drop files here, or click to choose files",
+  "removeFile": "Remove {{name}}",
   "retentionInfo": "Files will be automatically deleted {{days}} days after they're sent.",
   "encrypting": "Encrypting…",
   "uploading": "Uploading…",

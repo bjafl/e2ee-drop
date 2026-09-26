@@ -4,6 +4,7 @@ import { useParams, useNavigate, Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useDropzone } from "react-dropzone";
 import nacl from "tweetnacl";
+import { X } from "lucide-react";
 import type { LinkStatusResponse, RequestUploadUrlRequest, RequestUploadUrlResponse } from "@e2ee-drop/shared";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -88,6 +89,41 @@ export function UploadPage() {
       cancelled = true;
     };
   }, [slug, t]);
+
+  // I3 (final review): design spec §4.2's "waiting for the recipient to
+  // activate this link" state must detect the claim itself, over the same
+  // per-link SSE channel ReceivePage uses — not require a manual reload. The
+  // sender/initiator of a sender-initiated request link is always its
+  // `ownerId`, so (unlike the receiver's own events subscription — see I2)
+  // this route never 403s for them.
+  const isWaitingForClaim = !!link && link.recipientPublicKey === null;
+  useEffect(() => {
+    if (!slug || !isWaitingForClaim) return;
+    let cancelled = false;
+    const source = new EventSource(`/api/links/${slug}/events`);
+    source.onmessage = (event: MessageEvent) => {
+      let parsed: { type?: string };
+      try {
+        parsed = JSON.parse(event.data) as { type?: string };
+      } catch {
+        return;
+      }
+      if (parsed.type !== "link-claimed") return;
+      fetch(`/api/links/${slug}`)
+        .then((res) => (res.ok ? (res.json() as Promise<LinkStatusResponse>) : null))
+        .then((data) => {
+          if (!cancelled && data) setLink(data);
+        })
+        .catch(() => {
+          // Transient network failure — the sender is still shown the
+          // waiting state and can reload; nothing to strand them on here.
+        });
+    };
+    return () => {
+      cancelled = true;
+      source.close();
+    };
+  }, [slug, isWaitingForClaim]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop: (accepted) => setFiles((prev) => [...prev, ...accepted]),
@@ -187,7 +223,9 @@ export function UploadPage() {
         <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">{t("reauthRequiredBody")}</p>
           <Button asChild>
-            <Link to="/login">{t("reauthRequiredAction")}</Link>
+            <Link to="/login" state={{ returnTo: `/send/${slug}` }}>
+              {t("reauthRequiredAction")}
+            </Link>
           </Button>
         </CardContent>
       </Card>
@@ -258,7 +296,19 @@ export function UploadPage() {
         {files.length > 0 && (
           <ul className="text-sm">
             {files.map((f, i) => (
-              <li key={`${f.name}-${i}`}>{f.name}</li>
+              <li key={`${f.name}-${i}`} className="flex items-center justify-between gap-2">
+                <span className="truncate">{f.name}</span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={t("removeFile", { name: f.name })}
+                  disabled={isUploading}
+                  onClick={() => setFiles((prev) => prev.filter((_, index) => index !== i))}
+                >
+                  <X />
+                </Button>
+              </li>
             ))}
           </ul>
         )}
@@ -287,7 +337,7 @@ export function UploadPage() {
                 render={<Button variant="secondary" />}
                 onClick={() => {
                   setShowConsent(false);
-                  navigate("/login");
+                  navigate("/login", { state: { returnTo: `/send/${slug}` } });
                 }}
               >
                 {t("logInInstead")}
