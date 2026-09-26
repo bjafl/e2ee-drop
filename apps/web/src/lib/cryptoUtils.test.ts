@@ -2,49 +2,60 @@
 // @vitest-environment node
 import { describe, it, expect } from "vitest";
 import nacl from "tweetnacl";
-import { encryptFile, decryptFile } from "./cryptoUtils";
+import { encryptBytes, decryptBytes, zipFiles } from "./cryptoUtils";
+import { unzipSync } from "fflate";
 
-describe("cryptoUtils", () => {
-  it("round-trips a message through encrypt then decrypt", () => {
+describe("encryptBytes/decryptBytes", () => {
+  it("round-trips arbitrary bytes", () => {
     const sender = nacl.box.keyPair();
     const recipient = nacl.box.keyPair();
-    const message = new TextEncoder().encode("hello e2ee-drop");
-
-    const { encrypted, nonce } = encryptFile({
-      unencrypted: message,
+    const plaintext = new TextEncoder().encode("hello");
+    const { encrypted, nonce } = encryptBytes({
+      unencrypted: plaintext,
       recipientPublicKey: recipient.publicKey,
       senderSecretKey: sender.secretKey,
     });
-
-    const decrypted = decryptFile({
+    const decrypted = decryptBytes({
       encrypted,
       nonce,
       senderPublicKey: sender.publicKey,
       recipientSecretKey: recipient.secretKey,
     });
-
-    expect(new TextDecoder().decode(decrypted)).toBe("hello e2ee-drop");
+    expect(new TextDecoder().decode(decrypted)).toBe("hello");
   });
 
-  it("throws when decrypting with the wrong key", () => {
+  it("fails to decrypt with the wrong sender public key (tamper/impersonation check)", () => {
     const sender = nacl.box.keyPair();
+    const impostor = nacl.box.keyPair();
     const recipient = nacl.box.keyPair();
-    const wrongRecipient = nacl.box.keyPair();
-    const message = new TextEncoder().encode("secret");
-
-    const { encrypted, nonce } = encryptFile({
-      unencrypted: message,
+    const { encrypted, nonce } = encryptBytes({
+      unencrypted: new TextEncoder().encode("hello"),
       recipientPublicKey: recipient.publicKey,
       senderSecretKey: sender.secretKey,
     });
-
     expect(() =>
-      decryptFile({
-        encrypted,
-        nonce,
-        senderPublicKey: sender.publicKey,
-        recipientSecretKey: wrongRecipient.secretKey,
-      })
-    ).toThrow("Decryption failed");
+      decryptBytes({ encrypted, nonce, senderPublicKey: impostor.publicKey, recipientSecretKey: recipient.secretKey })
+    ).toThrow();
+  });
+});
+
+describe("zipFiles", () => {
+  it("produces a zip whose entries round-trip through fflate's own unzipSync", () => {
+    const zipped = zipFiles([
+      { name: "a.txt", data: new TextEncoder().encode("A") },
+      { name: "b.txt", data: new TextEncoder().encode("B") },
+    ]);
+    const entries = unzipSync(zipped);
+    expect(new TextDecoder().decode(entries["a.txt"])).toBe("A");
+    expect(new TextDecoder().decode(entries["b.txt"])).toBe("B");
+  });
+
+  it("de-duplicates same-named files instead of silently colliding", () => {
+    const zipped = zipFiles([
+      { name: "report.pdf", data: new TextEncoder().encode("first") },
+      { name: "report.pdf", data: new TextEncoder().encode("second") },
+    ]);
+    const entries = unzipSync(zipped);
+    expect(Object.keys(entries)).toEqual(["report.pdf", "report (1).pdf"]);
   });
 });
