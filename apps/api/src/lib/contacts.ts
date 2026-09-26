@@ -6,9 +6,11 @@ export interface ContactSummary {
   id: string;
   userId: string;
   username: string;
-  status: "pending" | "accepted"; // "blocked" rows are never surfaced as a status
-                                    // to the blocked party (see listContacts below) —
-                                    // the blocker's own view filters separately.
+  // "blocked" rows are never surfaced as a status to the blocked party (see
+  // listContacts below) — they're filtered out entirely for that side. The
+  // blocker's own view surfaces them separately, in listContacts's own
+  // `blocked` array, using this same summary shape.
+  status: "pending" | "accepted" | "blocked";
   direction: "incoming" | "outgoing";
 }
 
@@ -49,7 +51,7 @@ export async function sendContactRequest(userId: string, targetUsername: string)
 
 export async function listContacts(
   userId: string
-): Promise<{ pending: ContactSummary[]; accepted: ContactSummary[] }> {
+): Promise<{ pending: ContactSummary[]; accepted: ContactSummary[]; blocked: ContactSummary[] }> {
   const rows = (
     await prisma.contact.findMany({ where: { OR: [{ userId }, { contactUserId: userId }] } })
   ).filter((row) => row.status !== "blocked" || row.blockedByUserId === userId);
@@ -64,7 +66,7 @@ export async function listContacts(
       id: row.id,
       userId: otherId,
       username: usernameById.get(otherId) ?? "unknown",
-      status: row.status as "pending" | "accepted",
+      status: row.status as "pending" | "accepted" | "blocked",
       direction: isOutgoing ? "outgoing" : "incoming",
     };
   });
@@ -72,6 +74,10 @@ export async function listContacts(
   return {
     pending: summaries.filter((summary) => summary.status === "pending"),
     accepted: summaries.filter((summary) => summary.status === "accepted"),
+    // The `rows` filter above already dropped any row blocked against this
+    // caller, so every "blocked" summary remaining here is one the caller
+    // themselves blocked (blockedByUserId === userId) — their own block list.
+    blocked: summaries.filter((summary) => summary.status === "blocked"),
   };
 }
 
@@ -97,6 +103,15 @@ export async function blockContact(callerId: string, contactId: string): Promise
   const row = await prisma.contact.findUnique({ where: { id: contactId } });
   if (!row) throw new HttpError(404, "Contact request not found");
   if (row.userId !== callerId && row.contactUserId !== callerId) {
+    throw new HttpError(403, "Not part of this contact relationship");
+  }
+  // A row already blocked by the OTHER party must not be re-blockable by the
+  // blocked party — that would let them seize blockedByUserId and then
+  // unblock (delete) the row themselves, escaping the original block. Same
+  // error message as the membership check above: a distinguishable message
+  // here would itself leak "this row is already blocked by someone else".
+  // Re-blocking by the SAME party who already holds the block is a no-op.
+  if (row.status === "blocked" && row.blockedByUserId !== callerId) {
     throw new HttpError(403, "Not part of this contact relationship");
   }
   return prisma.contact.update({ where: { id: contactId }, data: { status: "blocked", blockedByUserId: callerId } });

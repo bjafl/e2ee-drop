@@ -258,7 +258,11 @@ describe("contact routes", () => {
     expect(all.find((c: { username: string }) => c.username === "alice-block2")).toBeUndefined();
 
     const alicesList = await server.inject({ method: "GET", url: "/api/contacts", cookies: alice.cookies });
-    expect(alicesList.statusCode).toBe(200); // blocker CAN still see it (not asserting shape here — block is visible to them)
+    expect(alicesList.statusCode).toBe(200);
+    // The blocker CAN still see the block, via its own `blocked` array.
+    expect(alicesList.json().blocked).toHaveLength(1);
+    expect(alicesList.json().blocked[0].username).toBe("bob-block2");
+    expect(alicesList.json().blocked[0].status).toBe("blocked");
   });
 
   it("resolves a same-direction concurrent double-submit to exactly one row (pre-existing TOCTOU, fixed here)", async () => {
@@ -308,5 +312,39 @@ describe("contact routes", () => {
 
     const afterUnblock = await prisma.contact.findUnique({ where: { id: req.json().id } });
     expect(afterUnblock).toBeNull();
+  });
+
+  it("does not let the blocked party seize the block and escape it via re-block + unblock", async () => {
+    // Regression test for a fix found in review: blockContact only checked
+    // relationship membership, not who currently holds blockedByUserId. That
+    // let the blocked party call /block on the same row to overwrite
+    // blockedByUserId to themselves, then call /unblock (now "succeeding")
+    // to delete the row and send a fresh request — fully escaping the
+    // original block.
+    const server = buildServer();
+    const alice = await registerAndGetCookie(server, "alice-block4");
+    const bob = await registerAndGetCookie(server, "bob-block4");
+    const req = await server.inject({ method: "POST", url: "/api/contacts", cookies: bob.cookies, payload: { username: "alice-block4" } });
+    const contactId = req.json().id;
+
+    const block = await server.inject({ method: "POST", url: `/api/contacts/${contactId}/block`, cookies: alice.cookies });
+    expect(block.statusCode).toBe(200);
+
+    // Bob (the blocked party) tries to seize the block by re-blocking the row himself.
+    const bobBlockAttempt = await server.inject({ method: "POST", url: `/api/contacts/${contactId}/block`, cookies: bob.cookies });
+    expect(bobBlockAttempt.statusCode).toBe(403);
+
+    // The row must still be blocked by alice, unaffected by bob's attempt.
+    const stillBlocked = await prisma.contact.findUnique({ where: { id: contactId } });
+    expect(stillBlocked?.status).toBe("blocked");
+    expect(stillBlocked?.blockedByUserId).toBe(alice.userId);
+
+    // Bob still can't unblock — he was never recorded as the blocker.
+    const bobUnblockAttempt = await server.inject({ method: "POST", url: `/api/contacts/${contactId}/unblock`, cookies: bob.cookies });
+    expect(bobUnblockAttempt.statusCode).toBe(403);
+
+    // Re-blocking by alice herself (the party who already holds the block) is a harmless no-op.
+    const aliceReblock = await server.inject({ method: "POST", url: `/api/contacts/${contactId}/block`, cookies: alice.cookies });
+    expect(aliceReblock.statusCode).toBe(200);
   });
 });
