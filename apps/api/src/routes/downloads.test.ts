@@ -413,6 +413,157 @@ describe("owned-link download routes", () => {
   });
 });
 
+describe("reveal-message route", () => {
+  beforeEach(async () => {
+    await prisma.drop.deleteMany();
+    await prisma.link.deleteMany();
+  });
+
+  // Creates an anonymous link with a single drop, optionally carrying a sealed
+  // message envelope. Uses upload-url directly (rather than createLinkWithDrop,
+  // which never sends encryptedMessage/messageNonce) so tests can control
+  // whether the drop has a message to reveal.
+  async function createLinkWithMessage(
+    server: ReturnType<typeof buildServer>,
+    message: { encryptedMessage: string; messageNonce: string } | null
+  ) {
+    const createRes = await server.inject({
+      method: "POST",
+      url: "/api/links",
+      payload: { recipientPublicKey: "cmVjaXBpZW50" },
+    });
+    const { slug } = createRes.json();
+
+    const uploadRes = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+      payload: {
+        senderPublicKey: "c2VuZGVy",
+        archiveNonce: "YXJjaGl2ZQ==",
+        ...(message ?? {}),
+        encryptedMetadata: "bWV0YWRhdGE=",
+        metadataNonce: "bWV0YW5vbmNl",
+        metadata: { fileSize: 1024, contentMD5: "bWQ1" },
+      },
+    });
+    const { dropId } = uploadRes.json();
+    return { slug, dropId };
+  }
+
+  it("reveals the message once and scrubs it", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithMessage(server, {
+      encryptedMessage: "c2VjcmV0IG1lc3NhZ2U=",
+      messageNonce: "bXNnbm9uY2U=",
+    });
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/${dropId}/reveal-message`,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      encryptedMessage: "c2VjcmV0IG1lc3NhZ2U=",
+      messageNonce: "bXNnbm9uY2U=",
+    });
+
+    const status = await server.inject({ method: "GET", url: `/api/links/${slug}` });
+    expect(status.json().drop.hasMessage).toBe(false);
+
+    const drop = await prisma.drop.findUnique({ where: { id: dropId } });
+    expect(drop?.encryptedMessage).toBeNull();
+    expect(drop?.messageNonce).toBeNull();
+    expect(drop?.messageRevealedAt).not.toBeNull();
+    expect(drop?.messageEnvelopeStatus).toBe("delivered");
+  });
+
+  it("a second reveal call fails", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithMessage(server, {
+      encryptedMessage: "c2VjcmV0IG1lc3NhZ2U=",
+      messageNonce: "bXNnbm9uY2U=",
+    });
+
+    const first = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/${dropId}/reveal-message`,
+    });
+    const second = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/${dropId}/reveal-message`,
+    });
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(409);
+  });
+
+  it("404s for a drop with no message", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithMessage(server, null);
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/${dropId}/reveal-message`,
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("404s for a nonexistent drop id", async () => {
+    const server = buildServer();
+    const { slug } = await createLinkWithMessage(server, null);
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/does-not-exist/reveal-message`,
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("404s for a nonexistent link slug", async () => {
+    const server = buildServer();
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/does-not-exist/drops/does-not-exist/reveal-message`,
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("404s for an expired link even if the drop has a message", async () => {
+    const server = buildServer();
+    const link = await prisma.link.create({
+      data: {
+        slug: "expired-reveal-test",
+        mode: "one-time",
+        recipientPublicKey: "x",
+        retentionDays: 7,
+        expiresAt: new Date(Date.now() - 1000),
+      },
+    });
+    const drop = await prisma.drop.create({
+      data: {
+        linkId: link.id,
+        senderPublicKey: "c2VuZGVy",
+        s3Key: `${link.id}/drop1`,
+        archiveNonce: "YXJjaGl2ZQ==",
+        encryptedMessage: "c2VjcmV0",
+        messageNonce: "bm9uY2U=",
+        encryptedMetadata: "bWV0YWRhdGE=",
+        metadataNonce: "bWV0YW5vbmNl",
+        fileSize: 1024,
+        contentMD5: "bWQ1",
+        fileUploadStatus: "complete",
+      },
+    });
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/drops/${drop.id}/reveal-message`,
+    });
+    expect(res.statusCode).toBe(404);
+  });
+});
+
 describe("download route drop events", () => {
   beforeEach(async () => {
     await prisma.drop.deleteMany();

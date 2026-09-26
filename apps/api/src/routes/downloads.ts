@@ -1,7 +1,7 @@
 // apps/api/src/routes/downloads.ts
 import type { FastifyInstance } from "fastify";
 import { prisma } from "@e2ee-drop/db";
-import type { DownloadUrlResponse } from "@e2ee-drop/shared";
+import type { DownloadUrlResponse, RevealMessageResponse } from "@e2ee-drop/shared";
 // @ts-expect-error — rewritten in plan 2
 import { getLinkBySlug, isLinkExpired, toDropSummary, transitionDropStatus } from "../lib/links";
 import { getSignedDownloadUrl } from "../lib/storage";
@@ -118,6 +118,52 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
         emitDropEvent(link.id, { type: "drop-updated", drop: toDropSummary({ ...drop, status: "downloaded" }) });
       }
       return reply.send({ updated: true });
+    }
+  );
+
+  // Design spec §6.2: a one-time reveal. The atomic UPDATE ... WHERE below is the only place a
+  // message can be revealed — it returns the ciphertext AND scrubs the columns in the same
+  // statement, so a second call (or two racing calls) sees encryptedMessage already NULL and
+  // matches zero rows, never returning the same message twice or losing it to a lost race.
+  server.post<{ Params: { slug: string; dropId: string } }>(
+    "/api/links/:slug/drops/:dropId/reveal-message",
+    async (request, reply) => {
+      const link = await getLinkBySlug(request.params.slug);
+      if (!link || isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+      const { dropId } = request.params;
+
+      const drop = link.drops.find((candidate) => candidate.id === dropId);
+      if (!drop) return reply.status(404).send({ error: "Drop not found" });
+      if (drop.encryptedMessage === null) {
+        // Two ways to already be null: this drop never had a message (messageRevealedAt is
+        // also null), or a previous call already revealed and scrubbed it. Distinguish so a
+        // repeat call reports 409 (conflict with prior reveal), not a misleading 404 — the
+        // CAS below still owns the *first* call's race resolution; this is only a fast path
+        // for the (non-concurrent) common case where this request's own snapshot is already
+        // stale relative to a completed reveal.
+        return reply
+          .status(drop.messageRevealedAt ? 409 : 404)
+          .send({ error: drop.messageRevealedAt ? "Message already revealed" : "This drop has no message" });
+      }
+
+      // Snapshot the ciphertext BEFORE the CAS clears it — updateMany doesn't return row data.
+      const { encryptedMessage, messageNonce } = drop;
+      const { count } = await prisma.drop.updateMany({
+        where: { id: dropId, linkId: link.id, encryptedMessage: { not: null } },
+        data: {
+          encryptedMessage: null,
+          messageNonce: null,
+          messageRevealedAt: new Date(),
+          messageEnvelopeStatus: "delivered",
+        },
+      });
+      if (count !== 1) {
+        // Lost the race to a concurrent reveal call, or the message was already gone.
+        return reply.status(409).send({ error: "Message already revealed" });
+      }
+
+      const body: RevealMessageResponse = { encryptedMessage, messageNonce: messageNonce! };
+      return reply.send(body);
     }
   );
 }
