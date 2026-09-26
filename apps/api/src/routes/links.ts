@@ -314,6 +314,24 @@ export function registerLinkRoutes(server: FastifyInstance): void {
     }
   );
 
+  // Send-side signal (spec 1 plan 3 Task 11 / Task 5 of the delivery-lifecycle-
+  // retention plan). Symmetric counterpart to mark-receiver-opened above, but
+  // deliberately simpler: unconditional overwrite of Link.lastSenderOpenedAt
+  // on every call, no CAS and no deliveryStatus check. This is pure
+  // informational telemetry ("when did the sender last look at this link's
+  // page") with no downstream effect on the burn/envelope state machine, so
+  // every visit is meaningful, not just the first. No auth required, no body.
+  server.post<{ Params: { slug: string } }>(
+    "/api/links/:slug/mark-sender-opened",
+    async (request, reply) => {
+      const link = await getLinkBySlug(request.params.slug);
+      if (!link) return reply.status(404).send({ error: "Link not found" });
+      if (isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+      await prisma.link.updateMany({ where: { id: link.id }, data: { lastSenderOpenedAt: new Date() } });
+      return reply.send({ acknowledged: true });
+    }
+  );
+
   server.delete<{ Params: { slug: string } }>("/api/links/:slug", async (request, reply) => {
     const link = await getLinkBySlug(request.params.slug);
     if (!link) return reply.status(404).send({ error: "Link not found" });

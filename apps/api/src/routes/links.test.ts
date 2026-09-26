@@ -805,6 +805,72 @@ describe("link routes", () => {
     });
   });
 
+  describe("POST /api/links/:slug/mark-sender-opened", () => {
+    it("updates Link.lastSenderOpenedAt", async () => {
+      const server = buildServer();
+      const { link } = await createLinkWithDrop("mark-sender-opened-basic", new Date(Date.now() + 60_000));
+      const before = await prisma.link.findUniqueOrThrow({ where: { slug: link.slug } });
+      expect(before.lastSenderOpenedAt).toBeNull();
+
+      const response = await server.inject({
+        method: "POST",
+        url: `/api/links/${link.slug}/mark-sender-opened`,
+      });
+      expect(response.statusCode).toBe(200);
+
+      const after = await prisma.link.findUniqueOrThrow({ where: { slug: link.slug } });
+      expect(after.lastSenderOpenedAt).not.toBeNull();
+    });
+
+    it("does not create any Drop or touch deliveryStatus", async () => {
+      const server = buildServer();
+      const { link } = await createLinkWithDrop(
+        "mark-sender-opened-no-side-effect",
+        new Date(Date.now() + 60_000)
+      );
+      const before = await prisma.drop.count({ where: { linkId: link.id } });
+
+      await server.inject({ method: "POST", url: `/api/links/${link.slug}/mark-sender-opened` });
+
+      const after = await prisma.drop.count({ where: { linkId: link.id } });
+      expect(after).toBe(before);
+      const drop = await prisma.drop.findFirstOrThrow({ where: { linkId: link.id } });
+      expect(drop.deliveryStatus).toBe("sent");
+    });
+
+    it("a second visit overwrites the earlier timestamp, not just the first", async () => {
+      const server = buildServer();
+      const { link } = await createLinkWithDrop("mark-sender-opened-overwrite", new Date(Date.now() + 60_000));
+
+      await server.inject({ method: "POST", url: `/api/links/${link.slug}/mark-sender-opened` });
+      const first = (await prisma.link.findUniqueOrThrow({ where: { slug: link.slug } })).lastSenderOpenedAt;
+      await new Promise((r) => setTimeout(r, 5));
+      await server.inject({ method: "POST", url: `/api/links/${link.slug}/mark-sender-opened` });
+      const second = (await prisma.link.findUniqueOrThrow({ where: { slug: link.slug } })).lastSenderOpenedAt;
+
+      expect(second!.getTime()).toBeGreaterThan(first!.getTime());
+    });
+
+    it("plain GET never touches lastSenderOpenedAt on its own", async () => {
+      const server = buildServer();
+      const { link } = await createLinkWithDrop("mark-sender-opened-get-noop", new Date(Date.now() + 60_000));
+
+      await server.inject({ method: "GET", url: `/api/links/${link.slug}` });
+
+      const after = await prisma.link.findUniqueOrThrow({ where: { slug: link.slug } });
+      expect(after.lastSenderOpenedAt).toBeNull();
+    });
+
+    it("returns 404 for an unknown slug", async () => {
+      const server = buildServer();
+      const response = await server.inject({
+        method: "POST",
+        url: "/api/links/does-not-exist/mark-sender-opened",
+      });
+      expect(response.statusCode).toBe(404);
+    });
+  });
+
   describe("POST /api/links/request", () => {
     it("creates an unclaimed link owned by the authenticated user", async () => {
       const server = buildServer();
