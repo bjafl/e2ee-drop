@@ -2,10 +2,14 @@
 import type { FastifyInstance } from "fastify";
 import { prisma } from "@e2ee-drop/db";
 import type { DownloadUrlResponse, RevealMessageResponse } from "@e2ee-drop/shared";
-// @ts-expect-error — rewritten in plan 2
-import { getLinkBySlug, isLinkExpired, toDropSummary, transitionDropStatus } from "../lib/links";
-import { getSignedDownloadUrl } from "../lib/storage";
-import { emitDropEvent } from "../lib/dropEvents";
+import { getLinkBySlug, isLinkExpired } from "../lib/links";
+import { getSignedDownloadUrl, deleteObject } from "../lib/storage";
+
+// fileEnvelopeStatus values that mean "this drop's file bytes are gone/spoken
+// for" — a compare-and-swap gate never lets a write clobber either of these.
+// "shredded" isn't written anywhere in this plan (reserved for a future
+// deletion path — see schema.prisma) but is future-proofed here regardless.
+const TERMINAL_FILE_ENVELOPE_STATUSES = ["delivered", "shredded"] as const;
 
 export function registerDownloadRoutes(server: FastifyInstance): void {
   server.get<{ Params: { slug: string }; Querystring: { dropId?: string } }>(
@@ -30,56 +34,20 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
       const { dropId } = request.query;
       const drop = dropId ? link.drops.find((candidate) => candidate.id === dropId) : link.drops[0];
       if (!drop) return reply.status(404).send({ error: "No uploaded file for this link" });
-      // @ts-expect-error — rewritten in plan 2
-      if (drop.status === "uploading") {
+      if (drop.fileUploadStatus !== "complete") {
         return reply.status(403).send({ error: "File is not ready for download yet" });
       }
 
+      // Design spec §6.3: this route no longer has a status side effect. The old
+      // "uploaded" -> "downloading" CAS marked in-flight progress that the
+      // complete-download/download-failed pair below now reports explicitly and
+      // far more reliably (an issued-but-never-fetched presigned URL used to
+      // leave a drop stuck "downloading" forever). A download URL can still be
+      // re-issued any number of times — nothing here gates repeat issuance.
       const downloadUrl = await getSignedDownloadUrl(drop.s3Key);
-      // Status is informational progress, not a one-shot gate: a download URL can be
-      // re-issued any number of times (network blip mid-download, expired presigned
-      // URL, tab closed before the download actually started, etc.) as long as the
-      // upload itself has finished. Only advance "uploaded" -> "downloading" on the
-      // first successful issuance; don't regress an already-"downloading" or
-      // "downloaded" drop back to "downloading".
-      //
-      // This must be a conditional update keyed on the row's *current* status, not a
-      // blind update guarded by the `drop.status` snapshot read above: there's an
-      // `await` boundary above (getSignedDownloadUrl) during which a concurrent
-      // request (e.g. POST .../downloaded, or another overlapping GET that got
-      // further along) could have already advanced the row past "uploaded". A blind
-      // `update` here would stomp that newer status back to "downloading". `updateMany`
-      // with `status: "uploaded"` in the where-clause is an atomic compare-and-swap in
-      // Postgres: it only writes (and only matches a row) when the row is still
-      // exactly "uploaded" at write time, so a race loses this write silently instead
-      // of regressing state. URL issuance is returned regardless of whether the status
-      // write actually happened — the two are independent concerns.
-      //
-      // Only the request that actually wins the CAS (count === 1) announces the
-      // transition to SSE subscribers; a re-issuance or a lost race emits nothing,
-      // so subscribers never see a stale or duplicate "downloading" event. The
-      // summary is built from the snapshot with the status the CAS just wrote —
-      // nothing else on a drop row changes after creation.
-      const { count } = await prisma.drop.updateMany({
-        // @ts-expect-error — rewritten in plan 2
-        where: { id: drop.id, status: "uploaded" },
-        // @ts-expect-error — rewritten in plan 2
-        data: { status: "downloading" },
-      });
-      if (count === 1) {
-        // @ts-expect-error — rewritten in plan 2
-        emitDropEvent(link.id, { type: "drop-updated", drop: toDropSummary({ ...drop, status: "downloading" }) });
-      }
-
       const body: DownloadUrlResponse = {
         downloadUrl,
-        // @ts-expect-error — rewritten in plan 2
-        fileName: drop.fileName,
-        fileSize: drop.fileSize,
-        // @ts-expect-error — rewritten in plan 2
-        mimeType: drop.mimeType,
-        // @ts-expect-error — rewritten in plan 2
-        nonce: drop.nonce,
+        archiveNonce: drop.archiveNonce,
         senderPublicKey: drop.senderPublicKey,
         contentMD5: drop.contentMD5,
       };
@@ -87,37 +55,106 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
     }
   );
 
+  // Design spec §3.3/§6.3: the client has already recomputed the ciphertext hash
+  // and confirmed it matches contentMD5 before ever calling this route —
+  // deletion is gated on that match having happened, never on whether
+  // decryption (attempted client-side afterward) also succeeded. A hash
+  // mismatch must never reach this route at all; a hash match must delete the
+  // object regardless of what the client's decryption step later does with it.
   server.post<{ Params: { slug: string; dropId: string } }>(
-    "/api/links/:slug/drops/:dropId/downloaded",
+    "/api/links/:slug/drops/:dropId/complete-download",
     async (request, reply) => {
       const link = await getLinkBySlug(request.params.slug);
       if (!link || isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
-      // Same ownership rule as download-url: only the owner may mark an owned
-      // link's drop downloaded; anonymous links stay open to any link holder.
+      // Same ownership rule as download-url: only the owner may complete a
+      // download on an owned link; anonymous links stay open to any link holder.
       if (link.ownerId && link.ownerId !== request.user?.id) {
         return reply.status(403).send({ error: "Forbidden" });
       }
-      // Compare-and-swap, scoped to this link: only a drop whose upload has finished
-      // ("uploaded", or "downloading" once a download URL was issued) can become
-      // "downloaded". Rejecting "uploading" stops a link holder from marking a drop
-      // downloaded before it exists; drop ids are not secret (GET /api/links/:slug
-      // returns them), so the linkId scoping is what ties the call to this link.
-      const updated = await transitionDropStatus(
-        request.params.dropId,
-        link.id,
-        ["uploaded", "downloading"],
-        "downloaded"
-      );
-      if (!updated) return reply.status(404).send({ error: "Drop not found" });
-      // The CAS only matches a drop on this link in "uploaded"/"downloading", and
-      // such a drop already existed when `link` was fetched (new drops start as
-      // "uploading"), so it's in this snapshot.
-      const drop = link.drops.find((candidate) => candidate.id === request.params.dropId);
-      if (drop) {
-        // @ts-expect-error — rewritten in plan 2
-        emitDropEvent(link.id, { type: "drop-updated", drop: toDropSummary({ ...drop, status: "downloaded" }) });
+      const { dropId } = request.params;
+      const drop = link.drops.find((candidate) => candidate.id === dropId);
+      if (!drop) return reply.status(404).send({ error: "Drop not found" });
+      // Fast path only, not a correctness gate: skips a pointless deleteObject +
+      // DB round trip when this request's own snapshot already shows the drop
+      // resolved. A drop that reaches this point despite already being terminal
+      // (a race that landed between this snapshot and here) is still handled
+      // correctly by the CAS below.
+      if (TERMINAL_FILE_ENVELOPE_STATUSES.includes(drop.fileEnvelopeStatus as (typeof TERMINAL_FILE_ENVELOPE_STATUSES)[number])) {
+        return reply.send({ completed: false });
       }
-      return reply.send({ updated: true });
+
+      // Same order as the DELETE /api/links/:slug route and runCleanup: storage
+      // first, DB after. If deleteObject throws, fileEnvelopeStatus is never
+      // touched, so the row still names a real (never-deleted) object and a
+      // retry is safe. deleteObject succeeds even when the key is already gone
+      // (lib/storage.ts), so calling it here — even for a request that goes on
+      // to lose the CAS below to a concurrent winner — is harmless.
+      await deleteObject(drop.s3Key);
+
+      // The actual compare-and-swap, and the only thing the response below is
+      // driven by: only a drop whose fileEnvelopeStatus is not already terminal
+      // transitions here. This can't be decided from the `drop` snapshot fetched
+      // above — the await on deleteObject is exactly the kind of gap where a
+      // concurrent call could already have resolved this drop (see Task 10's
+      // reveal-message CAS, and its fix for a stale-snapshot response bug, for
+      // why this must be the count, not the snapshot).
+      const { count } = await prisma.drop.updateMany({
+        where: { id: dropId, linkId: link.id, fileEnvelopeStatus: { notIn: [...TERMINAL_FILE_ENVELOPE_STATUSES] } },
+        data: { fileEnvelopeStatus: "delivered", contentDeletedAt: new Date() },
+      });
+      if (count !== 1) {
+        // Lost the race to a concurrent complete-download (or a repeat call this
+        // request's own fast path above didn't catch). The object is gone either
+        // way — deleteObject above is idempotent, and the winner deleted it if
+        // this call didn't — so this is not an error, just not this call's win.
+        return reply.send({ completed: false });
+      }
+
+      // Derive the overall deliveryStatus from both envelope statuses (design
+      // spec's partial_delivery/delivered derivation — owned by this plan's
+      // endpoints per the design spec's note that plan 1/2 write these fields
+      // even though spec 2 owns the full read side). Only the call that actually
+      // won the CAS above runs this.
+      const messageDone = drop.messageEnvelopeStatus === "delivered" || drop.encryptedMessage === null;
+      await prisma.drop.updateMany({
+        where: { id: dropId, linkId: link.id },
+        data: { deliveryStatus: messageDone ? "delivered" : "partial_delivery" },
+      });
+
+      return reply.send({ completed: true });
+    }
+  );
+
+  // Fire-and-forget failure signal from the client (hash mismatch, network
+  // failure mid-download, decryption failure, etc.) — never deletes anything;
+  // complete-download above is the only route in this file that touches
+  // storage. Scoping to this link+dropId is the only gate needed beyond the
+  // CAS: drop ids are not secret (GET /api/links/:slug returns them), and
+  // marking a drop "delivery_failed" is purely informational bookkeeping.
+  server.post<{ Params: { slug: string; dropId: string } }>(
+    "/api/links/:slug/drops/:dropId/download-failed",
+    async (request, reply) => {
+      const link = await getLinkBySlug(request.params.slug);
+      if (!link || isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+      // Same ownership rule as download-url/complete-download: only the owner
+      // may report a failure on an owned link's drop; anonymous links stay open
+      // to any link holder.
+      if (link.ownerId && link.ownerId !== request.user?.id) {
+        return reply.status(403).send({ error: "Forbidden" });
+      }
+      const { dropId } = request.params;
+      // The WHERE clause below is the compare-and-swap — not a pre-fetched
+      // snapshot check — so a concurrent complete-download that has already (or
+      // is concurrently) resolved this drop to "delivered"/"shredded" can never
+      // be clobbered back to "delivery_failed" by a download-failed call that
+      // started before it landed. Overwriting a "sealed" or "delivery_failed"
+      // row is fine either way (idempotent, and lets a client retry after a
+      // previously reported failure).
+      await prisma.drop.updateMany({
+        where: { id: dropId, linkId: link.id, fileEnvelopeStatus: { notIn: [...TERMINAL_FILE_ENVELOPE_STATUSES] } },
+        data: { fileEnvelopeStatus: "delivery_failed" },
+      });
+      return reply.send({ ok: true });
     }
   );
 
