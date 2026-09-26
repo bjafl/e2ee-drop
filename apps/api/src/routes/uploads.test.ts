@@ -407,7 +407,7 @@ describe("upload routes", () => {
     expect(await prisma.drop.count({ where: { link: { slug } } })).toBe(0);
   });
 
-  it("marks a drop as uploaded via the complete endpoint", async () => {
+  it("marks a drop as complete via the complete endpoint", async () => {
     const server = buildServer();
     const slug = await createLink(server);
     const uploadRes = await server.inject({
@@ -424,8 +424,27 @@ describe("upload routes", () => {
     expect(completeRes.statusCode).toBe(200);
 
     const drop = await prisma.drop.findUnique({ where: { id: dropId } });
-    // @ts-expect-error — rewritten in plan 2
-    expect(drop?.status).toBe("uploaded");
+    expect(drop?.fileUploadStatus).toBe("complete");
+  });
+
+  it("sets deliveryStatus to sent when complete succeeds", async () => {
+    const server = buildServer();
+    const slug = await createLink(server);
+    const uploadRes = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+      payload: uploadPayload(),
+    });
+    const { dropId } = uploadRes.json();
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/${dropId}/complete`,
+    });
+    expect(res.statusCode).toBe(200);
+
+    const status = await server.inject({ method: "GET", url: `/api/links/${slug}` });
+    expect(status.json().drop.deliveryStatus).toBe("sent");
   });
 
   async function createLinkWithUploadingDrop(server: ReturnType<typeof buildServer>) {
@@ -450,11 +469,10 @@ describe("upload routes", () => {
 
     expect(res.statusCode).toBe(404);
     const drop = await prisma.drop.findUnique({ where: { id: dropId } });
-    // @ts-expect-error — rewritten in plan 2
-    expect(drop?.status).toBe("uploading");
+    expect(drop?.fileUploadStatus).toBe("uploading");
   });
 
-  it("answers a repeat complete on an already-uploaded drop idempotently with 200", async () => {
+  it("answers a repeat complete on an already-complete drop idempotently with 200", async () => {
     const server = buildServer();
     const { slug, dropId } = await createLinkWithUploadingDrop(server);
     const first = await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/complete` });
@@ -476,23 +494,22 @@ describe("upload routes", () => {
 
     expect(res.statusCode).toBe(409);
     expect(objectHasSizeSpy).toHaveBeenCalledWith(s3Key, validMetadata.fileSize + 16);
-    // @ts-expect-error — rewritten in plan 2
-    expect((await prisma.drop.findUnique({ where: { id: dropId } }))?.status).toBe("uploading");
+    expect((await prisma.drop.findUnique({ where: { id: dropId } }))?.fileUploadStatus).toBe("uploading");
   });
 
-  it("does not regress a downloaded drop back to uploaded on a late complete call", async () => {
+  it("does not re-run a late complete call on an already-complete drop", async () => {
     const server = buildServer();
     const { slug, dropId } = await createLinkWithUploadingDrop(server);
-    // @ts-expect-error — rewritten in plan 2
-    await prisma.drop.update({ where: { id: dropId }, data: { status: "downloaded" } });
+    await prisma.drop.update({ where: { id: dropId }, data: { fileUploadStatus: "complete", deliveryStatus: "sent" } });
 
     const res = await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/complete` });
 
     // Idempotent success (the drop did complete, earlier), not a regression.
     expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ updated: false });
     const drop = await prisma.drop.findUnique({ where: { id: dropId } });
-    // @ts-expect-error — rewritten in plan 2
-    expect(drop?.status).toBe("downloaded");
+    expect(drop?.fileUploadStatus).toBe("complete");
+    expect(drop?.deliveryStatus).toBe("sent");
   });
 
   it("returns 404 when completing a drop on an expired link", async () => {
@@ -504,11 +521,10 @@ describe("upload routes", () => {
 
     expect(res.statusCode).toBe(404);
     const drop = await prisma.drop.findUnique({ where: { id: dropId } });
-    // @ts-expect-error — rewritten in plan 2
-    expect(drop?.status).toBe("uploading");
+    expect(drop?.fileUploadStatus).toBe("uploading");
   });
 
-  it("emits drop-created on upload-url and drop-updated(uploaded) on a successful complete only", async () => {
+  it("emits drop-created on upload-url and drop-updated(complete) on a successful complete only", async () => {
     const server = buildServer();
     const slug = await createLink(server);
     const link = (await prisma.link.findUnique({ where: { slug } }))!;
@@ -522,7 +538,7 @@ describe("upload routes", () => {
     });
     const { dropId } = uploadRes.json();
     await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/complete` });
-    // A second complete is an idempotent 200 (already "uploaded") and must not emit.
+    // A second complete is an idempotent 200 (already "complete") and must not emit.
     await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/complete` });
     // A rejected second upload on a one-time link must not emit either.
     await server.inject({
@@ -532,13 +548,10 @@ describe("upload routes", () => {
     });
     unsubscribe();
 
-    // @ts-expect-error — rewritten in plan 2
-    expect(events.map((e) => [e.type, e.drop.id, e.drop.status])).toEqual([
-      ["drop-created", dropId, "uploading"],
-      ["drop-updated", dropId, "uploaded"],
+    expect(events.map((e) => [e.type, e.drop.id, e.drop.fileUploadStatus, e.drop.deliveryStatus])).toEqual([
+      ["drop-created", dropId, "uploading", "sender_opened"],
+      ["drop-updated", dropId, "complete", "sent"],
     ]);
-    // @ts-expect-error — rewritten in plan 2
-    expect(events[0].drop.fileName).toBe(validMetadata.fileName);
   });
 
   it("rejects an anonymous sender on a contacts-only link", async () => {
@@ -660,8 +673,7 @@ describe("upload routes", () => {
     // link-scoped CAS rejects; the in-progress drop is untouched.
     const attack = await server.inject({ method: "POST", url: `/api/links/${link.slug}/drops/not-the-real-id/complete` });
     expect(attack.statusCode).toBe(404);
-    // @ts-expect-error — rewritten in plan 2
-    expect((await prisma.drop.findUnique({ where: { id: dropId } }))?.status).toBe("uploading");
+    expect((await prisma.drop.findUnique({ where: { id: dropId } }))?.fileUploadStatus).toBe("uploading");
 
     // The real sender's own complete still succeeds.
     const complete = await server.inject({
@@ -670,8 +682,7 @@ describe("upload routes", () => {
       cookies: friend.cookies,
     });
     expect(complete.statusCode).toBe(200);
-    // @ts-expect-error — rewritten in plan 2
-    expect((await prisma.drop.findUnique({ where: { id: dropId } }))?.status).toBe("uploaded");
+    expect((await prisma.drop.findUnique({ where: { id: dropId } }))?.fileUploadStatus).toBe("complete");
   });
 
   it("still allows an anonymous sender on a public permanent link", async () => {

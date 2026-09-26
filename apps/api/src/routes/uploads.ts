@@ -2,10 +2,8 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { nanoid } from "nanoid";
 import { prisma, Prisma, type Drop } from "@e2ee-drop/db";
-// @ts-expect-error — rewritten in plan 2
-import type { DropStatus, RequestUploadUrlRequest, RequestUploadUrlResponse } from "@e2ee-drop/shared";
-// @ts-expect-error — rewritten in plan 2
-import { getLinkBySlug, isLinkExpired, toDropSummary, transitionDropStatus } from "../lib/links";
+import type { RequestUploadUrlRequest, RequestUploadUrlResponse } from "@e2ee-drop/shared";
+import { getLinkBySlug, isLinkExpired, toDropSummary, transitionFileUploadStatus } from "../lib/links";
 import { getSignedUploadUrl, objectHasSize } from "../lib/storage";
 import { emitDropEvent } from "../lib/dropEvents";
 import { hasAcceptedContact } from "../lib/contacts";
@@ -25,12 +23,10 @@ import { env } from "../env";
 import { uploadUrlRateLimiter, rateLimitExceededBody } from "../lib/rateLimit";
 import { assertSenderIdentity, SenderIdentityMismatchError } from "../lib/senderIdentity";
 
-// Statuses a drop only reaches after a successful /complete. A repeated or
+// A drop only reaches "complete" after a successful /complete. A repeated or
 // late /complete on such a drop is answered idempotently (200), never re-run.
-const COMPLETED_STATUSES: readonly string[] = ["uploaded", "downloading", "downloaded"] satisfies DropStatus[];
-
-function isCompletedStatus(status: string): boolean {
-  return COMPLETED_STATUSES.includes(status);
+function isCompletedStatus(fileUploadStatus: string): boolean {
+  return fileUploadStatus === "complete";
 }
 
 // NACL_BOX_OVERHEAD_BYTES (lib/quota): the server knows the exact ciphertext byte
@@ -287,18 +283,16 @@ export function registerUploadRoutes(server: FastifyInstance): void {
       // Scoped by link: a drop id alone must never act on another link's drop.
       const drop = await prisma.drop.findFirst({
         where: { id: dropId, linkId: link.id },
-        // @ts-expect-error — rewritten in plan 2
-        select: { status: true, s3Key: true, fileSize: true },
+        select: { fileUploadStatus: true, s3Key: true, fileSize: true },
       });
       if (!drop) return reply.status(404).send({ error: "Drop not found" });
-      // Idempotent: a drop that is already complete (or further along) reports
-      // success again rather than 404. Otherwise a sender whose drop was
-      // completed first by someone else — a bystander holding an anonymous
-      // link's slug, or just its own retried request — sees "upload failed"
-      // with no way forward, even though its bytes landed. Nothing is written
-      // here, so an owned link's quota is not charged a second time.
-      // @ts-expect-error — rewritten in plan 2
-      if (isCompletedStatus(drop.status)) return reply.send({ updated: false });
+      // Idempotent: a drop that is already complete reports success again
+      // rather than 404. Otherwise a sender whose drop was completed first by
+      // someone else — a bystander holding an anonymous link's slug, or just
+      // its own retried request — sees "upload failed" with no way forward,
+      // even though its bytes landed. Nothing is written here, so an owned
+      // link's quota is not charged a second time.
+      if (isCompletedStatus(drop.fileUploadStatus)) return reply.send({ updated: false });
 
       // Verify, don't trust (spec §5.1): the caller's word that the upload
       // finished is not enough. Only an object actually in storage with
@@ -318,9 +312,9 @@ export function registerUploadRoutes(server: FastifyInstance): void {
         return reply.status(409).send({ error: "Upload not received yet; finish uploading the file, then try again" });
       }
 
-      // Compare-and-swap: only "uploading" -> "uploaded", and only for a drop that
-      // belongs to this link, so a late call can never regress an already-
-      // "downloaded" drop back to "uploaded".
+      // Compare-and-swap: only "uploading" -> "complete", and only for a drop
+      // that belongs to this link, so a late call can never regress an
+      // already-complete drop.
       const ownerId = link.ownerId;
       let updated: boolean;
       if (ownerId === null) {
@@ -332,7 +326,10 @@ export function registerUploadRoutes(server: FastifyInstance): void {
         // and the idempotent early return means the real sender's own call
         // still succeeds afterwards. Slot-taking and DELETE by a slug holder
         // remain accepted trade-offs (spec §5.1).
-        updated = await transitionDropStatus(dropId, link.id, ["uploading"], "uploaded");
+        updated = await transitionFileUploadStatus(dropId, link.id, ["uploading"], "complete");
+        if (updated) {
+          await prisma.drop.update({ where: { id: dropId }, data: { deliveryStatus: "sent" } });
+        }
       } else {
         // Owned link: the CAS and the owner's quota charge commit together, and
         // the charge happens only if this call won the CAS — so a drop is charged
@@ -357,13 +354,11 @@ export function registerUploadRoutes(server: FastifyInstance): void {
             where: {
               id: dropId,
               linkId: link.id,
-              // @ts-expect-error — rewritten in plan 2
-              status: "uploading",
+              fileUploadStatus: "uploading",
               createdAt: { gt: reservationCutoff() },
             },
             // No longer a reservation, so the sender tag has no further use.
-            // @ts-expect-error — rewritten in plan 2
-            data: { status: "uploaded", reservationSenderKey: null },
+            data: { fileUploadStatus: "complete", deliveryStatus: "sent", reservationSenderKey: null },
           });
           if (count !== 1) return "lost" as const;
           await tx.user.update({
@@ -378,13 +373,14 @@ export function registerUploadRoutes(server: FastifyInstance): void {
 
       if (!updated) {
         // Lost the CAS. Re-read only to choose the response; nothing is written.
-        // @ts-expect-error — rewritten in plan 2
-        const current = await prisma.drop.findFirst({ where: { id: dropId, linkId: link.id }, select: { status: true } });
+        const current = await prisma.drop.findFirst({
+          where: { id: dropId, linkId: link.id },
+          select: { fileUploadStatus: true },
+        });
         if (!current) return reply.status(404).send({ error: "Drop not found" });
         // A concurrent /complete for the same drop won: same idempotent success
         // as the early return above, and it did the one and only charge.
-        // @ts-expect-error — rewritten in plan 2
-        if (isCompletedStatus(current.status)) return reply.send({ updated: false });
+        if (isCompletedStatus(current.fileUploadStatus)) return reply.send({ updated: false });
         // Still "uploading", so (owned links only) the age condition failed.
         // 410 rather than 404: the drop exists, but the upload window it was
         // granted has closed for good; the sender must start a new upload.
@@ -394,8 +390,10 @@ export function registerUploadRoutes(server: FastifyInstance): void {
       // (as "uploading") before this request fetched `link`, so it's in the snapshot.
       const snapshot = link.drops.find((candidate) => candidate.id === dropId);
       if (snapshot) {
-        // @ts-expect-error — rewritten in plan 2
-        emitDropEvent(link.id, { type: "drop-updated", drop: toDropSummary({ ...snapshot, status: "uploaded" }) });
+        emitDropEvent(link.id, {
+          type: "drop-updated",
+          drop: toDropSummary({ ...snapshot, fileUploadStatus: "complete", deliveryStatus: "sent" }, link),
+        });
       }
       return reply.send({ updated: true });
     }
