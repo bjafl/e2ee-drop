@@ -524,6 +524,71 @@ describe("upload routes", () => {
     expect(drop?.fileUploadStatus).toBe("uploading");
   });
 
+  it("abandon deletes a still-uploading drop and frees a one-time link's slot", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithUploadingDrop(server);
+
+    const abandon = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/${dropId}/abandon`,
+    });
+    expect(abandon.statusCode).toBe(200);
+    expect(abandon.json()).toEqual({ abandoned: true });
+    expect(await prisma.drop.findUnique({ where: { id: dropId } })).toBeNull();
+
+    // A fresh upload-url call must now succeed again (the slot was freed).
+    const retry = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+      payload: uploadPayload(),
+    });
+    expect(retry.statusCode).toBe(200);
+  });
+
+  it("abandon does nothing to an already-complete drop", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithUploadingDrop(server);
+    const complete = await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/complete` });
+    expect(complete.statusCode).toBe(200);
+
+    const res = await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/abandon` });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ abandoned: false });
+    const drop = await prisma.drop.findUnique({ where: { id: dropId } });
+    expect(drop?.fileUploadStatus).toBe("complete");
+  });
+
+  it("does nothing when abandoning via a link the drop does not belong to (scoped CAS, not a lookup)", async () => {
+    const server = buildServer();
+    const { dropId } = await createLinkWithUploadingDrop(server);
+    const otherSlug = await createLink(server);
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${otherSlug}/drops/${dropId}/abandon`,
+    });
+
+    // The other link exists and is valid, so this is a harmless no-op (200, abandoned:false),
+    // not a 404 — same reasoning as an unknown dropId (see the deleteMany's linkId scoping).
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ abandoned: false });
+    const drop = await prisma.drop.findUnique({ where: { id: dropId } });
+    expect(drop?.fileUploadStatus).toBe("uploading");
+  });
+
+  it("returns 404 when abandoning a drop on an expired link", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithUploadingDrop(server);
+    await prisma.link.updateMany({ where: { slug }, data: { expiresAt: new Date(Date.now() - 1000) } });
+
+    const res = await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/abandon` });
+
+    expect(res.statusCode).toBe(404);
+    const drop = await prisma.drop.findUnique({ where: { id: dropId } });
+    expect(drop?.fileUploadStatus).toBe("uploading");
+  });
+
   it("emits drop-created on upload-url and drop-updated(complete) on a successful complete only", async () => {
     const server = buildServer();
     const slug = await createLink(server);

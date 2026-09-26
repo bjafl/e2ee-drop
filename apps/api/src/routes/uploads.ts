@@ -398,4 +398,24 @@ export function registerUploadRoutes(server: FastifyInstance): void {
       return reply.send({ updated: true });
     }
   );
+
+  // Design spec §5.1: a sender whose upload PUT fails or is abandoned gets a clean slate, not a
+  // resumed attempt — this deletes the reservation outright (message envelope included) rather
+  // than leaving a stale "uploading" row that would block a one-time link's single-drop slot
+  // until the passive sweep (Task 8) eventually catches it, up to an hour later.
+  server.post<{ Params: { slug: string; dropId: string } }>(
+    "/api/links/:slug/drops/:dropId/abandon",
+    async (request, reply) => {
+      const link = await getLinkBySlug(request.params.slug);
+      if (!link || isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+      const { dropId } = request.params;
+      // Same CAS discipline as everywhere else: only a drop still "uploading" for THIS link is
+      // eligible, so a late abandon call on an already-completed drop is a harmless no-op, never
+      // a race that deletes real, delivered content.
+      const { count } = await prisma.drop.deleteMany({
+        where: { id: dropId, linkId: link.id, fileUploadStatus: "uploading" },
+      });
+      return reply.send({ abandoned: count === 1 });
+    }
+  );
 }
