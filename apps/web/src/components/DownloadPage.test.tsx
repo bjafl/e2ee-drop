@@ -96,7 +96,7 @@ const UPLOADED_RESPONSE = {
     fileName: "report.pdf",
     message: "here's the file",
   },
-  codewords: ["fox", "river", "lamp"],
+  codewords: ["fox", "river", "lamp", "otter"],
 };
 
 const DOWNLOAD_URL_RESPONSE = {
@@ -172,11 +172,11 @@ describe("DownloadPage", () => {
     );
   });
 
-  it("shows the verification codewords", async () => {
+  it("shows every verification codeword the server returned, not just the first few", async () => {
     renderAt("abc123");
 
     await waitFor(() => {
-      expect(screen.getByText(/fox.*river.*lamp/i)).toBeInTheDocument();
+      expect(screen.getByText(/fox.*river.*lamp.*otter/i)).toBeInTheDocument();
     });
   });
 

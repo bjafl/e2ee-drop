@@ -392,7 +392,7 @@ function DownloadPageForLink() {
         {codewords.length > 0 && (
           <div>
             <p className="text-sm text-muted-foreground">{t("codewordsLabel")}</p>
-            <p className="font-mono text-lg">{codewords.slice(0, 3).join(" · ")}</p>
+            <p className="font-mono text-lg">{codewords.join(" · ")}</p>
           </div>
         )}
         {failureAlert}

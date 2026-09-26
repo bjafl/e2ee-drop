@@ -133,7 +133,7 @@ export function UploadPage() {
         </div>
         <div>
           <p className="text-sm text-muted-foreground">{t("codewordsLabel")}</p>
-          <p className="font-mono text-lg">{link.codewords.slice(0, 3).join(" · ")}</p>
+          <p className="font-mono text-lg">{link.codewords.join(" · ")}</p>
         </div>
         <div>
           <textarea

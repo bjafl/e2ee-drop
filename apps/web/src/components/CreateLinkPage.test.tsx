@@ -22,7 +22,7 @@ describe("CreateLinkPage", () => {
         json: async () => ({
           linkId: "link1",
           slug: "abc123",
-          codewords: ["fox", "river", "lamp"],
+          codewords: ["fox", "river", "lamp", "otter"],
           expiresAt: SERVER_EXPIRES_AT,
         }),
       })
@@ -37,11 +37,11 @@ describe("CreateLinkPage", () => {
     });
   });
 
-  it("shows the verification codewords", async () => {
+  it("shows every verification codeword the server returned, not just the first few", async () => {
     render(<CreateLinkPage />);
 
     await waitFor(() => {
-      expect(screen.getByText(/fox.*river.*lamp/i)).toBeInTheDocument();
+      expect(screen.getByText(/fox.*river.*lamp.*otter/i)).toBeInTheDocument();
     });
   });
 

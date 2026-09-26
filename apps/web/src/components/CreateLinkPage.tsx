@@ -15,14 +15,11 @@ import createLinkNb from "@/locales/nb/createLink.json";
 i18n.addResourceBundle("en", "createLink", createLinkEn, true, false);
 i18n.addResourceBundle("nb", "createLink", createLinkNb, true, false);
 
-const CODEWORD_DEFAULT_COUNT = 3;
-
 export function CreateLinkPage() {
   const { t, i18n: i18next } = useTranslation("createLink");
   const { saveLink } = useLocalLinks();
   const [slug, setSlug] = useState<string | null>(null);
   const [codewords, setCodewords] = useState<string[]>([]);
-  const [showAllCodewords, setShowAllCodewords] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -63,7 +60,6 @@ export function CreateLinkPage() {
   }, [slug, saveLink, t, i18next]);
 
   const link = slug ? `${window.location.origin}/send/${slug}` : null;
-  const visibleCodewords = showAllCodewords ? codewords : codewords.slice(0, CODEWORD_DEFAULT_COUNT);
 
   const copyLink = async () => {
     if (!link) return;
@@ -84,16 +80,7 @@ export function CreateLinkPage() {
             <Button onClick={copyLink}>{copied ? t("copied") : t("copyLink")}</Button>
             <div>
               <p className="text-sm text-muted-foreground">{t("codewordsLabel")}</p>
-              <p className="font-mono text-lg">{visibleCodewords.join(" · ")}</p>
-              {codewords.length > CODEWORD_DEFAULT_COUNT && (
-                <button
-                  type="button"
-                  className="text-xs underline"
-                  onClick={() => setShowAllCodewords((v) => !v)}
-                >
-                  {showAllCodewords ? t("showFewerWords") : t("showMoreWords")}
-                </button>
-              )}
+              <p className="font-mono text-lg">{codewords.join(" · ")}</p>
             </div>
             <div className="space-y-2 border-t pt-4">
               <p className="text-sm text-muted-foreground">{t("downloadPageHint")}</p>

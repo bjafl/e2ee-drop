@@ -16,7 +16,7 @@ import {
   toLinkStatusResponse,
 } from "../lib/links";
 import { deleteObject } from "../lib/storage";
-import { resolveLocale, deriveCodewords, CODEWORD_MAX_COUNT } from "../lib/codewords";
+import { resolveLocale, deriveCodewords } from "../lib/codewords";
 import { env } from "../env";
 
 export function registerLinkRoutes(server: FastifyInstance): void {
@@ -45,7 +45,12 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       const body: CreateLinkResponse = {
         linkId: link.id,
         slug: link.slug,
-        codewords: deriveCodewords(link.recipientPublicKey, resolveLocale(link.codewordLocale), CODEWORD_MAX_COUNT),
+        codewords: deriveCodewords(
+          link.recipientPublicKey,
+          link.id,
+          resolveLocale(link.codewordLocale),
+          env.CODEWORD_WORD_COUNT
+        ),
         expiresAt: link.expiresAt.getTime(),
       };
       return reply.send(body);
@@ -140,7 +145,12 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       const body: CreateLinkResponse = {
         linkId: link.id,
         slug: link.slug,
-        codewords: deriveCodewords(link.recipientPublicKey, resolveLocale(link.codewordLocale), CODEWORD_MAX_COUNT),
+        codewords: deriveCodewords(
+          link.recipientPublicKey,
+          link.id,
+          resolveLocale(link.codewordLocale),
+          env.CODEWORD_WORD_COUNT
+        ),
         // Only one-time custom links have a real expiry; a permanent one's
         // expiresAt is null forever, so it's omitted rather than reported as
         // a fake epoch-0 "already expired" timestamp.

@@ -3,7 +3,7 @@ import { customAlphabet } from "nanoid";
 import { prisma, Prisma, type Link, type Drop } from "@e2ee-drop/db";
 import type { DropStatus, DropSummary, LinkStatusResponse } from "@e2ee-drop/shared";
 import { env } from "../env";
-import { resolveLocale, deriveCodewords, CODEWORD_MAX_COUNT } from "./codewords";
+import { resolveLocale, deriveCodewords } from "./codewords";
 
 const nanoid = customAlphabet("123456789abcdefghijkmnopqrstuvwxyz", 16);
 
@@ -129,8 +129,9 @@ export async function toLinkStatusResponse(
     isAnonymous: link.ownerId === null,
     codewords: deriveCodewords(
       link.recipientPublicKey,
+      link.id,
       resolveLocale(link.codewordLocale),
-      CODEWORD_MAX_COUNT
+      env.CODEWORD_WORD_COUNT
     ),
   };
   if (!link.ownerId) return base;

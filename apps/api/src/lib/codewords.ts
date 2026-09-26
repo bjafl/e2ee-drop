@@ -2,9 +2,6 @@
 import { createHash } from "node:crypto";
 import { WORDLISTS, DEFAULT_LOCALE, type CodewordLocale } from "./wordlists";
 
-export const CODEWORD_DEFAULT_COUNT = 3;
-export const CODEWORD_MAX_COUNT = 5;
-
 export function resolveLocale(locale: string | undefined): CodewordLocale {
   return locale === "en" || locale === "nb" ? locale : DEFAULT_LOCALE;
 }
@@ -19,13 +16,27 @@ export function resolveLocale(locale: string | undefined): CodewordLocale {
 // have CreateLinkPage (from its own freshly generated key), UploadPage (from the
 // recipientPublicKey it actually encrypts to) and DownloadPage derive the words
 // client-side instead of trusting the `codewords` field in API responses.
+//
+// `linkId` is folded into the hash alongside the public key so that two links
+// belonging to the same owner — who therefore share the same recipientPublicKey
+// (see createDefaultLinkForUser / POST /api/links/custom) — get different
+// codewords. Without it, every link a given user owns would display the exact
+// same phrase forever, since the hash input would never change. `count` comes
+// from env.CODEWORD_WORD_COUNT (see env.ts): this app accepts a small,
+// deliberately-chosen probability of two unrelated, simultaneously active
+// links coincidentally sharing a phrase (a UX nuisance, not a security
+// break — an attacker or typo hitting one SPECIFIC target link's phrase is a
+// separate, much smaller 1-in-256^count odds, independent of how many other
+// links exist) rather than enforcing global uniqueness with a DB constraint
+// and a retry-on-collision loop.
 export function deriveCodewords(
   publicKeyBase64: string,
+  linkId: string,
   locale: CodewordLocale,
-  count: number = CODEWORD_MAX_COUNT
+  count: number
 ): string[] {
   const wordlist = WORDLISTS[locale];
-  const keyBytes = Buffer.from(publicKeyBase64, "base64");
+  const keyBytes = Buffer.concat([Buffer.from(publicKeyBase64, "base64"), Buffer.from(linkId, "utf8")]);
   const hash = createHash("sha256").update(keyBytes).digest();
   const words: string[] = [];
   for (let i = 0; i < count; i++) {
