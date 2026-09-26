@@ -570,9 +570,14 @@ describe("link routes", () => {
       expect(body).not.toContain("LEAKED-MESSAGE-MARKER");
     }
 
-    it("returns drop: null to an anonymous stranger on a contacts-only owned link with an in-progress drop", async () => {
+    // Now that GET /:slug enforces contacts-only visibility (this plan's Task 4),
+    // an anonymous stranger gets a plain 404 for a contacts-only link rather than
+    // a 200 with drop: null — but the no-leak property must still hold on that
+    // 404 body.
+    it("404s a contacts-only owned link with an in-progress drop for an anonymous stranger, leaking nothing", async () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "leakvictim");
+      await prisma.user.update({ where: { username: "leakvictim" }, data: { emailVerified: true } });
       const { link, drop } = await createOwnedLinkWithDrop(
         owner.userId,
         "leak-contacts",
@@ -583,14 +588,14 @@ describe("link routes", () => {
 
       const response = await server.inject({ method: "GET", url: `/api/links/${link.slug}` });
 
-      expect(response.statusCode).toBe(200);
-      expect(response.json().drop).toBeNull();
+      expect(response.statusCode).toBe(404);
       expectNoLeak(response.body, drop);
     });
 
     it("returns drop: null on a public owned link with an uploaded drop, including to a logged-in non-owner", async () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "leakvictim2");
+      await prisma.user.update({ where: { username: "leakvictim2" }, data: { emailVerified: true } });
       const stranger = await registerAndGetCookie(server, "leakstranger");
       const { link, drop } = await createOwnedLinkWithDrop(
         owner.userId,
@@ -612,6 +617,7 @@ describe("link routes", () => {
     it("returns drop: null on a user's default link (slug = username)", async () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "leakvictim3");
+      await prisma.user.update({ where: { username: "leakvictim3" }, data: { emailVerified: true } });
       const link = await prisma.link.findFirstOrThrow({ where: { ownerId: owner.userId, isDefault: true } });
       const drop = await prisma.drop.create({
         data: {
@@ -639,6 +645,7 @@ describe("link routes", () => {
     it("returns drop: null on an owned link with no drops (unchanged)", async () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "leakvictim4");
+      await prisma.user.update({ where: { username: "leakvictim4" }, data: { emailVerified: true } });
       const link = await prisma.link.create({
         data: {
           ownerId: owner.userId,
@@ -751,6 +758,7 @@ describe("link routes", () => {
     it("advances deliveryStatus for a non-owner on a claimed sender-initiated link", async () => {
       const server = buildServer();
       const initiator = await registerAndGetCookie(server, "markopenedinitiator");
+      await prisma.user.update({ where: { username: "markopenedinitiator" }, data: { emailVerified: true } });
       const requestRes = await server.inject({
         method: "POST",
         url: "/api/links/request",
@@ -809,6 +817,7 @@ describe("link routes", () => {
     it("creates an unclaimed link owned by the authenticated user", async () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "requester");
+      await prisma.user.update({ where: { username: "requester" }, data: { emailVerified: true } });
 
       const res = await server.inject({
         method: "POST",
@@ -857,6 +866,7 @@ describe("link routes", () => {
     it("claims an unclaimed link", async () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "claimowner1");
+      await prisma.user.update({ where: { username: "claimowner1" }, data: { emailVerified: true } });
       const requestRes = await server.inject({
         method: "POST",
         url: "/api/links/request",
@@ -1007,6 +1017,7 @@ describe("link routes", () => {
   describe("finding C1: sender-initiated flow is reachable end-to-end via GET /api/links/:slug", () => {
     async function requestAndClaim(server: ReturnType<typeof buildServer>, username: string) {
       const initiator = await registerAndGetCookie(server, username);
+      await prisma.user.update({ where: { username }, data: { emailVerified: true } });
       const requestRes = await server.inject({
         method: "POST",
         url: "/api/links/request",
@@ -1098,6 +1109,67 @@ describe("link routes", () => {
       const { cookies } = await registerAndGetCookie(server, "someuser");
       const revoke = await server.inject({ method: "POST", url: `/api/links/${slug}/revoke`, cookies });
       expect(revoke.statusCode).toBe(403);
+    });
+  });
+
+  describe("GET /api/links/:slug enforces contacts-only visibility and link inactivity", () => {
+    it("404s a contacts-only link for an anonymous requester", async () => {
+      const server = buildServer();
+      const { cookies } = await registerAndGetCookie(server, "co-owner");
+      await prisma.user.update({ where: { username: "co-owner" }, data: { emailVerified: true } });
+      await server.inject({
+        method: "POST",
+        url: "/api/links/custom",
+        cookies,
+        payload: { slug: "co-link", mode: "permanent", visibility: "contacts-only" },
+      });
+
+      const anonView = await server.inject({ method: "GET", url: "/api/links/co-link" });
+      expect(anonView.statusCode).toBe(404);
+    });
+
+    it("shows a contacts-only link to an accepted contact", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "co-owner2");
+      await prisma.user.update({ where: { username: "co-owner2" }, data: { emailVerified: true } });
+      await server.inject({
+        method: "POST",
+        url: "/api/links/custom",
+        cookies: owner.cookies,
+        payload: { slug: "co-link2", mode: "permanent", visibility: "contacts-only" },
+      });
+
+      const friend = await registerAndGetCookie(server, "co-friend");
+      const req = await server.inject({
+        method: "POST",
+        url: "/api/contacts",
+        cookies: friend.cookies,
+        payload: { username: "co-owner2" },
+      });
+      await server.inject({ method: "POST", url: `/api/contacts/${req.json().id}/accept`, cookies: owner.cookies });
+
+      const friendView = await server.inject({
+        method: "GET",
+        url: "/api/links/co-link2",
+        cookies: friend.cookies,
+      });
+      expect(friendView.statusCode).toBe(200);
+    });
+
+    it("404s a revoked link on GET", async () => {
+      const server = buildServer();
+      const { cookies } = await registerAndGetCookie(server, "revoke-view");
+      await prisma.user.update({ where: { username: "revoke-view" }, data: { emailVerified: true } });
+      await server.inject({
+        method: "POST",
+        url: "/api/links/custom",
+        cookies,
+        payload: { slug: "revoke-view-link", mode: "permanent" },
+      });
+      await server.inject({ method: "POST", url: "/api/links/revoke-view-link/revoke", cookies });
+
+      const view = await server.inject({ method: "GET", url: "/api/links/revoke-view-link" });
+      expect(view.statusCode).toBe(404);
     });
   });
 });
