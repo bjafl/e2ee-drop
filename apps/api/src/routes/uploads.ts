@@ -23,8 +23,7 @@ import {
 import { reservationSenderKey } from "../lib/senderKey";
 import { env } from "../env";
 import { uploadUrlRateLimiter, rateLimitExceededBody } from "../lib/rateLimit";
-
-const MAX_MESSAGE_LENGTH = 500;
+import { assertSenderIdentity, SenderIdentityMismatchError } from "../lib/senderIdentity";
 
 // Statuses a drop only reaches after a successful /complete. A repeated or
 // late /complete on such a drop is answered idempotently (200), never re-run.
@@ -53,13 +52,6 @@ class DropAlreadyExistsError extends Error {}
 // owner (account deletion in progress). The link is on its way out too.
 class OwnerGoneError extends Error {}
 
-function sanitizeMessage(message: string | undefined): string | null {
-  if (!message) return null;
-  // eslint-disable-next-line no-control-regex
-  const stripped = message.replace(/[\x00-\x1F\x7F]/g, "");
-  return stripped.slice(0, MAX_MESSAGE_LENGTH) || null;
-}
-
 // Keyed by the sender's IP, never the link/owner (see uploadUrlRateLimiter in
 // lib/rateLimit.ts). Applied to every upload-url call rather than only the
 // owned-link (quota-reserving) branch: it runs before the link lookup, so a
@@ -81,14 +73,15 @@ export function registerUploadRoutes(server: FastifyInstance): void {
           type: "object",
           properties: {
             senderPublicKey: { type: "string" },
-            message: { type: ["string", "null"] },
+            archiveNonce: { type: "string" },
+            encryptedMessage: { type: ["string", "null"] },
+            messageNonce: { type: ["string", "null"] },
+            encryptedMetadata: { type: "string" },
+            metadataNonce: { type: "string" },
             metadata: {
               type: "object",
               properties: {
-                fileName: { type: "string" },
                 fileSize: { type: "integer" },
-                nonce: { type: "string" },
-                mimeType: { type: "string" },
                 contentMD5: { type: "string" },
               },
             },
@@ -121,11 +114,20 @@ export function registerUploadRoutes(server: FastifyInstance): void {
       if (!request.body) {
         return reply.status(400).send({ error: "Missing metadata" });
       }
-      // @ts-expect-error — rewritten in plan 2
-      const { senderPublicKey, message, metadata } = request.body;
-      // @ts-expect-error — rewritten in plan 2
-      if (!senderPublicKey || !metadata?.fileName || !metadata?.nonce || !metadata?.mimeType || !metadata?.contentMD5 || !metadata?.fileSize) {
+      const { senderPublicKey, archiveNonce, encryptedMessage, messageNonce, encryptedMetadata, metadataNonce, metadata } =
+        request.body;
+      if (
+        !senderPublicKey ||
+        !archiveNonce ||
+        !encryptedMetadata ||
+        !metadataNonce ||
+        !metadata?.contentMD5 ||
+        !metadata?.fileSize
+      ) {
         return reply.status(400).send({ error: "Missing metadata" });
+      }
+      if ((encryptedMessage && !messageNonce) || (!encryptedMessage && messageNonce)) {
+        return reply.status(400).send({ error: "encryptedMessage and messageNonce must be provided together" });
       }
       // fileSize determines the signed Content-Length of the upload, so it must be a
       // real byte count — not a string ("10" + 16 would be "1016"), fraction or
@@ -136,6 +138,22 @@ export function registerUploadRoutes(server: FastifyInstance): void {
       if (metadata.fileSize > env.MAX_FILE_SIZE_BYTES) {
         return reply.status(413).send({ error: `File too large (max ${env.MAX_FILE_SIZE_BYTES} bytes)` });
       }
+      // Design spec §3.2: an authenticated sender's claimed senderPublicKey must match their
+      // account's own public key, or the inbox (spec §5) could display a different account's
+      // name than the one that actually produced the ciphertext (see lib/senderIdentity.ts).
+      // request.user only carries `id` (apps/api/src/plugins/auth.ts), so the account's
+      // publicKey is fetched fresh here rather than trusted from the session.
+      const senderAccount = request.user
+        ? await prisma.user.findUnique({ where: { id: request.user.id }, select: { publicKey: true } })
+        : null;
+      try {
+        assertSenderIdentity(senderAccount, senderPublicKey);
+      } catch (err) {
+        if (err instanceof SenderIdentityMismatchError) {
+          return reply.status(400).send({ error: err.message });
+        }
+        throw err;
+      }
 
       const dropId = nanoid();
       const s3Key = `${link.id}/${dropId}`;
@@ -144,17 +162,16 @@ export function registerUploadRoutes(server: FastifyInstance): void {
         id: dropId,
         linkId: link.id,
         senderPublicKey,
+        senderUserId: request.user?.id,
         s3Key,
-        // @ts-expect-error — rewritten in plan 2
-        nonce: metadata.nonce,
-        // @ts-expect-error — rewritten in plan 2
-        fileName: metadata.fileName,
+        archiveNonce,
+        encryptedMessage: encryptedMessage ?? undefined,
+        messageNonce: messageNonce ?? undefined,
+        encryptedMetadata,
+        metadataNonce,
         fileSize: metadata.fileSize,
-        // @ts-expect-error — rewritten in plan 2
-        mimeType: metadata.mimeType,
         contentMD5: metadata.contentMD5,
-        message: sanitizeMessage(message),
-        status: "uploading",
+        fileUploadStatus: "uploading",
       };
 
       let created: Drop;
@@ -252,8 +269,7 @@ export function registerUploadRoutes(server: FastifyInstance): void {
       // Emitted only after the drop row has committed (for one-time links, after
       // the Serializable transaction), so subscribers never hear about a drop
       // that a lost race rolled back.
-      // @ts-expect-error — rewritten in plan 2
-      emitDropEvent(link.id, { type: "drop-created", drop: toDropSummary(created) });
+      emitDropEvent(link.id, { type: "drop-created", drop: toDropSummary(created, link) });
 
       const uploadUrl = await getSignedUploadUrl(s3Key, metadata.fileSize + NACL_BOX_OVERHEAD_BYTES);
       const body: RequestUploadUrlResponse = { dropId, uploadUrl };

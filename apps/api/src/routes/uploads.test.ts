@@ -48,12 +48,22 @@ async function registerAndGetCookie(server: ReturnType<typeof buildServer>, user
 }
 
 const validMetadata = {
-  fileName: "report.pdf",
   fileSize: 1024,
-  nonce: "bm9uY2U=",
-  mimeType: "application/pdf",
   contentMD5: "bWQ1",
 };
+
+// Body for POST /api/links/:slug/upload-url (RequestUploadUrlRequest, three-envelope shape —
+// see packages/shared/src/api.ts). A test overrides only the field(s) it cares about.
+function uploadPayload(overrides: Record<string, unknown> = {}) {
+  return {
+    senderPublicKey: "c2VuZGVy",
+    archiveNonce: "YXJjaGl2ZS1ub25jZQ==",
+    encryptedMetadata: "ZW5jcnlwdGVkLW1ldGFkYXRh",
+    metadataNonce: "bWV0YWRhdGEtbm9uY2U=",
+    metadata: validMetadata,
+    ...overrides,
+  };
+}
 
 async function createLink(server: ReturnType<typeof buildServer>) {
   const res = await server.inject({
@@ -84,7 +94,7 @@ describe("upload routes", () => {
     const response = await server.inject({
       method: "POST",
       url: `/api/links/${slug}/upload-url`,
-      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+      payload: uploadPayload(),
     });
 
     expect(response.statusCode).toBe(200);
@@ -100,7 +110,7 @@ describe("upload routes", () => {
     const response = await server.inject({
       method: "POST",
       url: `/api/links/${slug}/upload-url`,
-      payload: { senderPublicKey: 12345, metadata: validMetadata },
+      payload: uploadPayload({ senderPublicKey: 12345 }),
     });
 
     expect(response.statusCode).toBe(400);
@@ -115,7 +125,7 @@ describe("upload routes", () => {
     const response = await server.inject({
       method: "POST",
       url: `/api/links/${slug}/upload-url`,
-      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+      payload: uploadPayload(),
     });
 
     expect(response.statusCode).toBe(200);
@@ -134,7 +144,7 @@ describe("upload routes", () => {
     const response = await server.inject({
       method: "POST",
       url: `/api/links/${slug}/upload-url`,
-      payload: { senderPublicKey: "c2VuZGVy", metadata: { ...validMetadata, fileSize } },
+      payload: uploadPayload({ metadata: { ...validMetadata, fileSize } }),
     });
 
     expect(response.statusCode).toBe(400);
@@ -148,10 +158,7 @@ describe("upload routes", () => {
     const response = await server.inject({
       method: "POST",
       url: `/api/links/${slug}/upload-url`,
-      payload: {
-        senderPublicKey: "c2VuZGVy",
-        metadata: { ...validMetadata, fileSize: 999_999_999_999 },
-      },
+      payload: uploadPayload({ metadata: { ...validMetadata, fileSize: 999_999_999_999 } }),
     });
 
     expect(response.statusCode).toBe(413);
@@ -164,14 +171,14 @@ describe("upload routes", () => {
     const first = await server.inject({
       method: "POST",
       url: `/api/links/${slug}/upload-url`,
-      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+      payload: uploadPayload(),
     });
     expect(first.statusCode).toBe(200);
 
     const second = await server.inject({
       method: "POST",
       url: `/api/links/${slug}/upload-url`,
-      payload: { senderPublicKey: "c2VuZGVyMg==", metadata: validMetadata },
+      payload: uploadPayload({ senderPublicKey: "c2VuZGVyMg==" }),
     });
     expect(second.statusCode).toBe(409);
 
@@ -188,14 +195,14 @@ describe("upload routes", () => {
     const first = await server.inject({
       method: "POST",
       url: `/api/links/${link.slug}/upload-url`,
-      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+      payload: uploadPayload(),
     });
     expect(first.statusCode).toBe(200);
 
     const second = await server.inject({
       method: "POST",
       url: `/api/links/${link.slug}/upload-url`,
-      payload: { senderPublicKey: "c2VuZGVyMg==", metadata: validMetadata },
+      payload: uploadPayload({ senderPublicKey: "c2VuZGVyMg==" }),
     });
     expect(second.statusCode).toBe(200);
 
@@ -210,14 +217,14 @@ describe("upload routes", () => {
     const first = await server.inject({
       method: "POST",
       url: `/api/links/${slug}/upload-url`,
-      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+      payload: uploadPayload(),
     });
     expect(first.statusCode).toBe(200);
 
     const second = await server.inject({
       method: "POST",
       url: `/api/links/${slug}/upload-url`,
-      payload: { senderPublicKey: "c2VuZGVyMg==", metadata: validMetadata },
+      payload: uploadPayload({ senderPublicKey: "c2VuZGVyMg==" }),
     });
     expect(second.statusCode).toBe(409);
   });
@@ -241,7 +248,7 @@ describe("upload routes", () => {
         fetch(`${baseUrl}/api/links/${slug}/upload-url`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ senderPublicKey: "c2VuZGVy", metadata: validMetadata }),
+          body: JSON.stringify(uploadPayload()),
         });
 
       // Fire many concurrent requests, not just two: with only two racers, one request's
@@ -282,7 +289,7 @@ describe("upload routes", () => {
         fetch(`${baseUrl}/api/links/${link.slug}/upload-url`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ senderPublicKey: "c2VuZGVy", metadata: validMetadata }),
+          body: JSON.stringify(uploadPayload()),
         });
 
       const CONCURRENT_REQUESTS = 12;
@@ -317,17 +324,17 @@ describe("upload routes", () => {
   it("rejects a present-but-incomplete body with 400 (missing required metadata field)", async () => {
     // Distinct from the empty-body case above: request.body is present here, so this
     // must fall through the `!request.body` guard and land on the actual field-by-field
-    // validation (`!senderPublicKey || !metadata?.fileName || ...`), not just prove the
-    // guard exists.
+    // validation (`!senderPublicKey || !archiveNonce || !metadata?.contentMD5 || ...`), not
+    // just prove the guard exists.
     const server = buildServer();
     const slug = await createLink(server);
 
-    const { nonce: _omittedNonce, ...metadataWithoutNonce } = validMetadata;
+    const { archiveNonce: _omittedArchiveNonce, ...payloadWithoutArchiveNonce } = uploadPayload();
 
     const response = await server.inject({
       method: "POST",
       url: `/api/links/${slug}/upload-url`,
-      payload: { senderPublicKey: "c2VuZGVy", metadata: metadataWithoutNonce },
+      payload: payloadWithoutArchiveNonce,
     });
 
     expect(response.statusCode).toBe(400);
@@ -351,7 +358,7 @@ describe("upload routes", () => {
     const response = await server.inject({
       method: "POST",
       url: `/api/links/${link.slug}/upload-url`,
-      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+      payload: uploadPayload(),
     });
 
     expect(response.statusCode).toBe(404);
@@ -360,23 +367,44 @@ describe("upload routes", () => {
     expect(await prisma.link.findUnique({ where: { id: link.id } })).not.toBeNull();
   });
 
-  it("truncates a message longer than 500 characters and strips control characters", async () => {
+  it("accepts an opaque encryptedMessage/messageNonce pair without inspecting it", async () => {
+    // The message is now opaque ciphertext (design spec §3.1/§5) — the server never reads or
+    // sanitizes it (replaces the old "truncates a message..." test, which exercised the
+    // removed sanitizeMessage()).
     const server = buildServer();
     const slug = await createLink(server);
-    const longMessage = "a".repeat(600) + "\x00\x1F";
 
     const response = await server.inject({
       method: "POST",
       url: `/api/links/${slug}/upload-url`,
-      payload: { senderPublicKey: "c2VuZGVy", message: longMessage, metadata: validMetadata },
+      payload: uploadPayload({ encryptedMessage: "ZW5jcnlwdGVkLW1lc3NhZ2U=", messageNonce: "bWVzc2FnZS1ub25jZQ==" }),
     });
 
     expect(response.statusCode).toBe(200);
     const drop = await prisma.drop.findFirst({ where: { link: { slug } } });
-    // @ts-expect-error — rewritten in plan 2
-    expect(drop?.message).toHaveLength(500);
-    // @ts-expect-error — rewritten in plan 2
-    expect(drop?.message).not.toMatch(/[\x00-\x1F\x7F]/);
+    expect(drop?.encryptedMessage).toBe("ZW5jcnlwdGVkLW1lc3NhZ2U=");
+    expect(drop?.messageNonce).toBe("bWVzc2FnZS1ub25jZQ==");
+  });
+
+  it("rejects encryptedMessage without messageNonce (and vice versa)", async () => {
+    const server = buildServer();
+    const slug = await createLink(server);
+
+    const missingNonce = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+      payload: uploadPayload({ encryptedMessage: "ZW5jcnlwdGVkLW1lc3NhZ2U=" }),
+    });
+    expect(missingNonce.statusCode).toBe(400);
+
+    const missingMessage = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+      payload: uploadPayload({ messageNonce: "bWVzc2FnZS1ub25jZQ==" }),
+    });
+    expect(missingMessage.statusCode).toBe(400);
+
+    expect(await prisma.drop.count({ where: { link: { slug } } })).toBe(0);
   });
 
   it("marks a drop as uploaded via the complete endpoint", async () => {
@@ -385,7 +413,7 @@ describe("upload routes", () => {
     const uploadRes = await server.inject({
       method: "POST",
       url: `/api/links/${slug}/upload-url`,
-      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+      payload: uploadPayload(),
     });
     const { dropId } = uploadRes.json();
 
@@ -405,7 +433,7 @@ describe("upload routes", () => {
     const uploadRes = await server.inject({
       method: "POST",
       url: `/api/links/${slug}/upload-url`,
-      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+      payload: uploadPayload(),
     });
     return { slug, dropId: uploadRes.json().dropId as string };
   }
@@ -490,7 +518,7 @@ describe("upload routes", () => {
     const uploadRes = await server.inject({
       method: "POST",
       url: `/api/links/${slug}/upload-url`,
-      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+      payload: uploadPayload(),
     });
     const { dropId } = uploadRes.json();
     await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/complete` });
@@ -500,7 +528,7 @@ describe("upload routes", () => {
     await server.inject({
       method: "POST",
       url: `/api/links/${slug}/upload-url`,
-      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+      payload: uploadPayload(),
     });
     unsubscribe();
 
@@ -526,7 +554,7 @@ describe("upload routes", () => {
     const response = await server.inject({
       method: "POST",
       url: `/api/links/${link.slug}/upload-url`,
-      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+      payload: uploadPayload(),
     });
 
     expect(response.statusCode).toBe(403);
@@ -546,7 +574,7 @@ describe("upload routes", () => {
     const response = await server.inject({
       method: "POST",
       url: `/api/links/${link.slug}/upload-url`,
-      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+      payload: uploadPayload(),
       cookies: stranger.cookies,
     });
 
@@ -570,7 +598,7 @@ describe("upload routes", () => {
     const response = await server.inject({
       method: "POST",
       url: `/api/links/${link.slug}/upload-url`,
-      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+      payload: uploadPayload(),
       cookies: pendingSender.cookies,
     });
 
@@ -592,7 +620,10 @@ describe("upload routes", () => {
     const response = await server.inject({
       method: "POST",
       url: `/api/links/${link.slug}/upload-url`,
-      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+      // senderPublicKey must match the authenticated account's own public key
+      // (assertSenderIdentity, lib/senderIdentity.ts) — see registerAndGetCookie's
+      // `${username}-pubkey` convention.
+      payload: uploadPayload({ senderPublicKey: "friend-pubkey" }),
       cookies: friend.cookies,
     });
 
@@ -614,7 +645,7 @@ describe("upload routes", () => {
     const upload = await server.inject({
       method: "POST",
       url: `/api/links/${link.slug}/upload-url`,
-      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+      payload: uploadPayload({ senderPublicKey: "hijackfriend-pubkey" }),
       cookies: friend.cookies,
     });
     expect(upload.statusCode).toBe(200);
@@ -653,7 +684,50 @@ describe("upload routes", () => {
     const response = await server.inject({
       method: "POST",
       url: `/api/links/${link.slug}/upload-url`,
-      payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+      payload: uploadPayload(),
+    });
+
+    expect(response.statusCode).toBe(200);
+  });
+
+  it("accepts a drop with no message envelope", async () => {
+    const server = buildServer();
+    const slug = await createLink(server);
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+      payload: uploadPayload(),
+    });
+
+    expect(response.statusCode).toBe(200);
+  });
+
+  it("rejects an authenticated upload whose senderPublicKey doesn't match the account", async () => {
+    const server = buildServer();
+    const sender = await registerAndGetCookie(server, "identitymismatch");
+    const slug = await createLink(server);
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+      cookies: sender.cookies,
+      payload: uploadPayload({ senderPublicKey: "not-the-users-key" }),
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("accepts an authenticated upload whose senderPublicKey matches the account", async () => {
+    const server = buildServer();
+    const sender = await registerAndGetCookie(server, "identitymatch");
+    const slug = await createLink(server);
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+      cookies: sender.cookies,
+      payload: uploadPayload({ senderPublicKey: "identitymatch-pubkey" }),
     });
 
     expect(response.statusCode).toBe(200);
@@ -671,7 +745,7 @@ describe("upload routes", () => {
           method: "POST",
           url: "/api/links/inbox/upload-url",
           remoteAddress: ip,
-          payload: { senderPublicKey: "c2VuZGVy", metadata: validMetadata },
+          payload: uploadPayload(),
         });
 
       // Legitimate traffic up to the limit is never rejected.

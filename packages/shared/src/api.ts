@@ -88,6 +88,7 @@ export interface LinkStatusResponse {
 // all three envelopes are now independently-nonced ciphertext (design spec §3.1/§5).
 export interface RequestUploadUrlRequest {
   senderPublicKey: string; // base64
+  archiveNonce: string; // base64 — the file archive's own nonce, generated client-side before the PUT
   encryptedMessage?: string; // base64 ciphertext, omitted iff no message
   messageNonce?: string; // base64, required iff encryptedMessage is present
   encryptedMetadata: string; // base64 ciphertext of { files: [{name, size}], mimeType } JSON
