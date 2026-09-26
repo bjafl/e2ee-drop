@@ -6,6 +6,7 @@ import type {
   CreateCustomLinkRequest,
   CreateRequestLinkRequest,
   CreateRequestLinkResponse,
+  ClaimLinkRequest,
   ListDropsResponse,
 } from "@e2ee-drop/shared";
 import { prisma, Prisma } from "@e2ee-drop/db";
@@ -209,6 +210,37 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       });
       const body: CreateRequestLinkResponse = { slug: link.slug };
       return reply.send(body);
+    }
+  );
+
+  // Design spec §4.2: no auth required (anonymous claim is allowed, generating a local keypair
+  // exactly like the existing anonymous CreateLinkPage flow — plan 3 builds that UI). The CAS is
+  // the whole safety property: two concurrent claims can never both win, and an already-claimed
+  // link (from either flow — recipient-initiated links always have a key from creation) cannot be
+  // re-claimed.
+  server.post<{ Params: { slug: string }; Body: ClaimLinkRequest }>(
+    "/api/links/:slug/claim",
+    {
+      schema: {
+        body: {
+          type: "object",
+          properties: { recipientPublicKey: { type: "string" } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { recipientPublicKey } = request.body ?? {};
+      if (!recipientPublicKey) return reply.status(400).send({ error: "Missing recipientPublicKey" });
+
+      const link = await getLinkBySlug(request.params.slug);
+      if (!link || isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+
+      const { count } = await prisma.link.updateMany({
+        where: { id: link.id, recipientPublicKey: null },
+        data: { recipientPublicKey },
+      });
+      if (count !== 1) return reply.status(409).send({ error: "This link has already been claimed" });
+      return reply.send({ claimed: true });
     }
   );
 

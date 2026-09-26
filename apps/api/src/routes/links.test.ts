@@ -771,4 +771,118 @@ describe("link routes", () => {
       expect(res.statusCode).toBe(400);
     });
   });
+
+  describe("POST /api/links/:slug/claim", () => {
+    it("claims an unclaimed link", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "claimowner1");
+      const requestRes = await server.inject({
+        method: "POST",
+        url: "/api/links/request",
+        payload: {},
+        cookies: owner.cookies,
+      });
+      const { slug } = requestRes.json();
+
+      const res = await server.inject({
+        method: "POST",
+        url: `/api/links/${slug}/claim`,
+        payload: { recipientPublicKey: "recipient-pk" },
+      });
+      expect(res.statusCode).toBe(200);
+      const status = await server.inject({ method: "GET", url: `/api/links/${slug}` });
+      expect(status.json().recipientPublicKey).toBe("recipient-pk");
+    });
+
+    it("rejects claiming an already-claimed link", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "claimowner2");
+      const requestRes = await server.inject({
+        method: "POST",
+        url: "/api/links/request",
+        payload: {},
+        cookies: owner.cookies,
+      });
+      const { slug } = requestRes.json();
+
+      await server.inject({
+        method: "POST",
+        url: `/api/links/${slug}/claim`,
+        payload: { recipientPublicKey: "first" },
+      });
+      const second = await server.inject({
+        method: "POST",
+        url: `/api/links/${slug}/claim`,
+        payload: { recipientPublicKey: "second" },
+      });
+      expect(second.statusCode).toBe(409);
+      const link = await prisma.link.findUniqueOrThrow({ where: { slug } });
+      expect(link.recipientPublicKey).toBe("first");
+    });
+
+    it("rejects claiming a link that already had a recipient key (recipient-initiated flow)", async () => {
+      const server = buildServer();
+      const createRes = await server.inject({
+        method: "POST",
+        url: "/api/links",
+        payload: { recipientPublicKey: "already-set" },
+      });
+      const { slug } = createRes.json();
+
+      const res = await server.inject({
+        method: "POST",
+        url: `/api/links/${slug}/claim`,
+        payload: { recipientPublicKey: "x" },
+      });
+      expect(res.statusCode).toBe(409);
+    });
+
+    it("rejects a claim with a missing recipientPublicKey", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "claimowner3");
+      const requestRes = await server.inject({
+        method: "POST",
+        url: "/api/links/request",
+        payload: {},
+        cookies: owner.cookies,
+      });
+      const { slug } = requestRes.json();
+
+      const res = await server.inject({ method: "POST", url: `/api/links/${slug}/claim`, payload: {} });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("returns 404 for an unknown slug", async () => {
+      const server = buildServer();
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/links/does-not-exist/claim",
+        payload: { recipientPublicKey: "x" },
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("resolves true concurrency to exactly one winner", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "claimowner4");
+      const requestRes = await server.inject({
+        method: "POST",
+        url: "/api/links/request",
+        payload: {},
+        cookies: owner.cookies,
+      });
+      const { slug } = requestRes.json();
+      const url = `/api/links/${slug}/claim`;
+
+      const [a, b] = await Promise.all([
+        server.inject({ method: "POST", url, payload: { recipientPublicKey: "racer-a" } }),
+        server.inject({ method: "POST", url, payload: { recipientPublicKey: "racer-b" } }),
+      ]);
+
+      const statusCodes = [a.statusCode, b.statusCode].sort();
+      expect(statusCodes).toEqual([200, 409]);
+      const link = await prisma.link.findUniqueOrThrow({ where: { slug } });
+      expect(["racer-a", "racer-b"]).toContain(link.recipientPublicKey);
+    });
+  });
 });
