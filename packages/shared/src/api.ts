@@ -1,20 +1,27 @@
 // packages/shared/src/api.ts
 export type LinkMode = "permanent" | "one-time";
 export type LinkVisibility = "public" | "contacts-only";
-export type DropStatus = "uploading" | "uploaded" | "downloading" | "downloaded";
+
+// Internal upload-transfer bookkeeping (was DropStatus's "uploading"/"uploaded" pair).
+export type FileUploadStatus = "uploading" | "complete";
+
+// Display-level status. Only "sender_opened" and "sent" are ever written directly by an
+// upload-side handler (plan 2); "receiver_opened", "partial_delivery" and "delivered" are
+// written by receive-side handlers (plan 2) — see the design spec §3.1/§6.
+export type DeliveryStatus = "sender_opened" | "sent" | "receiver_opened" | "partial_delivery" | "delivered";
+export type EnvelopeStatus = "sealed" | "delivery_failed" | "delivered" | "shredded";
 
 export interface CreateLinkRequest {
   recipientPublicKey: string; // base64
-  locale?: string; // "en" | "nb" — UI language of the link creator, fixes the codeword wordlist for this link
+  locale?: string;
+  ownerNote?: string;
+  retentionDays?: number; // validated against env defaults/max — see plan 2 Task on POST /api/links
 }
 
 export interface CreateLinkResponse {
   linkId: string;
   slug: string;
-  codewords: string[]; // returned immediately so the creator doesn't need a second round-trip to see their phrase
-  // epoch ms — the link's real server-side expiry (LINK_EXPIRY_HOURS); the creator keeps its private key
-  // until then. Optional (not just for one-time links, e.g. POST /api/links always sets it): a permanent
-  // link (Link.expiresAt is null in the DB — see schema.prisma) has no expiry to report.
+  codewords: string[];
   expiresAt?: number;
 }
 
@@ -23,18 +30,37 @@ export interface CreateCustomLinkRequest {
   mode: LinkMode;
   visibility?: LinkVisibility;
   retentionDays?: number;
+  ownerNote?: string;
+}
+
+// New: sender-initiated "request a drop" flow (design spec §4.1).
+export interface CreateRequestLinkRequest {
+  ownerNote?: string;
+  retentionDays?: number;
+}
+
+export interface CreateRequestLinkResponse {
+  slug: string;
+}
+
+// New: recipient claims an unclaimed (sender-initiated) link (design spec §4.2).
+export interface ClaimLinkRequest {
+  recipientPublicKey: string; // base64
 }
 
 export interface DropSummary {
   id: string;
-  status: DropStatus;
+  fileUploadStatus: FileUploadStatus;
+  deliveryStatus: DeliveryStatus;
+  messageEnvelopeStatus: EnvelopeStatus;
+  fileEnvelopeStatus: EnvelopeStatus;
   senderPublicKey: string; // base64
-  nonce: string; // base64
-  fileName: string;
-  fileSize: number;
-  mimeType: string;
+  archiveNonce: string; // base64
   contentMD5: string; // base64
-  message: string | null;
+  encryptedMetadata: string; // base64 ciphertext
+  metadataNonce: string; // base64
+  hasMessage: boolean; // true iff encryptedMessage is still present (not yet revealed)
+  contentExpiresAt: number; // epoch ms — createdAt + link.retentionDays, computed server-side
 }
 
 export interface ListDropsResponse {
@@ -44,23 +70,31 @@ export interface ListDropsResponse {
 export interface LinkStatusResponse {
   slug: string;
   mode: LinkMode;
-  recipientPublicKey: string; // base64
+  recipientPublicKey: string | null; // null => unclaimed, see design spec §4.2
   drop: DropSummary | null;
   isAnonymous: boolean;
-  codewords: string[]; // deterministic verification phrase, up to CODEWORD_MAX_COUNT words, in the link's fixed locale
+  codewords: string[];
+  ownerNote?: string;
+  retentionDays: number;
+  expiresAt?: number; // epoch ms, mirrors CreateLinkResponse's field for an already-created link
   recipientName?: string;
+  recipientUsername?: string;
+  recipientEmail?: string; // present only when design spec §6.4's visibility rule allows it
   recipientEmailVerified?: boolean;
+  recipientTotpEnabled?: boolean;
 }
 
+// Body for POST /api/links/:slug/upload-url. Replaces the old flat "message"/"metadata" shape —
+// all three envelopes are now independently-nonced ciphertext (design spec §3.1/§5).
 export interface RequestUploadUrlRequest {
   senderPublicKey: string; // base64
-  message?: string;
+  encryptedMessage?: string; // base64 ciphertext, omitted iff no message
+  messageNonce?: string; // base64, required iff encryptedMessage is present
+  encryptedMetadata: string; // base64 ciphertext of { files: [{name, size}], mimeType } JSON
+  metadataNonce: string; // base64
   metadata: {
-    fileName: string;
-    fileSize: number;
-    nonce: string; // base64
-    mimeType: string;
-    contentMD5: string; // base64
+    fileSize: number; // cleartext — quota checks need this before any decryption is possible
+    contentMD5: string; // base64, nacl.hash over the archive ciphertext
   };
 }
 
@@ -71,12 +105,15 @@ export interface RequestUploadUrlResponse {
 
 export interface DownloadUrlResponse {
   downloadUrl: string;
-  fileName: string;
-  fileSize: number;
-  mimeType: string;
-  nonce: string; // base64
+  archiveNonce: string; // base64
   senderPublicKey: string; // base64
   contentMD5: string; // base64
+}
+
+// New: POST /api/links/:slug/drops/:dropId/reveal-message response (design spec §6.2).
+export interface RevealMessageResponse {
+  encryptedMessage: string; // base64 ciphertext
+  messageNonce: string; // base64
 }
 
 export interface ApiErrorResponse {
