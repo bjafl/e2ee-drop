@@ -1,18 +1,23 @@
 // apps/api/src/lib/links.ts
 import { customAlphabet } from "nanoid";
 import { prisma, Prisma, type Link, type Drop } from "@e2ee-drop/db";
-import type { DropStatus, DropSummary, LinkStatusResponse } from "@e2ee-drop/shared";
+import type { FileUploadStatus, DropSummary, LinkStatusResponse } from "@e2ee-drop/shared";
 import { env } from "../env";
 import { resolveLocale, deriveCodewords, CODEWORD_MAX_COUNT } from "./codewords";
 
 const nanoid = customAlphabet("123456789abcdefghijkmnopqrstuvwxyz", 16);
 
-export async function createOneTimeLink(recipientPublicKey: string, locale?: string): Promise<Link> {
+export async function createOneTimeLink(
+  recipientPublicKey: string,
+  retentionDays: number,
+  locale?: string
+): Promise<Link> {
   return prisma.link.create({
     data: {
       slug: nanoid(),
       mode: "one-time",
       recipientPublicKey,
+      retentionDays,
       codewordLocale: resolveLocale(locale),
       expiresAt: new Date(Date.now() + env.LINK_EXPIRY_HOURS * 60 * 60 * 1000),
     },
@@ -46,45 +51,38 @@ export async function deleteLinkIfExists(id: string): Promise<void> {
   }
 }
 
-// Atomically advances a drop's status, compare-and-swap style: the row is only
-// written if it (a) is this drop, (b) belongs to this link, and (c) is currently
-// in one of `fromStatuses` at write time. Same discipline as the download-url
-// handler's `updateMany` in routes/downloads.ts — a single conditional UPDATE, so
-// a concurrent request can't slip in between a read and a blind write.
-//
-// Scoping by linkId matters because drop ids are not secret to a link holder
-// (GET /api/links/:slug returns an anonymous link's drop to anyone with its slug),
-// so a drop id alone must never authorize a transition on some other link's drop.
-// Owned links' drop ids are only ever returned to their sender (upload-url) and
-// to the owner (owner-gated /drops and /events), never by that public route. Returns true iff exactly the intended transition happened;
-// callers map false to 404 (unknown drop, wrong link, or wrong prior status are
-// deliberately indistinguishable).
-export async function transitionDropStatus(
+// Compare-and-swap on Drop.fileUploadStatus only. Narrower than the old transitionDropStatus,
+// which also handled the download-side "uploaded"->"downloading"->"downloaded" transitions —
+// those no longer live on a single column (see design spec §6.3); plan 2 adds dedicated CAS
+// helpers for messageEnvelopeStatus/fileEnvelopeStatus instead of overloading this one.
+export async function transitionFileUploadStatus(
   dropId: string,
   linkId: string,
-  fromStatuses: readonly DropStatus[],
-  toStatus: DropStatus,
-  // Lets /complete run the CAS inside the same transaction as its quota charge.
+  fromStatuses: readonly FileUploadStatus[],
+  toStatus: FileUploadStatus,
   db: Prisma.TransactionClient = prisma
 ): Promise<boolean> {
   const { count } = await db.drop.updateMany({
-    where: { id: dropId, linkId, status: { in: [...fromStatuses] } },
-    data: { status: toStatus },
+    where: { id: dropId, linkId, fileUploadStatus: { in: [...fromStatuses] } },
+    data: { fileUploadStatus: toStatus },
   });
   return count === 1;
 }
 
-export function toDropSummary(drop: Drop): DropSummary {
+export function toDropSummary(drop: Drop, link: { retentionDays: number }): DropSummary {
   return {
     id: drop.id,
-    status: drop.status as DropSummary["status"],
+    fileUploadStatus: drop.fileUploadStatus as DropSummary["fileUploadStatus"],
+    deliveryStatus: drop.deliveryStatus as DropSummary["deliveryStatus"],
+    messageEnvelopeStatus: drop.messageEnvelopeStatus as DropSummary["messageEnvelopeStatus"],
+    fileEnvelopeStatus: drop.fileEnvelopeStatus as DropSummary["fileEnvelopeStatus"],
     senderPublicKey: drop.senderPublicKey,
-    nonce: drop.nonce,
-    fileName: drop.fileName,
-    fileSize: drop.fileSize,
-    mimeType: drop.mimeType,
+    archiveNonce: drop.archiveNonce,
     contentMD5: drop.contentMD5,
-    message: drop.message,
+    encryptedMetadata: drop.encryptedMetadata,
+    metadataNonce: drop.metadataNonce,
+    hasMessage: drop.encryptedMessage !== null,
+    contentExpiresAt: drop.createdAt.getTime() + link.retentionDays * 24 * 60 * 60 * 1000,
   };
 }
 
@@ -104,6 +102,7 @@ export async function createDefaultLinkForUser(
       mode: "permanent",
       visibility: "public",
       recipientPublicKey: publicKey,
+      retentionDays: env.DROP_RETENTION_DAYS_DEFAULT,
       isDefault: true,
     },
   });
@@ -125,18 +124,33 @@ export async function toLinkStatusResponse(
     slug: link.slug,
     mode: link.mode as LinkStatusResponse["mode"],
     recipientPublicKey: link.recipientPublicKey,
-    drop: activeDrop ? toDropSummary(activeDrop) : null,
+    drop: activeDrop ? toDropSummary(activeDrop, link) : null,
     isAnonymous: link.ownerId === null,
-    codewords: deriveCodewords(
-      link.recipientPublicKey,
-      resolveLocale(link.codewordLocale),
-      CODEWORD_MAX_COUNT
-    ),
+    codewords: link.recipientPublicKey
+      ? deriveCodewords(link.recipientPublicKey, resolveLocale(link.codewordLocale), CODEWORD_MAX_COUNT)
+      : [], // unclaimed link (design spec §4.2): no recipientPublicKey yet, nothing to derive from
+    ownerNote: link.ownerNote ?? undefined,
+    retentionDays: link.retentionDays,
+    expiresAt: link.expiresAt?.getTime(),
   };
   if (!link.ownerId) return base;
 
   const owner = await prisma.user.findUnique({ where: { id: link.ownerId } });
   if (!owner) return base;
+  // Design spec §9/§6.4: an unverified owner is shown exactly like an anonymous link — no name,
+  // username, email, or 2FA badge. `isAnonymous` itself stays `false` here (it means "no owner
+  // row", which is still true) — callers needing the display rule check emailVerified directly,
+  // exactly as this function already does for the fields below.
+  if (!owner.emailVerified) return base;
 
-  return { ...base, recipientName: owner.name, recipientEmailVerified: owner.emailVerified };
+  const showEmail = owner.showEmailOnPublicProfile || !link.isDefault;
+
+  return {
+    ...base,
+    recipientName: owner.name,
+    recipientUsername: owner.username,
+    recipientEmailVerified: owner.emailVerified,
+    recipientTotpEnabled: owner.totpEnabled,
+    ...(showEmail ? { recipientEmail: owner.email } : {}),
+  };
 }
