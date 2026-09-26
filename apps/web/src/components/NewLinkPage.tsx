@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import i18n from "@/i18n";
 import newLinkEn from "@/locales/en/newLink.json";
 import newLinkNb from "@/locales/nb/newLink.json";
@@ -50,27 +51,30 @@ export function NewLinkPage() {
         </div>
         <div>
           <label htmlFor="mode">{t("modeLabel")}</label>
-          <select
-            id="mode"
-            value={mode}
-            onChange={(e) => setMode(e.target.value as "permanent" | "one-time")}
-            className="w-full rounded border p-2 text-sm"
-          >
-            <option value="permanent">{t("modePermanent")}</option>
-            <option value="one-time">{t("modeOneTime")}</option>
-          </select>
+          <Select value={mode} onValueChange={(value) => setMode(value as "permanent" | "one-time")}>
+            <SelectTrigger id="mode" className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="permanent">{t("modePermanent")}</SelectItem>
+              <SelectItem value="one-time">{t("modeOneTime")}</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
         <div>
           <label htmlFor="visibility">{t("visibilityLabel")}</label>
-          <select
-            id="visibility"
+          <Select
             value={visibility}
-            onChange={(e) => setVisibility(e.target.value as "public" | "contacts-only")}
-            className="w-full rounded border p-2 text-sm"
+            onValueChange={(value) => setVisibility(value as "public" | "contacts-only")}
           >
-            <option value="public">{t("visibilityPublic")}</option>
-            <option value="contacts-only">{t("visibilityContactsOnly")}</option>
-          </select>
+            <SelectTrigger id="visibility" className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="public">{t("visibilityPublic")}</SelectItem>
+              <SelectItem value="contacts-only">{t("visibilityContactsOnly")}</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
         <Button onClick={submit}>{t("createButton")}</Button>
       </CardContent>
