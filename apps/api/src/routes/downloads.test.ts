@@ -162,11 +162,11 @@ describe("download routes", () => {
   it("returns 404 for an expired link even if a drop was uploaded before it expired", async () => {
     const server = buildServer();
     const link = await prisma.link.create({
-      // @ts-expect-error — rewritten in plan 2
       data: {
         slug: "expired-download-test",
         mode: "one-time",
         recipientPublicKey: "x",
+        retentionDays: 7,
         expiresAt: new Date(Date.now() - 1000),
       },
     });

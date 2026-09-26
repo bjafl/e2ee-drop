@@ -43,11 +43,16 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       // One-time links always have an expiry (createOneTimeLink sets it); only
       // permanent links, which this route doesn't create, have a null expiresAt.
       if (!link.expiresAt) throw new Error("one-time link created without expiresAt");
+      // link.recipientPublicKey is guaranteed non-null here: it was just
+      // created from the request's checked-truthy recipientPublicKey above
+      // (the `if (!recipientPublicKey)` guard), so this can never be an
+      // unclaimed link — the `? : []` mirrors lib/links.ts's toLinkStatusResponse.
       const body: CreateLinkResponse = {
         linkId: link.id,
         slug: link.slug,
-        // @ts-expect-error — rewritten in plan 2
-        codewords: deriveCodewords(link.recipientPublicKey, resolveLocale(link.codewordLocale), CODEWORD_MAX_COUNT),
+        codewords: link.recipientPublicKey
+          ? deriveCodewords(link.recipientPublicKey, resolveLocale(link.codewordLocale), CODEWORD_MAX_COUNT)
+          : [],
         expiresAt: link.expiresAt.getTime(),
       };
       return reply.send(body);
@@ -140,11 +145,16 @@ export function registerLinkRoutes(server: FastifyInstance): void {
         throw error;
       }
 
+      // link.recipientPublicKey is guaranteed non-null here: it was just
+      // created from owner.publicKey (a required, non-null User column) above,
+      // so this can never be an unclaimed link — the `? : []` mirrors
+      // lib/links.ts's toLinkStatusResponse.
       const body: CreateLinkResponse = {
         linkId: link.id,
         slug: link.slug,
-        // @ts-expect-error — rewritten in plan 2
-        codewords: deriveCodewords(link.recipientPublicKey, resolveLocale(link.codewordLocale), CODEWORD_MAX_COUNT),
+        codewords: link.recipientPublicKey
+          ? deriveCodewords(link.recipientPublicKey, resolveLocale(link.codewordLocale), CODEWORD_MAX_COUNT)
+          : [],
         // Only one-time custom links have a real expiry; a permanent one's
         // expiresAt is null forever, so it's omitted rather than reported as
         // a fake epoch-0 "already expired" timestamp.

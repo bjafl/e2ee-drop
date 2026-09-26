@@ -61,12 +61,12 @@ async function createOwner(quota: number, used = 0) {
 
 async function createOwnedLink(ownerId: string, slug: string, mode: "permanent" | "one-time" = "permanent") {
   return prisma.link.create({
-    // @ts-expect-error — rewritten in plan 2
     data: {
       ownerId,
       slug,
       mode,
       recipientPublicKey: "pk",
+      retentionDays: 7,
       expiresAt: mode === "one-time" ? new Date(Date.now() + 60 * 60 * 1000) : null,
     },
   });

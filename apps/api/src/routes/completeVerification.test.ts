@@ -48,8 +48,7 @@ async function createOwnedLink(slug: string) {
       storageQuotaBytes: 10_000,
     },
   });
-  // @ts-expect-error — rewritten in plan 2
-  await prisma.link.create({ data: { ownerId: owner.id, slug, mode: "permanent", recipientPublicKey: "pk" } });
+  await prisma.link.create({ data: { ownerId: owner.id, slug, mode: "permanent", recipientPublicKey: "pk", retentionDays: 7 } });
   return owner;
 }
 

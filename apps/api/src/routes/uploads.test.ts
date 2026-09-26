@@ -182,8 +182,7 @@ describe("upload routes", () => {
   it("allows a second upload-url request on a permanent link (queueing)", async () => {
     const server = buildServer();
     const link = await prisma.link.create({
-      // @ts-expect-error — rewritten in plan 2
-      data: { slug: "permanent-queue-test", mode: "permanent", recipientPublicKey: "cmVjaXBpZW50" },
+      data: { slug: "permanent-queue-test", mode: "permanent", recipientPublicKey: "cmVjaXBpZW50", retentionDays: 7 },
     });
 
     const first = await server.inject({
@@ -276,8 +275,7 @@ describe("upload routes", () => {
 
     try {
       const link = await prisma.link.create({
-        // @ts-expect-error — rewritten in plan 2
-        data: { slug: "permanent-burst-test", mode: "permanent", recipientPublicKey: "cmVjaXBpZW50" },
+        data: { slug: "permanent-burst-test", mode: "permanent", recipientPublicKey: "cmVjaXBpZW50", retentionDays: 7 },
       });
 
       const fire = () =>
@@ -341,11 +339,11 @@ describe("upload routes", () => {
   it("returns 404 for an expired link", async () => {
     const server = buildServer();
     const link = await prisma.link.create({
-      // @ts-expect-error — rewritten in plan 2
       data: {
         slug: "expired-upload-test",
         mode: "one-time",
         recipientPublicKey: "x",
+        retentionDays: 7,
         expiresAt: new Date(Date.now() - 1000),
       },
     });
@@ -519,10 +517,9 @@ describe("upload routes", () => {
     const server = buildServer();
     const owner = await registerAndGetCookie(server, "coowner");
     const link = await prisma.link.create({
-      // @ts-expect-error — rewritten in plan 2
       data: {
         ownerId: owner.userId, slug: "contacts-only-test", mode: "permanent",
-        visibility: "contacts-only", recipientPublicKey: "coowner-pubkey",
+        visibility: "contacts-only", recipientPublicKey: "coowner-pubkey", retentionDays: 7,
       },
     });
 
@@ -540,10 +537,9 @@ describe("upload routes", () => {
     const owner = await registerAndGetCookie(server, "coowner2");
     const stranger = await registerAndGetCookie(server, "stranger");
     const link = await prisma.link.create({
-      // @ts-expect-error — rewritten in plan 2
       data: {
         ownerId: owner.userId, slug: "contacts-only-test2", mode: "permanent",
-        visibility: "contacts-only", recipientPublicKey: "coowner2-pubkey",
+        visibility: "contacts-only", recipientPublicKey: "coowner2-pubkey", retentionDays: 7,
       },
     });
 
@@ -565,10 +561,9 @@ describe("upload routes", () => {
       data: { userId: pendingSender.userId, contactUserId: owner.userId, status: "pending" },
     });
     const link = await prisma.link.create({
-      // @ts-expect-error — rewritten in plan 2
       data: {
         ownerId: owner.userId, slug: "contacts-only-pending-test", mode: "permanent",
-        visibility: "contacts-only", recipientPublicKey: "coowner2b-pubkey",
+        visibility: "contacts-only", recipientPublicKey: "coowner2b-pubkey", retentionDays: 7,
       },
     });
 
@@ -588,10 +583,9 @@ describe("upload routes", () => {
     const friend = await registerAndGetCookie(server, "friend");
     await prisma.contact.create({ data: { userId: owner.userId, contactUserId: friend.userId, status: "accepted" } });
     const link = await prisma.link.create({
-      // @ts-expect-error — rewritten in plan 2
       data: {
         ownerId: owner.userId, slug: "contacts-only-test3", mode: "permanent",
-        visibility: "contacts-only", recipientPublicKey: "coowner3-pubkey",
+        visibility: "contacts-only", recipientPublicKey: "coowner3-pubkey", retentionDays: 7,
       },
     });
 
@@ -611,10 +605,9 @@ describe("upload routes", () => {
     const friend = await registerAndGetCookie(server, "hijackfriend");
     await prisma.contact.create({ data: { userId: owner.userId, contactUserId: friend.userId, status: "accepted" } });
     const link = await prisma.link.create({
-      // @ts-expect-error — rewritten in plan 2
       data: {
         ownerId: owner.userId, slug: "hijack-test", mode: "permanent",
-        visibility: "contacts-only", recipientPublicKey: "hijackvictim-pubkey",
+        visibility: "contacts-only", recipientPublicKey: "hijackvictim-pubkey", retentionDays: 7,
       },
     });
 
@@ -654,8 +647,7 @@ describe("upload routes", () => {
     const server = buildServer();
     const owner = await registerAndGetCookie(server, "coowner4");
     const link = await prisma.link.create({
-      // @ts-expect-error — rewritten in plan 2
-      data: { ownerId: owner.userId, slug: "public-permanent-test", mode: "permanent", recipientPublicKey: "coowner4-pubkey" },
+      data: { ownerId: owner.userId, slug: "public-permanent-test", mode: "permanent", recipientPublicKey: "coowner4-pubkey", retentionDays: 7 },
     });
 
     const response = await server.inject({

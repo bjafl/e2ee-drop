@@ -43,8 +43,7 @@ async function registerAndGetCookie(server: ReturnType<typeof buildServer>, user
 
 async function createLinkWithDrop(slug: string, expiresAt: Date) {
   const link = await prisma.link.create({
-    // @ts-expect-error — rewritten in plan 2
-    data: { slug, mode: "one-time", recipientPublicKey: "x", expiresAt },
+    data: { slug, mode: "one-time", recipientPublicKey: "x", retentionDays: 7, expiresAt },
   });
   const drop = await prisma.drop.create({
     data: {
@@ -244,8 +243,7 @@ describe("link routes", () => {
       },
     });
     const ownedLink = await prisma.link.create({
-      // @ts-expect-error — rewritten in plan 2
-      data: { ownerId: owner.id, slug: "ada", mode: "permanent", recipientPublicKey: owner.publicKey },
+      data: { ownerId: owner.id, slug: "ada", mode: "permanent", recipientPublicKey: owner.publicKey, retentionDays: 7 },
     });
 
     const ownedResponse = await server.inject({ method: "GET", url: `/api/links/${ownedLink.slug}` });
@@ -322,12 +320,12 @@ describe("link routes", () => {
     const owner = await registerAndGetCookie(server, "queueowner");
 
     const link = await prisma.link.create({
-      // @ts-expect-error — rewritten in plan 2
       data: {
         ownerId: owner.userId,
         slug: "queue-test",
         mode: "permanent",
         recipientPublicKey: owner.publicKey,
+        retentionDays: 7,
       },
     });
     const older = await prisma.drop.create({
@@ -393,12 +391,12 @@ describe("link routes", () => {
     const intruder = await registerAndGetCookie(server, "queueintruder");
 
     const link = await prisma.link.create({
-      // @ts-expect-error — rewritten in plan 2
       data: {
         ownerId: owner.userId,
         slug: "private-queue",
         mode: "permanent",
         recipientPublicKey: owner.publicKey,
+        retentionDays: 7,
       },
     });
 
@@ -484,8 +482,7 @@ describe("link routes", () => {
       status: "uploading" | "uploaded"
     ) {
       const link = await prisma.link.create({
-        // @ts-expect-error — rewritten in plan 2
-        data: { ownerId, slug, mode: "permanent", visibility, recipientPublicKey: `${slug}-pubkey` },
+        data: { ownerId, slug, mode: "permanent", visibility, recipientPublicKey: `${slug}-pubkey`, retentionDays: 7 },
       });
       const drop = await prisma.drop.create({
         data: {
@@ -569,8 +566,7 @@ describe("link routes", () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "leakvictim4");
       const link = await prisma.link.create({
-        // @ts-expect-error — rewritten in plan 2
-        data: { ownerId: owner.userId, slug: "leak-empty", mode: "permanent", recipientPublicKey: "k" },
+        data: { ownerId: owner.userId, slug: "leak-empty", mode: "permanent", recipientPublicKey: "k", retentionDays: 7 },
       });
 
       const response = await server.inject({ method: "GET", url: `/api/links/${link.slug}` });
