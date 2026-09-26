@@ -36,22 +36,22 @@ describe("cascadeDeleteUserLinks", () => {
     const otherUser = await createTestUser("b");
 
     const link = await prisma.link.create({
-      data: { ownerId: user.id, slug: "mine", mode: "permanent", recipientPublicKey: "x" },
+      data: { ownerId: user.id, slug: "mine", mode: "permanent", recipientPublicKey: "x", retentionDays: 7 },
     });
     await prisma.drop.create({
       data: {
         linkId: link.id,
         senderPublicKey: "s",
         s3Key: `${link.id}/drop1`,
-        nonce: "n",
-        fileName: "f",
+        archiveNonce: "n",
+        encryptedMetadata: "e",
+        metadataNonce: "m",
         fileSize: 1,
-        mimeType: "text/plain",
         contentMD5: "m",
       },
     });
     const otherLink = await prisma.link.create({
-      data: { ownerId: otherUser.id, slug: "theirs", mode: "permanent", recipientPublicKey: "y" },
+      data: { ownerId: otherUser.id, slug: "theirs", mode: "permanent", recipientPublicKey: "y", retentionDays: 7 },
     });
 
     await cascadeDeleteUserLinks(user.id);
@@ -82,7 +82,7 @@ describe("cascadeDeleteUserLinks", () => {
     await prisma.user.update({ where: { id: other.id }, data: { storageUsedBytes: 555 } });
 
     const perm = await prisma.link.create({
-      data: { ownerId: user.id, slug: "cascade-perm", mode: "permanent", recipientPublicKey: "x" },
+      data: { ownerId: user.id, slug: "cascade-perm", mode: "permanent", recipientPublicKey: "x", retentionDays: 7 },
     });
     const oneTime = await prisma.link.create({
       data: {
@@ -90,16 +90,19 @@ describe("cascadeDeleteUserLinks", () => {
         slug: "cascade-ot",
         mode: "one-time",
         recipientPublicKey: "x",
+        retentionDays: 7,
         expiresAt: new Date(Date.now() + 60_000),
       },
     });
-    const base = { senderPublicKey: "s", nonce: "n", fileName: "f", mimeType: "text/plain", contentMD5: "m" };
+    const base = { senderPublicKey: "s", archiveNonce: "n", encryptedMetadata: "e", metadataNonce: "m", contentMD5: "m" };
+    // fileUploadStatus mapping matches lib/quota.ts's isChargedStatus: the old
+    // status is charged unless it's "uploading" (see cleanup.test.ts's dropData).
     await prisma.drop.createMany({
       data: [
-        { ...base, linkId: perm.id, s3Key: `${perm.id}/a`, fileSize: 10, status: "uploaded" },
-        { ...base, linkId: perm.id, s3Key: `${perm.id}/b`, fileSize: 20, status: "downloaded" },
-        { ...base, linkId: perm.id, s3Key: `${perm.id}/c`, fileSize: 999, status: "uploading" },
-        { ...base, linkId: oneTime.id, s3Key: `${oneTime.id}/d`, fileSize: 30, status: "downloading" },
+        { ...base, linkId: perm.id, s3Key: `${perm.id}/a`, fileSize: 10, fileUploadStatus: "complete" },
+        { ...base, linkId: perm.id, s3Key: `${perm.id}/b`, fileSize: 20, fileUploadStatus: "complete" },
+        { ...base, linkId: perm.id, s3Key: `${perm.id}/c`, fileSize: 999, fileUploadStatus: "uploading" },
+        { ...base, linkId: oneTime.id, s3Key: `${oneTime.id}/d`, fileSize: 30, fileUploadStatus: "complete" },
       ],
     });
 

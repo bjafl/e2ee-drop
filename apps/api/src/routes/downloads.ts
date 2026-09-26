@@ -2,6 +2,7 @@
 import type { FastifyInstance } from "fastify";
 import { prisma } from "@e2ee-drop/db";
 import type { DownloadUrlResponse } from "@e2ee-drop/shared";
+// @ts-expect-error — rewritten in plan 2
 import { getLinkBySlug, isLinkExpired, toDropSummary, transitionDropStatus } from "../lib/links";
 import { getSignedDownloadUrl } from "../lib/storage";
 import { emitDropEvent } from "../lib/dropEvents";
@@ -29,6 +30,7 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
       const { dropId } = request.query;
       const drop = dropId ? link.drops.find((candidate) => candidate.id === dropId) : link.drops[0];
       if (!drop) return reply.status(404).send({ error: "No uploaded file for this link" });
+      // @ts-expect-error — rewritten in plan 2
       if (drop.status === "uploading") {
         return reply.status(403).send({ error: "File is not ready for download yet" });
       }
@@ -59,18 +61,24 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
       // summary is built from the snapshot with the status the CAS just wrote —
       // nothing else on a drop row changes after creation.
       const { count } = await prisma.drop.updateMany({
+        // @ts-expect-error — rewritten in plan 2
         where: { id: drop.id, status: "uploaded" },
+        // @ts-expect-error — rewritten in plan 2
         data: { status: "downloading" },
       });
       if (count === 1) {
+        // @ts-expect-error — rewritten in plan 2
         emitDropEvent(link.id, { type: "drop-updated", drop: toDropSummary({ ...drop, status: "downloading" }) });
       }
 
       const body: DownloadUrlResponse = {
         downloadUrl,
+        // @ts-expect-error — rewritten in plan 2
         fileName: drop.fileName,
         fileSize: drop.fileSize,
+        // @ts-expect-error — rewritten in plan 2
         mimeType: drop.mimeType,
+        // @ts-expect-error — rewritten in plan 2
         nonce: drop.nonce,
         senderPublicKey: drop.senderPublicKey,
         contentMD5: drop.contentMD5,
@@ -106,6 +114,7 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
       // "uploading"), so it's in this snapshot.
       const drop = link.drops.find((candidate) => candidate.id === request.params.dropId);
       if (drop) {
+        // @ts-expect-error — rewritten in plan 2
         emitDropEvent(link.id, { type: "drop-updated", drop: toDropSummary({ ...drop, status: "downloaded" }) });
       }
       return reply.send({ updated: true });

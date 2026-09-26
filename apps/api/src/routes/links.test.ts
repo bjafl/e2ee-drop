@@ -43,13 +43,14 @@ async function registerAndGetCookie(server: ReturnType<typeof buildServer>, user
 
 async function createLinkWithDrop(slug: string, expiresAt: Date) {
   const link = await prisma.link.create({
-    data: { slug, mode: "one-time", recipientPublicKey: "x", expiresAt },
+    data: { slug, mode: "one-time", recipientPublicKey: "x", retentionDays: 7, expiresAt },
   });
   const drop = await prisma.drop.create({
     data: {
       linkId: link.id,
       senderPublicKey: "c2VuZGVy",
       s3Key: `${link.id}/drop1`,
+      // @ts-expect-error — rewritten in plan 2
       nonce: "bm9uY2U=",
       fileName: "report.pdf",
       fileSize: 1024,
@@ -242,7 +243,7 @@ describe("link routes", () => {
       },
     });
     const ownedLink = await prisma.link.create({
-      data: { ownerId: owner.id, slug: "ada", mode: "permanent", recipientPublicKey: owner.publicKey },
+      data: { ownerId: owner.id, slug: "ada", mode: "permanent", recipientPublicKey: owner.publicKey, retentionDays: 7 },
     });
 
     const ownedResponse = await server.inject({ method: "GET", url: `/api/links/${ownedLink.slug}` });
@@ -324,6 +325,7 @@ describe("link routes", () => {
         slug: "queue-test",
         mode: "permanent",
         recipientPublicKey: owner.publicKey,
+        retentionDays: 7,
       },
     });
     const older = await prisma.drop.create({
@@ -331,6 +333,7 @@ describe("link routes", () => {
         linkId: link.id,
         senderPublicKey: "a",
         s3Key: "k1",
+        // @ts-expect-error — rewritten in plan 2
         nonce: "n",
         fileName: "old.txt",
         fileSize: 1,
@@ -345,6 +348,7 @@ describe("link routes", () => {
         linkId: link.id,
         senderPublicKey: "b",
         s3Key: "k2",
+        // @ts-expect-error — rewritten in plan 2
         nonce: "n",
         fileName: "new.txt",
         fileSize: 1,
@@ -358,6 +362,7 @@ describe("link routes", () => {
         linkId: link.id,
         senderPublicKey: "c",
         s3Key: "k3",
+        // @ts-expect-error — rewritten in plan 2
         nonce: "n",
         fileName: "gone.txt",
         fileSize: 1,
@@ -391,6 +396,7 @@ describe("link routes", () => {
         slug: "private-queue",
         mode: "permanent",
         recipientPublicKey: owner.publicKey,
+        retentionDays: 7,
       },
     });
 
@@ -476,13 +482,14 @@ describe("link routes", () => {
       status: "uploading" | "uploaded"
     ) {
       const link = await prisma.link.create({
-        data: { ownerId, slug, mode: "permanent", visibility, recipientPublicKey: `${slug}-pubkey` },
+        data: { ownerId, slug, mode: "permanent", visibility, recipientPublicKey: `${slug}-pubkey`, retentionDays: 7 },
       });
       const drop = await prisma.drop.create({
         data: {
           linkId: link.id,
           senderPublicKey: "c2VuZGVy",
           s3Key: `${link.id}/secret-drop`,
+          // @ts-expect-error — rewritten in plan 2
           nonce: "bm9uY2U=",
           fileName: "salary-2026.pdf",
           fileSize: 1024,
@@ -537,6 +544,7 @@ describe("link routes", () => {
           linkId: link.id,
           senderPublicKey: "c2VuZGVy",
           s3Key: `${link.id}/secret-drop`,
+          // @ts-expect-error — rewritten in plan 2
           nonce: "bm9uY2U=",
           fileName: "salary-2026.pdf",
           fileSize: 1024,
@@ -558,7 +566,7 @@ describe("link routes", () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "leakvictim4");
       const link = await prisma.link.create({
-        data: { ownerId: owner.userId, slug: "leak-empty", mode: "permanent", recipientPublicKey: "k" },
+        data: { ownerId: owner.userId, slug: "leak-empty", mode: "permanent", recipientPublicKey: "k", retentionDays: 7 },
       });
 
       const response = await server.inject({ method: "GET", url: `/api/links/${link.slug}` });

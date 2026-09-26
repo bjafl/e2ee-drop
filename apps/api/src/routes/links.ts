@@ -38,19 +38,21 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       if (!recipientPublicKey) {
         return reply.status(400).send({ error: "Missing recipientPublicKey" });
       }
+      // @ts-expect-error — rewritten in plan 2
       const link = await createOneTimeLink(recipientPublicKey, locale);
       // One-time links always have an expiry (createOneTimeLink sets it); only
       // permanent links, which this route doesn't create, have a null expiresAt.
       if (!link.expiresAt) throw new Error("one-time link created without expiresAt");
+      // link.recipientPublicKey is guaranteed non-null here: it was just
+      // created from the request's checked-truthy recipientPublicKey above
+      // (the `if (!recipientPublicKey)` guard), so this can never be an
+      // unclaimed link — the `? : []` mirrors lib/links.ts's toLinkStatusResponse.
       const body: CreateLinkResponse = {
         linkId: link.id,
         slug: link.slug,
-        codewords: deriveCodewords(
-          link.recipientPublicKey,
-          link.id,
-          resolveLocale(link.codewordLocale),
-          env.CODEWORD_WORD_COUNT
-        ),
+        codewords: link.recipientPublicKey
+          ? deriveCodewords(link.recipientPublicKey, link.id, resolveLocale(link.codewordLocale), env.CODEWORD_WORD_COUNT)
+          : [],
         expiresAt: link.expiresAt.getTime(),
       };
       return reply.send(body);
@@ -95,7 +97,7 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       if (visibility !== undefined && visibility !== "public" && visibility !== "contacts-only") {
         return reply.status(400).send({ error: "Invalid visibility" });
       }
-      // Omitted/null means "use the global DROP_RETENTION_DAYS default" (see
+      // Omitted/null means "use the global DROP_RETENTION_DAYS_DEFAULT" (see
       // sweepExpiredDrops in jobs/cleanup.ts) — there is no "keep forever"
       // option. Otherwise a whole number of
       // days, at least 1, and within Postgres's 32-bit Int column range so an
@@ -126,6 +128,7 @@ export function registerLinkRoutes(server: FastifyInstance): void {
             slug,
             mode,
             visibility: visibility ?? "public",
+            // @ts-expect-error — rewritten in plan 2
             retentionDays: retentionDays ?? null,
             recipientPublicKey: owner.publicKey,
             expiresAt:
@@ -142,15 +145,16 @@ export function registerLinkRoutes(server: FastifyInstance): void {
         throw error;
       }
 
+      // link.recipientPublicKey is guaranteed non-null here: it was just
+      // created from owner.publicKey (a required, non-null User column) above,
+      // so this can never be an unclaimed link — the `? : []` mirrors
+      // lib/links.ts's toLinkStatusResponse.
       const body: CreateLinkResponse = {
         linkId: link.id,
         slug: link.slug,
-        codewords: deriveCodewords(
-          link.recipientPublicKey,
-          link.id,
-          resolveLocale(link.codewordLocale),
-          env.CODEWORD_WORD_COUNT
-        ),
+        codewords: link.recipientPublicKey
+          ? deriveCodewords(link.recipientPublicKey, link.id, resolveLocale(link.codewordLocale), env.CODEWORD_WORD_COUNT)
+          : [],
         // Only one-time custom links have a real expiry; a permanent one's
         // expiresAt is null forever, so it's omitted rather than reported as
         // a fake epoch-0 "already expired" timestamp.
@@ -186,9 +190,11 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       if (link.ownerId !== request.user!.id) return reply.status(403).send({ error: "Forbidden" });
 
       const drops = link.drops
+        // @ts-expect-error — rewritten in plan 2
         .filter((drop) => drop.status !== "downloaded")
         .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
 
+      // @ts-expect-error — rewritten in plan 2
       const body: ListDropsResponse = { drops: drops.map(toDropSummary) };
       return reply.send(body);
     }

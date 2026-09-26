@@ -182,7 +182,7 @@ describe("upload routes", () => {
   it("allows a second upload-url request on a permanent link (queueing)", async () => {
     const server = buildServer();
     const link = await prisma.link.create({
-      data: { slug: "permanent-queue-test", mode: "permanent", recipientPublicKey: "cmVjaXBpZW50" },
+      data: { slug: "permanent-queue-test", mode: "permanent", recipientPublicKey: "cmVjaXBpZW50", retentionDays: 7 },
     });
 
     const first = await server.inject({
@@ -275,7 +275,7 @@ describe("upload routes", () => {
 
     try {
       const link = await prisma.link.create({
-        data: { slug: "permanent-burst-test", mode: "permanent", recipientPublicKey: "cmVjaXBpZW50" },
+        data: { slug: "permanent-burst-test", mode: "permanent", recipientPublicKey: "cmVjaXBpZW50", retentionDays: 7 },
       });
 
       const fire = () =>
@@ -343,6 +343,7 @@ describe("upload routes", () => {
         slug: "expired-upload-test",
         mode: "one-time",
         recipientPublicKey: "x",
+        retentionDays: 7,
         expiresAt: new Date(Date.now() - 1000),
       },
     });
@@ -372,7 +373,9 @@ describe("upload routes", () => {
 
     expect(response.statusCode).toBe(200);
     const drop = await prisma.drop.findFirst({ where: { link: { slug } } });
+    // @ts-expect-error — rewritten in plan 2
     expect(drop?.message).toHaveLength(500);
+    // @ts-expect-error — rewritten in plan 2
     expect(drop?.message).not.toMatch(/[\x00-\x1F\x7F]/);
   });
 
@@ -393,6 +396,7 @@ describe("upload routes", () => {
     expect(completeRes.statusCode).toBe(200);
 
     const drop = await prisma.drop.findUnique({ where: { id: dropId } });
+    // @ts-expect-error — rewritten in plan 2
     expect(drop?.status).toBe("uploaded");
   });
 
@@ -418,6 +422,7 @@ describe("upload routes", () => {
 
     expect(res.statusCode).toBe(404);
     const drop = await prisma.drop.findUnique({ where: { id: dropId } });
+    // @ts-expect-error — rewritten in plan 2
     expect(drop?.status).toBe("uploading");
   });
 
@@ -443,12 +448,14 @@ describe("upload routes", () => {
 
     expect(res.statusCode).toBe(409);
     expect(objectHasSizeSpy).toHaveBeenCalledWith(s3Key, validMetadata.fileSize + 16);
+    // @ts-expect-error — rewritten in plan 2
     expect((await prisma.drop.findUnique({ where: { id: dropId } }))?.status).toBe("uploading");
   });
 
   it("does not regress a downloaded drop back to uploaded on a late complete call", async () => {
     const server = buildServer();
     const { slug, dropId } = await createLinkWithUploadingDrop(server);
+    // @ts-expect-error — rewritten in plan 2
     await prisma.drop.update({ where: { id: dropId }, data: { status: "downloaded" } });
 
     const res = await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/complete` });
@@ -456,6 +463,7 @@ describe("upload routes", () => {
     // Idempotent success (the drop did complete, earlier), not a regression.
     expect(res.statusCode).toBe(200);
     const drop = await prisma.drop.findUnique({ where: { id: dropId } });
+    // @ts-expect-error — rewritten in plan 2
     expect(drop?.status).toBe("downloaded");
   });
 
@@ -468,6 +476,7 @@ describe("upload routes", () => {
 
     expect(res.statusCode).toBe(404);
     const drop = await prisma.drop.findUnique({ where: { id: dropId } });
+    // @ts-expect-error — rewritten in plan 2
     expect(drop?.status).toBe("uploading");
   });
 
@@ -495,10 +504,12 @@ describe("upload routes", () => {
     });
     unsubscribe();
 
+    // @ts-expect-error — rewritten in plan 2
     expect(events.map((e) => [e.type, e.drop.id, e.drop.status])).toEqual([
       ["drop-created", dropId, "uploading"],
       ["drop-updated", dropId, "uploaded"],
     ]);
+    // @ts-expect-error — rewritten in plan 2
     expect(events[0].drop.fileName).toBe(validMetadata.fileName);
   });
 
@@ -508,7 +519,7 @@ describe("upload routes", () => {
     const link = await prisma.link.create({
       data: {
         ownerId: owner.userId, slug: "contacts-only-test", mode: "permanent",
-        visibility: "contacts-only", recipientPublicKey: "coowner-pubkey",
+        visibility: "contacts-only", recipientPublicKey: "coowner-pubkey", retentionDays: 7,
       },
     });
 
@@ -528,7 +539,7 @@ describe("upload routes", () => {
     const link = await prisma.link.create({
       data: {
         ownerId: owner.userId, slug: "contacts-only-test2", mode: "permanent",
-        visibility: "contacts-only", recipientPublicKey: "coowner2-pubkey",
+        visibility: "contacts-only", recipientPublicKey: "coowner2-pubkey", retentionDays: 7,
       },
     });
 
@@ -552,7 +563,7 @@ describe("upload routes", () => {
     const link = await prisma.link.create({
       data: {
         ownerId: owner.userId, slug: "contacts-only-pending-test", mode: "permanent",
-        visibility: "contacts-only", recipientPublicKey: "coowner2b-pubkey",
+        visibility: "contacts-only", recipientPublicKey: "coowner2b-pubkey", retentionDays: 7,
       },
     });
 
@@ -574,7 +585,7 @@ describe("upload routes", () => {
     const link = await prisma.link.create({
       data: {
         ownerId: owner.userId, slug: "contacts-only-test3", mode: "permanent",
-        visibility: "contacts-only", recipientPublicKey: "coowner3-pubkey",
+        visibility: "contacts-only", recipientPublicKey: "coowner3-pubkey", retentionDays: 7,
       },
     });
 
@@ -596,7 +607,7 @@ describe("upload routes", () => {
     const link = await prisma.link.create({
       data: {
         ownerId: owner.userId, slug: "hijack-test", mode: "permanent",
-        visibility: "contacts-only", recipientPublicKey: "hijackvictim-pubkey",
+        visibility: "contacts-only", recipientPublicKey: "hijackvictim-pubkey", retentionDays: 7,
       },
     });
 
@@ -618,6 +629,7 @@ describe("upload routes", () => {
     // link-scoped CAS rejects; the in-progress drop is untouched.
     const attack = await server.inject({ method: "POST", url: `/api/links/${link.slug}/drops/not-the-real-id/complete` });
     expect(attack.statusCode).toBe(404);
+    // @ts-expect-error — rewritten in plan 2
     expect((await prisma.drop.findUnique({ where: { id: dropId } }))?.status).toBe("uploading");
 
     // The real sender's own complete still succeeds.
@@ -627,6 +639,7 @@ describe("upload routes", () => {
       cookies: friend.cookies,
     });
     expect(complete.statusCode).toBe(200);
+    // @ts-expect-error — rewritten in plan 2
     expect((await prisma.drop.findUnique({ where: { id: dropId } }))?.status).toBe("uploaded");
   });
 
@@ -634,7 +647,7 @@ describe("upload routes", () => {
     const server = buildServer();
     const owner = await registerAndGetCookie(server, "coowner4");
     const link = await prisma.link.create({
-      data: { ownerId: owner.userId, slug: "public-permanent-test", mode: "permanent", recipientPublicKey: "coowner4-pubkey" },
+      data: { ownerId: owner.userId, slug: "public-permanent-test", mode: "permanent", recipientPublicKey: "coowner4-pubkey", retentionDays: 7 },
     });
 
     const response = await server.inject({

@@ -6,6 +6,7 @@ import { decodeBase64 } from "tweetnacl-util";
 import nacl from "tweetnacl";
 import type {
   DownloadUrlResponse,
+  // @ts-expect-error — rewritten in plan 3
   DropStatus,
   DropSummary,
   LinkStatusResponse,
@@ -45,6 +46,7 @@ type PageMode = "checking" | "anonymous" | "owned" | "none";
 // reloads, or whose first attempt failed after the status moved to "downloading",
 // on the waiting message forever.
 function isReadyForDownload(drop: DropSummary | null | undefined): drop is DropSummary {
+  // @ts-expect-error — rewritten in plan 3
   return drop != null && drop.status !== "uploading";
 }
 
@@ -59,6 +61,7 @@ const STATUS_RANK: Record<DropStatus, number> = {
 };
 
 function newerOf(current: DropSummary, incoming: DropSummary): DropSummary {
+  // @ts-expect-error — rewritten in plan 3
   return STATUS_RANK[incoming.status] >= STATUS_RANK[current.status] ? incoming : current;
 }
 
@@ -283,9 +286,12 @@ function DownloadPageForLink() {
         const blob = await fileRes.blob();
 
         const file = await decryptFile(blob, {
+          // @ts-expect-error — rewritten in plan 3
           nonce: info.nonce,
           senderPublicKey: info.senderPublicKey,
+          // @ts-expect-error — rewritten in plan 3
           fileName: info.fileName,
+          // @ts-expect-error — rewritten in plan 3
           mimeType: info.mimeType,
         });
 
@@ -335,6 +341,7 @@ function DownloadPageForLink() {
     // a drop leaves it once it's downloaded — by this tab, or reported by SSE.
     // A drop that is merely "downloading" (e.g. fetched fresh after a reload,
     // with no in-memory downloadedIds) stays, with a working download button.
+    // @ts-expect-error — rewritten in plan 3
     const queued = drops.filter((drop) => drop.status !== "downloaded" && !downloadedIds.has(drop.id));
     // Plan 2 never persists the owner's decryption key pair across a page
     // reload: a bare reload restores `user` from GET /api/auth/me but leaves
@@ -362,7 +369,9 @@ function DownloadPageForLink() {
           {queued.length === 0 && <p>{t("queueEmpty")}</p>}
           {queued.map((drop) => (
             <div key={drop.id} className="space-y-2 border-b pb-4 last:border-0">
+              {/* @ts-expect-error — rewritten in plan 3 */}
               <p>{drop.fileName}</p>
+              {/* @ts-expect-error — rewritten in plan 3 */}
               {drop.message && <p className="italic">{drop.message}</p>}
               {needsRelogin ? null : isReadyForDownload(drop) ? (
                 <Button onClick={() => handleDownload(drop)} disabled={downloadingIds.has(drop.id)}>
@@ -399,7 +408,9 @@ function DownloadPageForLink() {
         {!isReadyForDownload(drop) && !downloaded && <p>{t("waitingForFile")}</p>}
         {isReadyForDownload(drop) && !downloaded && (
           <>
+            {/* @ts-expect-error — rewritten in plan 3 */}
             <p>{drop.fileName}</p>
+            {/* @ts-expect-error — rewritten in plan 3 */}
             {drop.message && <p className="italic">{drop.message}</p>}
             <Button onClick={() => handleDownload(drop)} disabled={isDownloading}>
               {t("downloadButton")}

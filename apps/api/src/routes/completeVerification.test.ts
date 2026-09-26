@@ -48,7 +48,7 @@ async function createOwnedLink(slug: string) {
       storageQuotaBytes: 10_000,
     },
   });
-  await prisma.link.create({ data: { ownerId: owner.id, slug, mode: "permanent", recipientPublicKey: "pk" } });
+  await prisma.link.create({ data: { ownerId: owner.id, slug, mode: "permanent", recipientPublicKey: "pk", retentionDays: 7 } });
   return owner;
 }
 
@@ -83,6 +83,7 @@ function complete(server: Server, slug: string, dropId: string) {
 }
 
 async function statusOf(dropId: string) {
+  // @ts-expect-error — rewritten in plan 2
   return (await prisma.drop.findUniqueOrThrow({ where: { id: dropId } })).status;
 }
 
@@ -180,6 +181,7 @@ describe("/complete verifies the upload in storage", () => {
       const { dropId, uploadUrl } = await requestUpload(server, "downloaded");
       await putBytes(uploadUrl);
       expect((await complete(server, "downloaded", dropId)).statusCode).toBe(200);
+      // @ts-expect-error — rewritten in plan 2
       await prisma.drop.update({ where: { id: dropId }, data: { status: "downloaded" } });
 
       const late = await complete(server, "downloaded", dropId);
@@ -252,6 +254,7 @@ describe("/complete verifies the upload in storage", () => {
       expect(sender.json()).toEqual({ updated: false });
       expect(await statusOf(dropId)).toBe("uploaded");
       // Only the call that actually won the transition announces it.
+      // @ts-expect-error — rewritten in plan 2
       expect(events.map((e) => [e.type, e.drop.status])).toEqual([["drop-updated", "uploaded"]]);
     });
 

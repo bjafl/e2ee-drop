@@ -29,6 +29,8 @@ model User {
   storageUsedBytes          BigInt    @default(0)
   createdAt                 DateTime  @default(now())
 
+  showEmailOnPublicProfile Boolean @default(false)
+
   links               Link[]
   sentDrops           Drop[]
   sessions            Session[]
@@ -82,14 +84,16 @@ model Link {
   slug               String    @unique
   mode               String
   visibility         String    @default("public")
-  recipientPublicKey String
+  recipientPublicKey String?
   codewordLocale     String    @default("en")
-  retentionDays      Int?
+  retentionDays      Int
   isDefault          Boolean   @default(false)
   createdAt          DateTime  @default(now())
   expiresAt          DateTime?
   revokedAt          DateTime?
   drops              Drop[]
+
+  ownerNote String?
 
   // Replaces the old @@unique([ownerId, slug]) index's role in serving
   // owner-scoped queries (e.g. cascadeDeleteUserLinks' findMany by ownerId).
@@ -103,15 +107,23 @@ model Drop {
   senderPublicKey String
   senderUserId    String?
   senderUser      User?    @relation(fields: [senderUserId], references: [id], onDelete: SetNull)
-  s3Key           String
-  nonce           String
-  fileName        String
-  fileSize        Int
-  mimeType        String
-  contentMD5      String
-  message         String?
-  status          String   @default("uploading")
-  createdAt       DateTime @default(now())
+
+  s3Key        String
+  archiveNonce String
+  contentMD5   String
+
+  encryptedMessage  String?
+  messageNonce      String?
+  messageRevealedAt DateTime?
+
+  encryptedMetadata String
+  metadataNonce     String
+  fileSize          Int
+
+  // fileUploadStatus: "uploading" | "complete" — internal transfer bookkeeping, mirrors the old
+  // Drop.status's role in uploads.ts's CAS logic. A third value, "reserved", is reserved for
+  // spec 2's eager pre-upload tracking (not written or read anywhere in this plan or plan 2).
+  fileUploadStatus     String  @default("uploading")
   // Opaque per-sender-network tag (keyed hash of the sender's IPv4 address or
   // IPv6 /64, see apps/api/src/lib/senderKey.ts), set only while an OWNED
   // link's drop is an in-flight quota reservation, so upload-url can cap how
@@ -119,6 +131,19 @@ model Drop {
   // assertWithinSenderShare in apps/api/src/lib/quota.ts). Cleared when the
   // drop completes; never included in any API response.
   reservationSenderKey String?
+
+  // deliveryStatus: "sender_opened" | "sent" | "receiver_opened" | "partial_delivery" | "delivered"
+  // messageEnvelopeStatus / fileEnvelopeStatus: "sealed" | "delivery_failed" | "delivered" | "shredded"
+  // Full state-machine semantics and cross-drop aggregation belong to spec 2; this plan and plan 2
+  // only read/write the two envelope-status fields (never "partial_delivery"/"delivered" on
+  // deliveryStatus directly — plan 2 derives and writes those from the two envelope statuses).
+  deliveryStatus        String @default("sender_opened")
+  messageEnvelopeStatus String @default("sealed")
+  fileEnvelopeStatus    String @default("sealed")
+
+  contentDeletedAt DateTime?
+
+  createdAt DateTime @default(now())
 
   @@index([linkId])
 }

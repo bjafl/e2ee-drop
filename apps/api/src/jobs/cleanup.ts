@@ -3,7 +3,6 @@ import { prisma } from "@e2ee-drop/db";
 import { deleteObject } from "../lib/storage";
 import { deleteLinkIfExists } from "../lib/links";
 import { deleteDropReleasingQuota, deleteLinkReleasingQuota } from "../lib/quota";
-import { env } from "../env";
 
 export async function runCleanup(): Promise<{ deletedLinks: number }> {
   const now = new Date();
@@ -37,7 +36,7 @@ export async function sweepExpiredDrops(): Promise<{ deletedDrops: number }> {
 
   let deletedDrops = 0;
   for (const drop of drops) {
-    const retentionDays = drop.link.retentionDays ?? env.DROP_RETENTION_DAYS;
+    const retentionDays = drop.link.retentionDays;
     const cutoff = drop.createdAt.getTime() + retentionDays * 24 * 60 * 60 * 1000;
     if (cutoff < now) {
       await deleteObject(drop.s3Key);

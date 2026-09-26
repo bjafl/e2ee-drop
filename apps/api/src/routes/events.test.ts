@@ -18,14 +18,17 @@ import { SSE_HEARTBEAT_INTERVAL_MS } from "./events";
 
 const drop: DropSummary = {
   id: "drop1",
-  status: "uploaded",
+  fileUploadStatus: "complete",
+  deliveryStatus: "sent",
+  messageEnvelopeStatus: "sealed",
+  fileEnvelopeStatus: "sealed",
   senderPublicKey: "x",
-  nonce: "x",
-  fileName: "x",
-  fileSize: 1,
-  mimeType: "x",
+  archiveNonce: "x",
   contentMD5: "x",
-  message: null,
+  encryptedMetadata: "x",
+  metadataNonce: "x",
+  hasMessage: false,
+  contentExpiresAt: 0,
 };
 
 async function registerAndGetCookie(server: ReturnType<typeof buildServer>, username: string) {
@@ -128,7 +131,7 @@ describe("SSE events route", () => {
 
   it("returns 404 for an expired link", async () => {
     await prisma.link.create({
-      data: { slug: "expired-sse", mode: "one-time", recipientPublicKey: "x", expiresAt: new Date(Date.now() - 1000) },
+      data: { slug: "expired-sse", mode: "one-time", recipientPublicKey: "x", retentionDays: 7, expiresAt: new Date(Date.now() - 1000) },
     });
     const response = await server.inject({ method: "GET", url: "/api/links/expired-sse/events" });
     expect(response.statusCode).toBe(404);

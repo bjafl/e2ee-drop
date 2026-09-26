@@ -4,14 +4,17 @@ import type { DropSummary } from "@e2ee-drop/shared";
 
 const drop: DropSummary = {
   id: "drop1",
-  status: "uploaded",
+  fileUploadStatus: "complete",
+  deliveryStatus: "sent",
+  messageEnvelopeStatus: "sealed",
+  fileEnvelopeStatus: "sealed",
   senderPublicKey: "x",
-  nonce: "x",
-  fileName: "x",
-  fileSize: 1,
-  mimeType: "x",
+  archiveNonce: "x",
   contentMD5: "x",
-  message: null,
+  encryptedMetadata: "x",
+  metadataNonce: "x",
+  hasMessage: false,
+  contentExpiresAt: 0,
 };
 
 describe("dropEvents", () => {
