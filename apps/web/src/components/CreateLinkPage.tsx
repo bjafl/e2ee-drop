@@ -141,7 +141,7 @@ export function CreateLinkPage() {
             <div className="space-y-2 border-t pt-4">
               <p className="text-sm text-muted-foreground">{t("downloadPageHint")}</p>
               <Button asChild variant="secondary">
-                <Link to={`/download/${slug}`}>{t("goToDownloadPage")}</Link>
+                <Link to={`/receive/${slug}`}>{t("goToDownloadPage")}</Link>
               </Button>
             </div>
           </>

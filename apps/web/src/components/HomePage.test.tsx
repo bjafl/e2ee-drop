@@ -35,7 +35,7 @@ describe("HomePage", () => {
 
     renderHome();
 
-    expect(screen.getByRole("link", { name: /abc123/ })).toHaveAttribute("href", "/download/abc123");
+    expect(screen.getByRole("link", { name: /abc123/ })).toHaveAttribute("href", "/receive/abc123");
     expect(screen.queryByText(/old999/)).not.toBeInTheDocument();
   });
 

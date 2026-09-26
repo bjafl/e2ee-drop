@@ -71,7 +71,7 @@ describe("CreateLinkPage", () => {
     await user.click(screen.getByRole("button", { name: /create/i }));
 
     const link = await screen.findByRole("link", { name: /download page/i });
-    expect(link).toHaveAttribute("href", "/download/abc123");
+    expect(link).toHaveAttribute("href", "/receive/abc123");
   });
 
   it("sends the owner note and retention days entered in the form", async () => {

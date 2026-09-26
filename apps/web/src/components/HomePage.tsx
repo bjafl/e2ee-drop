@@ -38,7 +38,7 @@ export function HomePage() {
           <ul className="mt-2 space-y-1">
             {localLinks.map(([slug, stored]) => (
               <li key={slug} className="text-sm">
-                <Link to={`/download/${slug}`} className="font-mono underline">
+                <Link to={`/receive/${slug}`} className="font-mono underline">
                   {slug}
                 </Link>{" "}
                 <span className="text-muted-foreground">

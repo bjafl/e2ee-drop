@@ -2,7 +2,7 @@ import { Routes, Route } from "react-router-dom";
 import { HomePage } from "@/components/HomePage";
 import { CreateLinkPage } from "@/components/CreateLinkPage";
 import { UploadPage } from "@/components/UploadPage";
-import { DownloadPage } from "@/components/DownloadPage";
+import { ReceivePage } from "@/components/ReceivePage";
 import { RegisterPage } from "@/components/RegisterPage";
 import { LoginPage } from "@/components/LoginPage";
 import { RequestPasswordResetPage } from "@/components/RequestPasswordResetPage";
@@ -22,7 +22,7 @@ export default function App() {
         <Route path="/" element={<HomePage />} />
         <Route path="/create" element={<CreateLinkPage />} />
         <Route path="/send/:slug" element={<UploadPage />} />
-        <Route path="/download/:slug" element={<DownloadPage />} />
+        <Route path="/receive/:slug" element={<ReceivePage />} />
         <Route path="/contacts" element={<ContactsPage />} />
         <Route path="/links/new" element={<NewLinkPage />} />
         <Route path="/links/request" element={<RequestLinkPage />} />
