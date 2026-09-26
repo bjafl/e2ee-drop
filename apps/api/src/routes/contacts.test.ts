@@ -230,4 +230,83 @@ describe("contact routes", () => {
     });
     expect(response.statusCode).toBe(400);
   });
+
+  it("blocks an incoming pending request, and the blocked party sees the same error as a nonexistent user on retry", async () => {
+    const server = buildServer();
+    const alice = await registerAndGetCookie(server, "alice-block");
+    const bob = await registerAndGetCookie(server, "bob-block");
+
+    const req = await server.inject({ method: "POST", url: "/api/contacts", cookies: bob.cookies, payload: { username: "alice-block" } });
+    const block = await server.inject({ method: "POST", url: `/api/contacts/${req.json().id}/block`, cookies: alice.cookies });
+    expect(block.statusCode).toBe(200);
+
+    const retry = await server.inject({ method: "POST", url: "/api/contacts", cookies: bob.cookies, payload: { username: "alice-block" } });
+    const baseline = await server.inject({ method: "POST", url: "/api/contacts", cookies: bob.cookies, payload: { username: "does-not-exist" } });
+    expect(retry.statusCode).toBe(baseline.statusCode);
+    expect(retry.json()).toEqual(baseline.json());
+  });
+
+  it("hides a blocked row from the blocked party's own contact list", async () => {
+    const server = buildServer();
+    const alice = await registerAndGetCookie(server, "alice-block2");
+    const bob = await registerAndGetCookie(server, "bob-block2");
+    const req = await server.inject({ method: "POST", url: "/api/contacts", cookies: bob.cookies, payload: { username: "alice-block2" } });
+    await server.inject({ method: "POST", url: `/api/contacts/${req.json().id}/block`, cookies: alice.cookies });
+
+    const bobsList = await server.inject({ method: "GET", url: "/api/contacts", cookies: bob.cookies });
+    const all = [...bobsList.json().pending, ...bobsList.json().accepted];
+    expect(all.find((c: { username: string }) => c.username === "alice-block2")).toBeUndefined();
+
+    const alicesList = await server.inject({ method: "GET", url: "/api/contacts", cookies: alice.cookies });
+    expect(alicesList.statusCode).toBe(200); // blocker CAN still see it (not asserting shape here — block is visible to them)
+  });
+
+  it("resolves a same-direction concurrent double-submit to exactly one row (pre-existing TOCTOU, fixed here)", async () => {
+    // sendContactRequest's `findFirst` existing-relationship check and its
+    // `create` are not atomic — two requests racing between the check and the
+    // create could otherwise both see "no existing row" and both attempt to
+    // create one. Contact's `@@unique([userId, contactUserId])` constraint
+    // only spans this exact (userId, contactUserId) ordering, so this test
+    // (and the fix) covers the same-direction case: one caller submitting
+    // twice in quick succession (double-click, client retry after a timeout).
+    // It does NOT cover two different users requesting each other in opposite
+    // directions at the same moment — that's a different (userId,
+    // contactUserId) tuple each way, so this unique constraint can't catch
+    // it; the `findFirst` pre-check (both orderings) is the only guard there,
+    // and a sufficiently unlucky race could still produce two rows in that
+    // specific cross-direction case. Out of scope for this fix — flagging in
+    // case it matters later, not silently claiming full coverage.
+    const server = buildServer();
+    const alice = await registerAndGetCookie(server, "alice-race");
+    const bob = await registerAndGetCookie(server, "bob-race");
+
+    const [first, second] = await Promise.all([
+      server.inject({ method: "POST", url: "/api/contacts", cookies: alice.cookies, payload: { username: "bob-race" } }),
+      server.inject({ method: "POST", url: "/api/contacts", cookies: alice.cookies, payload: { username: "bob-race" } }),
+    ]);
+    const statuses = [first.statusCode, second.statusCode].sort();
+    expect(statuses).toEqual([200, 400]); // one succeeds, one gets the normal "already exists" error — never a 500
+    const rows = await prisma.contact.findMany({ where: { userId: alice.userId, contactUserId: bob.userId } });
+    expect(rows.length).toBe(1);
+  });
+
+  it("blocks from an already-accepted contact, and only the blocker can unblock", async () => {
+    const server = buildServer();
+    const alice = await registerAndGetCookie(server, "alice-block3");
+    const bob = await registerAndGetCookie(server, "bob-block3");
+    const req = await server.inject({ method: "POST", url: "/api/contacts", cookies: bob.cookies, payload: { username: "alice-block3" } });
+    await server.inject({ method: "POST", url: `/api/contacts/${req.json().id}/accept`, cookies: alice.cookies });
+
+    const block = await server.inject({ method: "POST", url: `/api/contacts/${req.json().id}/block`, cookies: alice.cookies });
+    expect(block.statusCode).toBe(200);
+
+    const bobUnblockAttempt = await server.inject({ method: "POST", url: `/api/contacts/${req.json().id}/unblock`, cookies: bob.cookies });
+    expect(bobUnblockAttempt.statusCode).toBe(403);
+
+    const aliceUnblock = await server.inject({ method: "POST", url: `/api/contacts/${req.json().id}/unblock`, cookies: alice.cookies });
+    expect(aliceUnblock.statusCode).toBe(200);
+
+    const afterUnblock = await prisma.contact.findUnique({ where: { id: req.json().id } });
+    expect(afterUnblock).toBeNull();
+  });
 });

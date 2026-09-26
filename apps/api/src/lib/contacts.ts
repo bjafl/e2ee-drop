@@ -1,12 +1,14 @@
 // apps/api/src/lib/contacts.ts
-import { prisma, type Contact } from "@e2ee-drop/db";
+import { prisma, Prisma, type Contact } from "@e2ee-drop/db";
 import { HttpError } from "./httpErrors";
 
 export interface ContactSummary {
   id: string;
   userId: string;
   username: string;
-  status: "pending" | "accepted";
+  status: "pending" | "accepted"; // "blocked" rows are never surfaced as a status
+                                    // to the blocked party (see listContacts below) —
+                                    // the blocker's own view filters separately.
   direction: "incoming" | "outgoing";
 }
 
@@ -23,17 +25,34 @@ export async function sendContactRequest(userId: string, targetUsername: string)
       ],
     },
   });
-  if (existing) throw new HttpError(400, "A contact relationship already exists");
+  if (existing) {
+    if (existing.status === "blocked" && existing.blockedByUserId === target.id) {
+      // The target blocked the caller: this must look identical to the
+      // target not existing at all — never reveal a block happened.
+      throw new HttpError(400, "User not found");
+    }
+    throw new HttpError(400, "A contact relationship already exists");
+  }
 
-  return prisma.contact.create({ data: { userId, contactUserId: target.id, status: "pending" } });
+  try {
+    return await prisma.contact.create({ data: { userId, contactUserId: target.id, status: "pending" } });
+  } catch (error: unknown) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      // Lost a same-direction race against another concurrent call for this
+      // exact (userId, contactUserId) pair (the findFirst above didn't see
+      // it in time) — same user-facing outcome as the pre-check catching it.
+      throw new HttpError(400, "A contact relationship already exists");
+    }
+    throw error;
+  }
 }
 
 export async function listContacts(
   userId: string
 ): Promise<{ pending: ContactSummary[]; accepted: ContactSummary[] }> {
-  const rows = await prisma.contact.findMany({
-    where: { OR: [{ userId }, { contactUserId: userId }] },
-  });
+  const rows = (
+    await prisma.contact.findMany({ where: { OR: [{ userId }, { contactUserId: userId }] } })
+  ).filter((row) => row.status !== "blocked" || row.blockedByUserId === userId);
   const otherIds = rows.map((row) => (row.userId === userId ? row.contactUserId : row.userId));
   const users = await prisma.user.findMany({ where: { id: { in: otherIds } } });
   const usernameById = new Map(users.map((user) => [user.id, user.username]));
@@ -70,6 +89,24 @@ export async function rejectContactRequest(userId: string, contactId: string): P
   if (!row) throw new HttpError(404, "Contact request not found");
   if (row.userId !== userId && row.contactUserId !== userId) {
     throw new HttpError(403, "Not part of this contact relationship");
+  }
+  await prisma.contact.delete({ where: { id: contactId } });
+}
+
+export async function blockContact(callerId: string, contactId: string): Promise<Contact> {
+  const row = await prisma.contact.findUnique({ where: { id: contactId } });
+  if (!row) throw new HttpError(404, "Contact request not found");
+  if (row.userId !== callerId && row.contactUserId !== callerId) {
+    throw new HttpError(403, "Not part of this contact relationship");
+  }
+  return prisma.contact.update({ where: { id: contactId }, data: { status: "blocked", blockedByUserId: callerId } });
+}
+
+export async function unblockContact(callerId: string, contactId: string): Promise<void> {
+  const row = await prisma.contact.findUnique({ where: { id: contactId } });
+  if (!row) throw new HttpError(404, "Contact request not found");
+  if (row.status !== "blocked" || row.blockedByUserId !== callerId) {
+    throw new HttpError(403, "Only the user who blocked this contact may unblock it");
   }
   await prisma.contact.delete({ where: { id: contactId } });
 }

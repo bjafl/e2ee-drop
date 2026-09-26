@@ -5,6 +5,8 @@ import {
   listContacts,
   acceptContactRequest,
   rejectContactRequest,
+  blockContact,
+  unblockContact,
 } from "../lib/contacts";
 
 // Errors from lib/contacts.ts are not caught here. Intended, user-facing
@@ -50,6 +52,24 @@ export function registerContactRoutes(server: FastifyInstance): void {
     { preHandler: server.requireAuth },
     async (request, reply) => {
       await rejectContactRequest(request.user!.id, request.params.id);
+      return reply.send({ deleted: true });
+    }
+  );
+
+  server.post<{ Params: { id: string } }>(
+    "/api/contacts/:id/block",
+    { preHandler: server.requireAuth },
+    async (request, reply) => {
+      const contact = await blockContact(request.user!.id, request.params.id);
+      return reply.send(contact);
+    }
+  );
+
+  server.post<{ Params: { id: string } }>(
+    "/api/contacts/:id/unblock",
+    { preHandler: server.requireAuth },
+    async (request, reply) => {
+      await unblockContact(request.user!.id, request.params.id);
       return reply.send({ deleted: true });
     }
   );
