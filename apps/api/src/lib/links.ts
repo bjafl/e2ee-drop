@@ -164,42 +164,50 @@ const DELIVERY_STATUS_RANK: Record<string, number> = {
 // row itself rather than trusting a caller's snapshot: this is what makes it safe to call from two
 // endpoints (reveal-message, complete-download) that can race each other on the same drop.
 export async function recomputeDeliveryStatus(dropId: string, linkId: string): Promise<void> {
-  const drop = await prisma.drop.findFirst({
-    where: { id: dropId, linkId },
-    select: {
-      deliveryStatus: true,
-      encryptedMessage: true,
-      messageEnvelopeStatus: true,
-      fileEnvelopeStatus: true,
-    },
-  });
-  if (!drop) return;
+  // Use a transaction to ensure we check the current rank at update time, not at read time.
+  // This prevents the race condition where two concurrent calls both read the same initial
+  // state, derive different values, and the second one fails its CAS because the first one
+  // already updated the deliveryStatus.
+  await prisma.$transaction(async (tx) => {
+    const drop = await tx.drop.findFirst({
+      where: { id: dropId, linkId },
+      select: {
+        deliveryStatus: true,
+        encryptedMessage: true,
+        messageEnvelopeStatus: true,
+        fileEnvelopeStatus: true,
+      },
+    });
+    if (!drop) return;
 
-  // `messageEnvelopeStatus` can also reach a terminal "shredded" state (spec 1's Task 6/7/8
-  // cleanup scrub, once merged) when a message existed but was scrubbed WITHOUT ever being
-  // delivered. Checking only `=== "delivered"` here would misclassify that case as "no message
-  // ever existed", letting deliveryStatus reach "delivered" from file-delivery alone even though
-  // the message was lost unretrieved — it must cap at "partial_delivery" instead (see the
-  // messageDone check below). Checking `!== "sealed"` still correctly treats a genuinely
-  // message-less drop (whose messageEnvelopeStatus stays at its schema default "sealed" forever)
-  // as having no message, while treating both "delivered" and "shredded" as "a message existed
-  // and is now resolved one way or the other".
-  const hasMessage = drop.encryptedMessage !== null || drop.messageEnvelopeStatus !== "sealed";
-  const messageDone = !hasMessage || drop.messageEnvelopeStatus === "delivered";
-  const fileDone = drop.fileEnvelopeStatus === "delivered";
+    // `messageEnvelopeStatus` can also reach a terminal "shredded" state (spec 1's Task 6/7/8
+    // cleanup scrub, once merged) when a message existed but was scrubbed WITHOUT ever being
+    // delivered. Checking only `=== "delivered"` here would misclassify that case as "no message
+    // ever existed", letting deliveryStatus reach "delivered" from file-delivery alone even though
+    // the message was lost unretrieved — it must cap at "partial_delivery" instead (see the
+    // messageDone check below). Checking `!== "sealed"` still correctly treats a genuinely
+    // message-less drop (whose messageEnvelopeStatus stays at its schema default "sealed" forever)
+    // as having no message, while treating both "delivered" and "shredded" as "a message existed
+    // and is now resolved one way or the other".
+    const hasMessage = drop.encryptedMessage !== null || drop.messageEnvelopeStatus !== "sealed";
+    const messageDone = !hasMessage || drop.messageEnvelopeStatus === "delivered";
+    const fileDone = drop.fileEnvelopeStatus === "delivered";
 
-  let derived: string;
-  if (messageDone && fileDone) derived = "delivered";
-  else if (messageDone !== fileDone && (messageDone || fileDone)) derived = "partial_delivery";
-  else derived = drop.deliveryStatus; // neither done yet — no change
+    let derived: string;
+    if (messageDone && fileDone) derived = "delivered";
+    else if (messageDone !== fileDone && (messageDone || fileDone)) derived = "partial_delivery";
+    else derived = drop.deliveryStatus; // neither done yet — no change
 
-  if (DELIVERY_STATUS_RANK[derived] <= DELIVERY_STATUS_RANK[drop.deliveryStatus]) return;
+    if (DELIVERY_STATUS_RANK[derived] <= DELIVERY_STATUS_RANK[drop.deliveryStatus]) return;
 
-  // CAS on the current value read above: if a concurrent call already advanced the row further,
-  // this simply matches zero rows instead of stomping a newer status with a stale derivation.
-  await prisma.drop.updateMany({
-    where: { id: dropId, linkId, deliveryStatus: drop.deliveryStatus },
-    data: { deliveryStatus: derived },
+    // Update unconditionally within the transaction: the rank check ensures we only
+    // update if the derived value is strictly ahead of the value we just read.
+    // Multiple concurrent transactions will serialize, so the last one to commit
+    // (re-reading at that point) will see the current envelope statuses.
+    await tx.drop.updateMany({
+      where: { id: dropId, linkId },
+      data: { deliveryStatus: derived },
+    });
   });
 }
 

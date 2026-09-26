@@ -450,6 +450,24 @@ describe("complete-download route", () => {
     expect(drop?.fileEnvelopeStatus).toBe("delivered");
   });
 
+  it("complete-download's deliveryStatus derivation survives a concurrent reveal-message", async () => {
+    const server = buildServer();
+    // Drop has a message, fileEnvelopeStatus "sealed", messageEnvelopeStatus "sealed".
+    const { slug, dropId } = await createLinkWithDrop(server, {
+      message: { encryptedMessage: "c2VjcmV0", messageNonce: "bm9uY2U=" },
+    });
+    // Fire both calls "concurrently" (Promise.all) against the test server.
+    await Promise.all([
+      server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/reveal-message` }),
+      server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/complete-download` }),
+    ]);
+    const status = await server.inject({ method: "GET", url: `/api/links/${slug}` });
+    // Whichever order the two calls actually completed in, both envelopes end up delivered,
+    // and the derived overall status must reflect that — not get stuck at partial_delivery from
+    // one call's stale read of the other's not-yet-committed state.
+    expect(status.json().drop.deliveryStatus).toBe("delivered");
+  });
+
   it("returns 404 for a nonexistent drop and never calls deleteObject", async () => {
     const server = buildServer();
     const { slug } = await createLinkWithDrop(server);

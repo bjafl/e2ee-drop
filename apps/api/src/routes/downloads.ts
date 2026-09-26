@@ -135,24 +135,7 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
       // envelope (message here) was resolved by a different, already-
       // committed request — the entirely normal "download file, then reveal
       // message" and "reveal message, then download file" sequences.
-      await prisma.drop.updateMany({
-        where: {
-          id: dropId,
-          linkId: link.id,
-          fileEnvelopeStatus: "delivered",
-          OR: [{ messageEnvelopeStatus: "delivered" }, { encryptedMessage: null }],
-        },
-        data: { deliveryStatus: "delivered" },
-      });
-      await prisma.drop.updateMany({
-        where: {
-          id: dropId,
-          linkId: link.id,
-          deliveryStatus: { notIn: ["delivered"] },
-          OR: [{ fileEnvelopeStatus: "delivered" }, { messageEnvelopeStatus: "delivered" }],
-        },
-        data: { deliveryStatus: "partial_delivery" },
-      });
+      await recomputeDeliveryStatus(dropId, link.id);
 
       return reply.send({ completed: true });
     }
