@@ -66,8 +66,8 @@ export function chargedBytes(fileSize: number): bigint {
   return BigInt(fileSize) + BigInt(NACL_BOX_OVERHEAD_BYTES);
 }
 
-export function isChargedStatus(status: string): boolean {
-  return status !== "uploading";
+export function isChargedStatus(fileUploadStatus: string): boolean {
+  return fileUploadStatus === "complete";
 }
 
 type OwnerQuotaRow = { storageQuotaBytes: bigint; storageUsedBytes: bigint };
@@ -97,7 +97,7 @@ async function reservedUploadBytes(
 ): Promise<{ bytes: bigint; oldestCreatedAt: Date | null }> {
   const { _sum, _count, _min } = await tx.drop.aggregate({
     where: {
-      status: "uploading",
+      fileUploadStatus: "uploading",
       createdAt: { gt: reservationCutoff() },
       link: { ownerId: userId },
       ...(senderKey === undefined ? {} : { reservationSenderKey: senderKey }),
@@ -207,10 +207,10 @@ export async function assertWithinSenderShare(
 async function releaseCharged(
   tx: Prisma.TransactionClient,
   userId: string,
-  deleted: { fileSize: number; status: string }[]
+  deleted: { fileSize: number; fileUploadStatus: string }[]
 ): Promise<void> {
   const released = deleted
-    .filter((drop) => isChargedStatus(drop.status))
+    .filter((drop) => isChargedStatus(drop.fileUploadStatus))
     .reduce((sum, drop) => sum + chargedBytes(drop.fileSize), 0n);
   if (released > 0n) {
     await tx.user.update({ where: { id: userId }, data: { storageUsedBytes: { decrement: released } } });
@@ -241,8 +241,8 @@ export async function deleteLinkReleasingQuota(link: { id: string; ownerId: stri
     // lock on this row) until the link is gone, so no drop can slip in
     // between the Drop delete and the Link delete below.
     await tx.$queryRaw`SELECT "id" FROM "Link" WHERE "id" = ${link.id} FOR UPDATE`;
-    const deleted = await tx.$queryRaw<{ fileSize: number; status: string }[]>`
-      DELETE FROM "Drop" WHERE "linkId" = ${link.id} RETURNING "fileSize", "status"`;
+    const deleted = await tx.$queryRaw<{ fileSize: number; fileUploadStatus: string }[]>`
+      DELETE FROM "Drop" WHERE "linkId" = ${link.id} RETURNING "fileSize", "fileUploadStatus"`;
     if (owner) await releaseCharged(tx, ownerId, deleted);
     await tx.link.deleteMany({ where: { id: link.id } });
   }, QUOTA_TX_OPTIONS);
@@ -253,8 +253,8 @@ export async function deleteLinkReleasingQuota(link: { id: string; ownerId: stri
 export async function deleteDropReleasingQuota(dropId: string, ownerId: string): Promise<boolean> {
   return prisma.$transaction(async (tx) => {
     const owner = await lockOwnerQuota(tx, ownerId);
-    const deleted = await tx.$queryRaw<{ fileSize: number; status: string }[]>`
-      DELETE FROM "Drop" WHERE "id" = ${dropId} RETURNING "fileSize", "status"`;
+    const deleted = await tx.$queryRaw<{ fileSize: number; fileUploadStatus: string }[]>`
+      DELETE FROM "Drop" WHERE "id" = ${dropId} RETURNING "fileSize", "fileUploadStatus"`;
     if (owner) await releaseCharged(tx, ownerId, deleted);
     return deleted.length > 0;
   }, QUOTA_TX_OPTIONS);
