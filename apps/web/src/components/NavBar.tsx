@@ -22,6 +22,7 @@ export function NavBar() {
   const navigate = useNavigate();
   const [cooldownUntil, setCooldownUntil] = useState<number | null>(null);
   const [secondsLeft, setSecondsLeft] = useState(0);
+  const [resendMessage, setResendMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (!cooldownUntil) return;
@@ -48,9 +49,33 @@ export function NavBar() {
   };
 
   const handleResend = async () => {
-    setCooldownUntil(Date.now() + RESEND_COOLDOWN_SECONDS * 1000);
-    setSecondsLeft(RESEND_COOLDOWN_SECONDS);
-    await fetch("/api/auth/verify-email/resend", { method: "POST" });
+    setResendMessage(null);
+    try {
+      const res = await fetch("/api/auth/verify-email/resend", { method: "POST" });
+      if (res.status === 429) {
+        // The user IS presently rate-limited server-side, so the cooldown
+        // display is accurate here — just make clear why, rather than
+        // implying this click itself queued a send.
+        setCooldownUntil(Date.now() + RESEND_COOLDOWN_SECONDS * 1000);
+        setSecondsLeft(RESEND_COOLDOWN_SECONDS);
+        setResendMessage(t("resendFailed"));
+        return;
+      }
+      if (!res.ok) {
+        setResendMessage(t("resendFailed"));
+        return;
+      }
+      const body = await res.json().catch(() => null);
+      if (body && body.emailDeliveryAvailable === false) {
+        // No point rate-limiting a client that can never succeed.
+        setResendMessage(t("resendUnavailable"));
+        return;
+      }
+      setCooldownUntil(Date.now() + RESEND_COOLDOWN_SECONDS * 1000);
+      setSecondsLeft(RESEND_COOLDOWN_SECONDS);
+    } catch {
+      setResendMessage(t("resendFailed"));
+    }
   };
 
   return (
@@ -96,7 +121,7 @@ export function NavBar() {
           data-testid="verify-email-banner"
           className="flex items-center justify-between gap-2 bg-amber-100 px-4 py-2 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200"
         >
-          <span>{t("verifyEmailBanner")}</span>
+          <span>{resendMessage ? <span data-testid="resend-message">{resendMessage}</span> : t("verifyEmailBanner")}</span>
           <Button
             data-testid="resend-verification-button"
             size="sm"

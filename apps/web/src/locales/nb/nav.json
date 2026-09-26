@@ -12,5 +12,7 @@
   "themeDark": "Mørkt tema",
   "verifyEmailBanner": "Vennligst bekreft e-postadressen din for å låse opp full kontofunksjonalitet.",
   "resendVerification": "Send bekreftelses-e-post på nytt",
-  "resendVerificationCooldown": "Send på nytt om {{seconds}}s"
+  "resendVerificationCooldown": "Send på nytt om {{seconds}}s",
+  "resendUnavailable": "E-postlevering er ikke konfigurert på denne serveren. Kontakt administrator.",
+  "resendFailed": "Kunne ikke sende bekreftelses-e-post på nytt. Vennligst prøv igjen senere."
 }

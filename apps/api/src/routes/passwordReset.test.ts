@@ -59,7 +59,24 @@ async function registerUser(server: ReturnType<typeof buildServer>) {
       publicKey: "b3JpZ2luYWwtcHVia2V5",
     },
   });
-  return response.json();
+  const body = response.json();
+  // routes/auth.ts's best-effort verification-email send is now
+  // fire-and-forget (not awaited on the response path — see that file's
+  // comment), so it can still be in flight when inject() resolves. Its
+  // token row is written unconditionally, before the isMailerConfigured()
+  // check that this file's tests below rely on the call count/order of
+  // (e.g. a mockReturnValueOnce meant for a later call in the same test) —
+  // wait for that row so the incidental call has fully settled before this
+  // helper returns, and callers aren't racing it.
+  await vi.waitFor(async () => {
+    const token = await prisma.emailVerificationToken.findFirst({ where: { userId: body.userId } });
+    expect(token).not.toBeNull();
+  });
+  // Extra margin: the token row is written just before the
+  // isMailerConfigured() check in the same async function, so give that
+  // continuation a macrotask tick to run before returning control.
+  await new Promise((resolve) => setImmediate(resolve));
+  return body;
 }
 
 async function issueResetToken(userId: string, token = "test-reset-token"): Promise<string> {

@@ -29,7 +29,7 @@ type TwoFactorFlow =
 
 export function AccountPage() {
   const { t } = useTranslation("account");
-  const { user, loading, logout } = useAuth();
+  const { user, loading, logout, patchUser } = useAuth();
   const [deleted, setDeleted] = useState(false);
   const [flow, setFlow] = useState<TwoFactorFlow>({ step: "idle" });
   const [code, setCode] = useState("");
@@ -74,10 +74,7 @@ export function AccountPage() {
     }
     const { backupCodes } = await res.json();
     setCode("");
-    // Known gap: useAuth() exposes no refresh()/re-fetch of /api/auth/me, so
-    // user.totpEnabled here stays stale until the next full reload or login
-    // — see the note on the "idle" branches below. The 2FA state itself is
-    // correct server-side regardless.
+    patchUser({ totpEnabled: true });
     setFlow({ step: "backup-codes", codes: backupCodes });
   };
 
@@ -92,6 +89,7 @@ export function AccountPage() {
     });
     setCode("");
     if (!res.ok) return setError("invalid code");
+    patchUser({ totpEnabled: false });
     await startSetup();
   };
 
@@ -106,6 +104,7 @@ export function AccountPage() {
     });
     setCode("");
     if (!res.ok) return setError("invalid code");
+    patchUser({ totpEnabled: false });
     setFlow({ step: "idle" });
   };
 

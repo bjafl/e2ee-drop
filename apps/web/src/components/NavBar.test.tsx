@@ -1,6 +1,6 @@
 // apps/web/src/components/NavBar.test.tsx
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
@@ -114,5 +114,72 @@ describe("NavBar email verification banner", () => {
     fireEvent.click(button);
 
     expect(global.fetch).toHaveBeenCalledWith("/api/auth/verify-email/resend", { method: "POST" });
+    await waitFor(() => expect(button).toBeDisabled());
+  });
+
+  it("shows an unavailable message and does not start the cooldown when the server has no mailer configured", async () => {
+    authState.user = { id: "u1", username: "erin", emailVerified: false };
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ sent: true, emailDeliveryAvailable: false }),
+    }) as unknown as typeof fetch;
+
+    render(
+      <MemoryRouter>
+        <NavBar />
+      </MemoryRouter>
+    );
+
+    const button = screen.getByTestId("resend-verification-button");
+    fireEvent.click(button);
+
+    await waitFor(() => expect(screen.getByTestId("resend-message")).toBeInTheDocument());
+    expect(screen.getByTestId("resend-message")).toHaveTextContent(/not configured/i);
+    // No point rate-limiting a client that can never succeed.
+    expect(button).not.toBeDisabled();
+  });
+
+  it("shows a failure message and does not misleadingly imply success on a non-ok response", async () => {
+    authState.user = { id: "u1", username: "erin", emailVerified: false };
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({ error: "boom" }),
+    }) as unknown as typeof fetch;
+
+    render(
+      <MemoryRouter>
+        <NavBar />
+      </MemoryRouter>
+    );
+
+    const button = screen.getByTestId("resend-verification-button");
+    fireEvent.click(button);
+
+    await waitFor(() => expect(screen.getByTestId("resend-message")).toBeInTheDocument());
+    expect(screen.getByTestId("resend-message")).toHaveTextContent(/could not resend/i);
+    expect(button).not.toBeDisabled();
+  });
+
+  it("on a 429, shows a message but still shows the cooldown since the user is presently rate-limited", async () => {
+    authState.user = { id: "u1", username: "erin", emailVerified: false };
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      json: async () => ({ error: "Too many requests" }),
+    }) as unknown as typeof fetch;
+
+    render(
+      <MemoryRouter>
+        <NavBar />
+      </MemoryRouter>
+    );
+
+    const button = screen.getByTestId("resend-verification-button");
+    fireEvent.click(button);
+
+    await waitFor(() => expect(screen.getByTestId("resend-message")).toBeInTheDocument());
+    await waitFor(() => expect(button).toBeDisabled());
   });
 });

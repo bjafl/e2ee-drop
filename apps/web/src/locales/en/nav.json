@@ -12,5 +12,7 @@
   "themeDark": "Dark theme",
   "verifyEmailBanner": "Please verify your email address to unlock full account features.",
   "resendVerification": "Resend verification email",
-  "resendVerificationCooldown": "Resend available in {{seconds}}s"
+  "resendVerificationCooldown": "Resend available in {{seconds}}s",
+  "resendUnavailable": "Email delivery is not configured on this server. Contact the administrator.",
+  "resendFailed": "Could not resend verification email. Please try again later."
 }

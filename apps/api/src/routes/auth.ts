@@ -256,12 +256,19 @@ export function registerAuthRoutes(server: FastifyInstance): void {
 
       const session = await createSession(user.id);
 
-      // Best-effort: an SMTP failure must not fail registration itself.
-      try {
-        await sendVerificationEmailFor(user.id, user.email);
-      } catch {
-        // Never block registration on a mail-send failure.
-      }
+      // Best-effort, fire-and-forget: an SMTP failure must not fail
+      // registration, and — deliberately not awaited here — a slow or
+      // blackholed SMTP host must not delay this response either. Awaiting
+      // inline risked exceeding nginx's proxy_read_timeout before
+      // nodemailer's own connection timeout fired, turning a successful
+      // account creation into a client-visible 504. The promise is still
+      // kicked off synchronously (so a test asserting the mock was called
+      // observes that immediately), it just isn't awaited on the response
+      // path. Logs the error only (spec §3.1) — never the verification URL
+      // or token.
+      sendVerificationEmailFor(user.id, user.email).catch((err: unknown) => {
+        request.log.warn({ err }, "verification email send failed");
+      });
 
       reply.setCookie(SESSION_COOKIE_NAME, session.id, {
         ...sessionCookieAttributes(),

@@ -61,4 +61,15 @@ describe("totpBackupCodes", () => {
     const result = await consumeBackupCodeIfValid(userId, "zzzzz-zzzzz");
     expect(result).toBe(false);
   });
+
+  // Regression test: a real user hand-copying a code is prone to stray case
+  // and whitespace, and previously this hashed the raw input, so a
+  // correctly-typed-but-differently-cased/padded code hashed to a different
+  // value than the stored hash and was wrongly rejected as "invalid code".
+  it("accepts an uppercased, whitespace-padded variant of a real code", async () => {
+    const codes = await generateAndStoreBackupCodes(userId);
+    const messy = `  ${codes[0].toUpperCase()}  `;
+    const result = await consumeBackupCodeIfValid(userId, messy);
+    expect(result).toBe(true);
+  });
 });

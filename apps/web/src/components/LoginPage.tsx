@@ -77,6 +77,8 @@ export function LoginPage() {
               <input
                 id="login-totp"
                 autoComplete="one-time-code"
+                autoCapitalize="off"
+                spellCheck={false}
                 value={totpCode}
                 onChange={(e) => setTotpCode(e.target.value)}
                 className="w-full rounded border p-2"

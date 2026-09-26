@@ -307,15 +307,29 @@ describe("POST /api/auth/register — email verification", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(sendVerificationEmailMock).toHaveBeenCalledTimes(1);
+    // The send is fire-and-forget: the route kicks it off but does not await
+    // it on the response path (so a slow/blackholed SMTP host can't delay
+    // the response into a proxy timeout). sendVerificationEmailFor itself
+    // awaits a DB write before it ever calls the mock, so — unlike a truly
+    // synchronous call — the mock may still not have been invoked yet when
+    // inject() resolves. Poll briefly instead of asserting immediately.
+    await vi.waitFor(() => {
+      expect(sendVerificationEmailMock).toHaveBeenCalledTimes(1);
+    });
     const [to, url] = sendVerificationEmailMock.mock.calls[0];
     expect(to).toBe("verify-me@example.com");
     expect(url).toContain("/verify-email/confirm?token=");
 
     const user = await prisma.user.findUniqueOrThrow({ where: { email: "verify-me@example.com" } });
     expect(user.emailVerified).toBe(false);
-    const tokenRow = await prisma.emailVerificationToken.findFirst({ where: { userId: user.id } });
-    expect(tokenRow).not.toBeNull();
+    // Likewise, the token row is written by an `await` inside
+    // sendVerificationEmailFor's own body, which — since the route no
+    // longer awaits that whole call — may still be in flight. Poll briefly
+    // for it instead of asserting immediately.
+    await vi.waitFor(async () => {
+      const tokenRow = await prisma.emailVerificationToken.findFirst({ where: { userId: user.id } });
+      expect(tokenRow).not.toBeNull();
+    });
   });
 
   it("still succeeds when the mailer send throws (best-effort)", async () => {
@@ -336,6 +350,61 @@ describe("POST /api/auth/register — email verification", () => {
       },
     });
     expect(response.statusCode).toBe(200);
+  });
+
+  it("logs (via request.log.warn) when the best-effort send fails, without blocking the response", async () => {
+    sendVerificationEmailMock.mockRejectedValueOnce(new Error("smtp down"));
+    const server = buildServer();
+
+    // request.log is a per-request pino child logger that generates its own
+    // independent level methods (warn/info/etc.) rather than inheriting them
+    // from server.log — pino's setLevel() assigns each level method as a
+    // fresh, own-property function on whichever instance it's called for, so
+    // spying on server.log.warn (proven by direct experiment) never observes
+    // a call made through some request's own request.log.warn. Instead, wrap
+    // the actual per-request instance in place via an onRequest hook, which
+    // runs early enough (before the route handler) to patch the exact
+    // request.log the handler and its later .catch() callback will both use.
+    const warnCalls: unknown[][] = [];
+    server.addHook("onRequest", (request, _reply, done) => {
+      const original = request.log.warn.bind(request.log);
+      request.log.warn = (...args: Parameters<typeof original>) => {
+        warnCalls.push(args);
+        return original(...args);
+      };
+      done();
+    });
+
+    const start = Date.now();
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: {
+        email: "logs-on-failure@example.com",
+        username: "logsonfailure",
+        name: "Logs On Failure",
+        authKey: "p",
+        passwordSalt: "s",
+        passwordWrappedPrivateKey: "w",
+        recoveryWrappedPrivateKey: "r",
+        publicKey: "k",
+      },
+    });
+    const elapsedMs = Date.now() - start;
+
+    expect(response.statusCode).toBe(200);
+    // The response must not wait on the (failing) mail send — it should
+    // return promptly rather than only after the send's own rejection.
+    expect(elapsedMs).toBeLessThan(500);
+
+    await vi.waitFor(() => {
+      expect(warnCalls).toHaveLength(1);
+    });
+    const [logArg, msgArg] = warnCalls[0];
+    expect(msgArg).toBe("verification email send failed");
+    expect(logArg).toMatchObject({ err: expect.anything() });
+    // Never logs the verification URL or token itself, only the error.
+    expect(JSON.stringify(warnCalls)).not.toContain("/verify-email/confirm?token=");
   });
 });
 
