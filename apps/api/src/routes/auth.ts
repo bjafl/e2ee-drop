@@ -1,7 +1,7 @@
 // apps/api/src/routes/auth.ts
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { prisma, Prisma } from "@e2ee-drop/db";
-import { createHmac, randomBytes, createHash } from "node:crypto";
+import { createHmac } from "node:crypto";
 import type {
   RegisterRequest,
   RegisterResponse,
@@ -17,9 +17,9 @@ import { createDefaultLinkForUser } from "../lib/links";
 import { createSession, deleteSession } from "../lib/sessions";
 import { getUsedCodesForUser } from "../lib/totpReplayGuard";
 import { loginRateLimiter, registerRateLimiter, rateLimitExceededBody } from "../lib/rateLimit";
-import { isMailerConfigured, sendVerificationEmail } from "../lib/mailer";
 import { env } from "../env";
 import { SESSION_COOKIE_NAME } from "../plugins/auth";
+import { sendVerificationEmailFor } from "./verifyEmail";
 
 // A registered user's default personal Link is always addressable at
 // `/d/<username>` (see spec §5) — the username therefore doubles as a
@@ -80,12 +80,6 @@ function isValidUsername(username: string): boolean {
     USERNAME_CHARSET_PATTERN.test(username) &&
     !RESERVED_USERNAMES.has(username)
   );
-}
-
-const EMAIL_VERIFICATION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
-
-function hashVerificationToken(token: string): string {
-  return createHash("sha256").update(token).digest("hex");
 }
 
 // Must match the decoded byte length of the web client's
@@ -261,27 +255,11 @@ export function registerAuthRoutes(server: FastifyInstance): void {
 
       const session = await createSession(user.id);
 
-      // Best-effort: an SMTP failure must not fail registration itself — the
-      // account already exists and is usable (just unverified), and the user
-      // can always request a resend later (routes/verifyEmail.ts).
-      const verificationToken = randomBytes(32).toString("base64url");
-      await prisma.emailVerificationToken.create({
-        data: {
-          userId: user.id,
-          tokenHash: hashVerificationToken(verificationToken),
-          expiresAt: new Date(Date.now() + EMAIL_VERIFICATION_TOKEN_TTL_MS),
-        },
-      });
-      if (isMailerConfigured()) {
-        try {
-          await sendVerificationEmail(
-            user.email,
-            `${env.APP_URL}/verify-email/confirm?token=${verificationToken}`
-          );
-        } catch {
-          // Logged by the caller's own error handling if it matters; never
-          // block registration on a mail-send failure.
-        }
+      // Best-effort: an SMTP failure must not fail registration itself.
+      try {
+        await sendVerificationEmailFor(user.id, user.email);
+      } catch {
+        // Never block registration on a mail-send failure.
       }
 
       reply.setCookie(SESSION_COOKIE_NAME, session.id, {
