@@ -37,6 +37,23 @@ export function isLinkExpired(link: Link): boolean {
   return link.expiresAt !== null && link.expiresAt.getTime() < Date.now();
 }
 
+// Unifies every reason a link should be treated as gone when *served* (as
+// opposed to isLinkExpired, which the cleanup job also uses purely for its
+// own age-based sweep and must keep meaning "past expiresAt" only).
+// Checked wherever a link is read for the purpose of using it — GET
+// /api/links/:slug, upload, claim — never for ownership/management routes,
+// which an owner must still be able to reach on their own revoked/
+// unverified link.
+export async function isLinkInactive(link: Link): Promise<boolean> {
+  if (isLinkExpired(link)) return true;
+  if (link.revokedAt !== null) return true;
+  if (link.ownerId !== null) {
+    const owner = await prisma.user.findUnique({ where: { id: link.ownerId }, select: { emailVerified: true } });
+    if (!owner || !owner.emailVerified) return true;
+  }
+  return false;
+}
+
 // Deletes a Link by id, tolerating the case where it's already gone. Multiple
 // call sites (the user-initiated DELETE route, the cleanup job's sweep) can
 // independently decide the same link should be deleted and race each other;

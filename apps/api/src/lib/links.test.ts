@@ -19,7 +19,7 @@ vi.mock("./codewords", async (importOriginal) => {
   };
 });
 
-import { canReceive, deleteLinkIfExists, toDropSummary, toLinkStatusResponse } from "./links";
+import { canReceive, deleteLinkIfExists, toDropSummary, toLinkStatusResponse, isLinkInactive } from "./links";
 
 async function makeOwner(overrides: Partial<Parameters<typeof prisma.user.create>[0]["data"]> = {}) {
   return prisma.user.create({
@@ -277,6 +277,56 @@ describe("toLinkStatusResponse", () => {
 
       expect(response.drop).toBeNull();
     });
+  });
+});
+
+describe("isLinkInactive", () => {
+  beforeEach(async () => {
+    await prisma.drop.deleteMany();
+    await prisma.link.deleteMany();
+    await prisma.user.deleteMany();
+  });
+
+  it("is true for a revoked link even with no expiry", async () => {
+    const link = await prisma.link.create({
+      data: { slug: "revoked-test", mode: "permanent", visibility: "public", recipientPublicKey: "pk", revokedAt: new Date(), retentionDays: 7 },
+    });
+    expect(await isLinkInactive(link)).toBe(true);
+  });
+
+  it("is true for an owned link whose owner is unverified", async () => {
+    const owner = await prisma.user.create({
+      data: {
+        email: "unverified@example.com", username: "unverified", name: "U", passwordHash: "h", passwordSalt: "s",
+        passwordWrappedPrivateKey: "w", recoveryWrappedPrivateKey: "r", publicKey: "pk", storageQuotaBytes: 1000n,
+        emailVerified: false,
+      },
+    });
+    const link = await prisma.link.create({
+      data: { slug: "unverified-owner-link", mode: "permanent", visibility: "public", recipientPublicKey: owner.publicKey, ownerId: owner.id, retentionDays: 7 },
+    });
+    expect(await isLinkInactive(link)).toBe(true);
+  });
+
+  it("is false for an active, non-revoked, verified-owner link", async () => {
+    const owner = await prisma.user.create({
+      data: {
+        email: "verified@example.com", username: "verified", name: "V", passwordHash: "h", passwordSalt: "s",
+        passwordWrappedPrivateKey: "w", recoveryWrappedPrivateKey: "r", publicKey: "pk2", storageQuotaBytes: 1000n,
+        emailVerified: true,
+      },
+    });
+    const link = await prisma.link.create({
+      data: { slug: "active-link", mode: "permanent", visibility: "public", recipientPublicKey: owner.publicKey, ownerId: owner.id, retentionDays: 7 },
+    });
+    expect(await isLinkInactive(link)).toBe(false);
+  });
+
+  it("is false for an anonymous (ownerless) link with no expiry/revocation", async () => {
+    const link = await prisma.link.create({
+      data: { slug: "anon-link", mode: "one-time", visibility: "public", recipientPublicKey: "pk3", retentionDays: 7 },
+    });
+    expect(await isLinkInactive(link)).toBe(false);
   });
 });
 
