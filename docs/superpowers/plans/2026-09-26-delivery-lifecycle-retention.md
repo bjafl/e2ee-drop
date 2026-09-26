@@ -396,45 +396,65 @@ git add apps/api/src/routes/downloads.ts apps/api/src/routes/downloads.test.ts
 git commit -m "fix(api): replace complete-download's racy inline deliveryStatus derivation"
 ```
 
-## Task 5: `lastSenderOpenedAt` tracking via `?role=sender`
+## Task 5: `lastSenderOpenedAt` tracking via `POST /api/links/:slug/mark-sender-opened`
+
+**Amended per explicit user direction** (not a judgment call): the original design used a
+`?role=sender` query parameter on `GET /api/links/:slug`, symmetric to (and inheriting the same
+spoofability concern as) the `?role=receiver` design in spec 1 plan 2 Task 9, which the user
+rejected in favor of dedicated action endpoints. Applying the same fix here for consistency: drop
+the query param, add a dedicated endpoint the send-side page calls explicitly. (This field is lower
+stakes than `receiver_opened` — it's pure informational telemetry with no downstream effect on the
+burn/envelope state machine, and whoever calls it IS the one whose visit it truthfully records — but
+the user asked for the stronger mechanism uniformly, not decided case-by-case.)
 
 **Files:**
-- Modify: `apps/api/src/routes/links.ts` (the `GET /api/links/:slug` handler, extended by spec 1
-  plan 2 Task 9 with a `role=receiver` branch)
+- Modify: `apps/api/src/routes/links.ts` — add the new route; `GET /api/links/:slug` itself is
+  unchanged (no query param, no side effect, per spec 1 plan 2 Task 9's amendment).
 - Modify: `apps/web/src/components/UploadPage.tsx` (spec 1 plan 3 Task 11's status fetch)
 
 **Interfaces:**
-- Consumes: a new `?role=sender` query parameter, symmetric to the existing `?role=receiver`.
+- New route: `POST /api/links/:slug/mark-sender-opened`. No auth required, no body.
 - Produces: `Link.lastSenderOpenedAt` updated (unconditional overwrite, no CAS — every visit is
   meaningful, not just the first).
+- **Cross-plan note**: `docs/superpowers/plans/2026-09-26-e2ee-flow-3-frontend.md` (Task 11,
+  `UploadPage.tsx`) may already reference a `?role=sender`/plain status-fetch call site depending on
+  how that plan was written — whoever implements it needs to call this new endpoint alongside the
+  plain `GET`, not append a query param. That file is out of this amendment's scope; flag it
+  separately to whoever implements plan 3, same as Task 9's equivalent note for the receiver side.
 
 - [ ] **Step 1: Write the failing test**
 
 ```typescript
-it("GET with role=sender updates Link.lastSenderOpenedAt", async () => {
+it("POST mark-sender-opened updates Link.lastSenderOpenedAt", async () => {
   const before = await prisma.link.findUniqueOrThrow({ where: { slug } });
   expect(before.lastSenderOpenedAt).toBeNull();
 
-  await server.inject({ method: "GET", url: `/api/links/${slug}?role=sender` });
+  await server.inject({ method: "POST", url: `/api/links/${slug}/mark-sender-opened` });
 
   const after = await prisma.link.findUniqueOrThrow({ where: { slug } });
   expect(after.lastSenderOpenedAt).not.toBeNull();
 });
 
-it("GET with role=sender does not create any Drop or touch deliveryStatus", async () => {
+it("mark-sender-opened does not create any Drop or touch deliveryStatus", async () => {
   const before = await prisma.drop.count({ where: { linkId: link.id } });
-  await server.inject({ method: "GET", url: `/api/links/${slug}?role=sender` });
+  await server.inject({ method: "POST", url: `/api/links/${slug}/mark-sender-opened` });
   const after = await prisma.drop.count({ where: { linkId: link.id } });
   expect(after).toBe(before);
 });
 
-it("a second role=sender visit overwrites the earlier timestamp, not just the first", async () => {
-  await server.inject({ method: "GET", url: `/api/links/${slug}?role=sender` });
+it("a second visit overwrites the earlier timestamp, not just the first", async () => {
+  await server.inject({ method: "POST", url: `/api/links/${slug}/mark-sender-opened` });
   const first = (await prisma.link.findUniqueOrThrow({ where: { slug } })).lastSenderOpenedAt;
   await new Promise((r) => setTimeout(r, 5));
-  await server.inject({ method: "GET", url: `/api/links/${slug}?role=sender` });
+  await server.inject({ method: "POST", url: `/api/links/${slug}/mark-sender-opened` });
   const second = (await prisma.link.findUniqueOrThrow({ where: { slug } })).lastSenderOpenedAt;
   expect(second!.getTime()).toBeGreaterThan(first!.getTime());
+});
+
+it("plain GET never touches lastSenderOpenedAt on its own", async () => {
+  await server.inject({ method: "GET", url: `/api/links/${slug}` });
+  const after = await prisma.link.findUniqueOrThrow({ where: { slug } });
+  expect(after.lastSenderOpenedAt).toBeNull();
 });
 ```
 
@@ -444,26 +464,28 @@ it("a second role=sender visit overwrites the earlier timestamp, not just the fi
 pnpm --filter @e2ee-drop/api exec vitest run src/routes/links.test.ts
 ```
 
-- [ ] **Step 3: Add the branch**
-
-In the same `GET /api/links/:slug` handler Task 9 (spec 1 plan 2) already modified, add a sibling
-branch to the existing `if (request.query.role === "receiver" ...)` block:
+- [ ] **Step 3: Add the route**
 
 ```typescript
-      if (request.query.role === "sender") {
-        await prisma.link.updateMany({ where: { id: link.id }, data: { lastSenderOpenedAt: new Date() } });
-      }
+  server.post<{ Params: { slug: string } }>(
+    "/api/links/:slug/mark-sender-opened",
+    async (request, reply) => {
+      const link = await getLinkBySlug(request.params.slug);
+      if (!link) return reply.status(404).send({ error: "Link not found" });
+      if (isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+      await prisma.link.updateMany({ where: { id: link.id }, data: { lastSenderOpenedAt: new Date() } });
+      return reply.send({ acknowledged: true });
+    }
+  );
 ```
-
-Update the querystring type from `{ role?: string }` to keep accepting either value (no type change
-needed — it's already a bare `string`).
 
 - [ ] **Step 4: Update `UploadPage.tsx`'s status fetch**
 
-Find the plain `fetch(\`/api/links/${slug}\`)` call (spec 1 plan 3 Task 11) and change it to:
+Find the plain `fetch(\`/api/links/${slug}\`)` call (spec 1 plan 3 Task 11) and add a sibling,
+fire-and-forget call alongside it (does not need to block rendering on this one):
 
 ```typescript
-    fetch(`/api/links/${slug}?role=sender`)
+    fetch(`/api/links/${slug}/mark-sender-opened`, { method: "POST" }).catch(() => {});
 ```
 
 - [ ] **Step 5: Run to verify it passes**
@@ -477,7 +499,7 @@ pnpm --filter @e2ee-drop/web exec vitest run src/components/UploadPage.test.tsx
 
 ```bash
 git add apps/api/src/routes/links.ts apps/api/src/routes/links.test.ts apps/web/src/components/UploadPage.tsx
-git commit -m "feat: track Link.lastSenderOpenedAt on sender-side link fetch"
+git commit -m "feat: track Link.lastSenderOpenedAt via dedicated mark-sender-opened action"
 ```
 
 ## Task 6: Scrub-and-release quota helpers (`lib/quota.ts`)

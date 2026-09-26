@@ -926,40 +926,63 @@ git add apps/api/src/jobs/cleanup.ts apps/api/src/jobs/cleanup.test.ts
 git commit -m "feat(api): sweep abandoned uploads that were never explicitly abandoned or completed"
 ```
 
-## Task 9: `GET /api/links/:slug` — `role=receiver` gate for `receiver_opened`
+## Task 9: `POST /api/links/:slug/mark-receiver-opened` — dedicated action, replaces `role=` param
+
+**Amended per explicit user direction** (not a judgment call): the original design for this task
+used a client-supplied, unauthenticated `?role=receiver` query parameter on the shared `GET
+/api/links/:slug` — a sender could pass `?role=receiver` on their own request and mark their own
+drop "opened" prematurely. The user rejected this and asked for a stronger mechanism. Resolution
+agreed with the user:
+- **Owned links**: role is derivable server-side from session identity
+  (`request.user?.id === link.ownerId`) with no client input at all — not applicable to *this*
+  task though, since (as the original design already noted) an owned link's queue is read via the
+  separate owner-gated `GET /drops` route, not this one.
+- **Anonymous links**: there is no session to check, so role can never be more strongly
+  authenticated than "which action the client deliberately chose to call" (the same fundamental
+  limit as any client-reported signal in this app). Fix: drop the query param entirely and give
+  the receive side its own dedicated, single-purpose endpoint instead of an ambiguous flag on the
+  shared read. This doesn't make the signal cryptographically provable (nothing could, for an
+  anonymous link with no account behind it), but it narrows the surface from "flip a param on any
+  GET" to "call the one endpoint whose entire purpose is this action."
 
 **Files:**
-- Modify: `apps/api/src/routes/links.ts:153-162`
+- Modify: `apps/api/src/routes/links.ts` — add the new route; `GET /api/links/:slug` itself
+  (`:153-162`) is unchanged from today (no query param, no side effect — reverts to a pure read).
 
 **Interfaces:**
-- Consumes: a new `?role=receiver` query parameter (see Review Focus above for why this is
-  necessary — the same endpoint serves both `/send/:slug` and `/receive/:slug`).
-- Produces: sets `Drop.deliveryStatus` from `"sent"` to `"receiver_opened"` (CAS, one-way) only
-  when `role=receiver` is present, only for the single-drop anonymous-link case (an owned
-  permanent link's queue view is spec 5's concern, not this plan's).
-
-**Judgment call, flagged for review:** `role` is a client-supplied, unauthenticated query
-parameter — a sender could pass `?role=receiver` on their own request and mark their own drop
-"opened" prematurely. The consequence is a cosmetic inaccuracy in delivery history (spec 5), not a
-security or data-exposure issue (no additional data is revealed by the parameter — the same
-`toLinkStatusResponse` fields are returned either way), so this is accepted rather than solved with
-a stronger mechanism (e.g. per-drop capability tokens) that the spec doesn't call for.
+- New route: `POST /api/links/:slug/mark-receiver-opened`. No auth required (matches the
+  unauthenticated nature of an anonymous link's receive side). No body.
+- Produces: sets `Drop.deliveryStatus` from `"sent"` to `"receiver_opened"` (CAS, one-way), only
+  for the single-drop anonymous-link case (`link.ownerId === null`) — an owned permanent link's
+  queue view remains spec 5's concern, unchanged from the original design's scope.
+- **Cross-plan note**: `docs/superpowers/plans/2026-09-26-e2ee-flow-3-frontend.md` (Task 12,
+  `ReceivePage.tsx`) currently calls `fetch(`/api/links/${slug}?role=receiver`)` in three places —
+  those call sites need to change to a plain `GET /api/links/:slug` plus a separate
+  `POST .../mark-receiver-opened` call. That file is out of this amendment's scope; flag it
+  separately to whoever implements plan 3.
 
 - [ ] **Step 1: Write the failing test**
 
 ```typescript
-it("GET with role=receiver advances deliveryStatus from sent to receiver_opened", async () => {
+it("POST mark-receiver-opened advances deliveryStatus from sent to receiver_opened", async () => {
   // ...create link, upload-url, complete (deliveryStatus now "sent")
-  await server.inject({ method: "GET", url: `/api/links/${slug}?role=receiver` });
+  await server.inject({ method: "POST", url: `/api/links/${slug}/mark-receiver-opened` });
   const res = await server.inject({ method: "GET", url: `/api/links/${slug}` });
   expect(res.json().drop.deliveryStatus).toBe("receiver_opened");
 });
 
-it("GET without role=receiver does not advance deliveryStatus", async () => {
+it("plain GET never advances deliveryStatus on its own", async () => {
   // ...same setup
   await server.inject({ method: "GET", url: `/api/links/${slug}` });
   const res = await server.inject({ method: "GET", url: `/api/links/${slug}` });
   expect(res.json().drop.deliveryStatus).toBe("sent");
+});
+
+it("mark-receiver-opened is a no-op for an owned link", async () => {
+  // ...owned link, drop "sent" — the owner's queue view (spec 5) governs this case instead
+  await server.inject({ method: "POST", url: `/api/links/${ownedSlug}/mark-receiver-opened` });
+  const res = await server.inject({ method: "GET", url: `/api/links/${ownedSlug}/drops` }, { headers: authHeaders });
+  expect(res.json().drops[0].deliveryStatus).toBe("sent");
 });
 ```
 
@@ -972,15 +995,17 @@ pnpm --filter @e2ee-drop/api exec vitest run src/routes/links.test.ts
 - [ ] **Step 3: Implement**
 
 ```typescript
-  server.get<{ Params: { slug: string }; Querystring: { role?: string } }>(
-    "/api/links/:slug",
+  // GET /api/links/:slug is unchanged from today — no query param, no side effect.
+
+  server.post<{ Params: { slug: string } }>(
+    "/api/links/:slug/mark-receiver-opened",
     async (request, reply) => {
       const link = await getLinkBySlug(request.params.slug);
       if (!link) return reply.status(404).send({ error: "Link not found" });
       if (isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
       // Anonymous/one-time link's single drop only (design spec §6.1) — an owned link's queue is
       // read via the separate owner-gated GET /drops route, which spec 5 will extend similarly.
-      if (request.query.role === "receiver" && link.ownerId === null) {
+      if (link.ownerId === null) {
         const drop = link.drops[0];
         if (drop) {
           await prisma.drop.updateMany({
@@ -989,10 +1014,7 @@ pnpm --filter @e2ee-drop/api exec vitest run src/routes/links.test.ts
           });
         }
       }
-      // Re-fetch after the possible update so the response reflects it — cheaper than threading
-      // the new status through the in-memory `link` object by hand for one field.
-      const fresh = await getLinkBySlug(request.params.slug);
-      return reply.send(await toLinkStatusResponse(fresh!));
+      return reply.send({ acknowledged: true });
     }
   );
 ```
@@ -1007,7 +1029,7 @@ pnpm --filter @e2ee-drop/api exec vitest run src/routes/links.test.ts
 
 ```bash
 git add apps/api/src/routes/links.ts apps/api/src/routes/links.test.ts
-git commit -m "feat(api): advance deliveryStatus to receiver_opened on receiver-side link fetch"
+git commit -m "feat(api): add mark-receiver-opened action, replacing spoofable role= query param"
 ```
 
 ## Task 10: `POST .../drops/:dropId/reveal-message`
