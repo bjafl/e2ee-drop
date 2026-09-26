@@ -70,4 +70,34 @@ export function registerAccountRoutes(server: FastifyInstance): void {
       return reply.send({ deleted: true });
     }
   );
+
+  server.patch<{ Body: { allowContactRequests?: boolean } }>(
+    "/api/account",
+    {
+      preHandler: server.requireAuth,
+      schema: {
+        body: {
+          type: "object",
+          properties: {
+            allowContactRequests: { type: "boolean" },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      // Only field supported today; a body without it is a no-op rather than
+      // a 400, so a future settings field added to the same route doesn't
+      // force every existing caller to send every field on each PATCH.
+      if (request.body.allowContactRequests === undefined) {
+        return reply.send({ updated: false });
+      }
+
+      await prisma.user.update({
+        where: { id: request.user!.id },
+        data: { allowContactRequests: request.body.allowContactRequests },
+      });
+
+      return reply.send({ updated: true });
+    }
+  );
 }

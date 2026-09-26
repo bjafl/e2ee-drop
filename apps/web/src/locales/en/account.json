@@ -2,5 +2,7 @@
   "title": "Your account",
   "signedInAs": "Signed in as {{username}}",
   "email": "Email: {{email}}",
+  "privacy": "Privacy",
+  "allowContactRequestsLabel": "Allow contact requests",
   "dangerZone": "Danger zone"
 }

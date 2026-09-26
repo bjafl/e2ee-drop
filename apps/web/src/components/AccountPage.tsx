@@ -16,6 +16,10 @@ export function AccountPage() {
   const { t } = useTranslation("account");
   const { user, loading, logout } = useAuth();
   const [deleted, setDeleted] = useState(false);
+  // Defaults to true, matching the DB column's default (see
+  // packages/db/prisma/schema.prisma) — undefined here just means the
+  // initial /api/auth/me restore hasn't populated it yet (see AuthUser).
+  const [allowContactRequests, setAllowContactRequests] = useState(user?.allowContactRequests ?? true);
 
   // Checked before the logged-out guard: logout() below sets user to null,
   // and without this the re-render would hit `!user` and land on /login.
@@ -34,6 +38,25 @@ export function AccountPage() {
     void logout().catch(() => undefined);
   };
 
+  // Optimistic: flips immediately, then persists. On failure the toggle is
+  // rolled back rather than left showing a state the server never saved —
+  // matching DeleteAccountDialog's approach of trusting the request unless
+  // it's known to have failed.
+  const toggleAllowContactRequests = async () => {
+    const next = !allowContactRequests;
+    setAllowContactRequests(next);
+    try {
+      const response = await fetch("/api/account", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ allowContactRequests: next }),
+      });
+      if (!response.ok) setAllowContactRequests(!next);
+    } catch {
+      setAllowContactRequests(!next);
+    }
+  };
+
   return (
     <Card className="mx-auto mt-12 max-w-md">
       <CardHeader>
@@ -43,6 +66,18 @@ export function AccountPage() {
         <div className="space-y-1">
           <p>{t("signedInAs", { username: user.username })}</p>
           <p className="text-sm text-muted-foreground">{t("email", { email: user.email })}</p>
+        </div>
+        <div>
+          <h2 className="mb-2 font-semibold">{t("privacy")}</h2>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={allowContactRequests}
+              onChange={toggleAllowContactRequests}
+              aria-label={t("allowContactRequestsLabel")}
+            />
+            {t("allowContactRequestsLabel")}
+          </label>
         </div>
         <div>
           <h2 className="mb-2 font-semibold">{t("dangerZone")}</h2>

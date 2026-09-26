@@ -6,7 +6,7 @@ import { MemoryRouter, Routes, Route } from "react-router-dom";
 
 const logout = vi.fn();
 const authState: {
-  user: { id: string; username: string; email: string } | null;
+  user: { id: string; username: string; email: string; allowContactRequests?: boolean } | null;
   loading: boolean;
 } = { user: null, loading: false };
 
@@ -83,6 +83,42 @@ describe("AccountPage", () => {
 
     await waitFor(() => {
       expect(logout).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("toggles allowContactRequests and PATCHes the change to the server", async () => {
+    authState.user = { id: "u1", username: "alice", email: "alice@example.com", allowContactRequests: true };
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ updated: true }) });
+
+    renderAt("/account");
+    const toggle = screen.getByLabelText(/allow contact requests/i);
+    expect(toggle).toBeChecked();
+
+    await userEvent.click(toggle);
+
+    expect(toggle).not.toBeChecked();
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/account",
+        expect.objectContaining({
+          method: "PATCH",
+          body: JSON.stringify({ allowContactRequests: false }),
+        })
+      );
+    });
+  });
+
+  it("rolls the toggle back if the PATCH request fails", async () => {
+    authState.user = { id: "u1", username: "alice", email: "alice@example.com", allowContactRequests: true };
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, json: async () => ({ error: "nope" }) });
+
+    renderAt("/account");
+    const toggle = screen.getByLabelText(/allow contact requests/i);
+
+    await userEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(toggle).toBeChecked();
     });
   });
 });
