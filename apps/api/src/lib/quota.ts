@@ -5,11 +5,12 @@
 // helper here leaves anonymous links on their original, unaccounted code path.
 //
 // Invariant: User.storageUsedBytes == sum of chargedBytes(fileSize) over the
-// user's drops whose status is anything but "uploading". A drop is charged
-// exactly once, when /complete wins its "uploading" -> "uploaded" CAS, and
-// released exactly once, when a charged drop's row is deleted. No status ever
-// moves back to "uploading", so "status !== uploading" is exactly the set of
-// charged drops.
+// user's drops whose fileUploadStatus is "complete" (see isChargedStatus).
+// "reserved" and "uploading" drops are in-flight and not yet charged. A drop
+// is charged exactly once, when /complete wins its "uploading" -> "complete"
+// CAS, and released exactly once, when a charged drop's row is deleted. No
+// status ever moves back out of "complete", so isChargedStatus(status) is
+// exactly the set of charged drops.
 //
 // Lock ordering (to rule out deadlocks between these transactions):
 //   User row  ->  Link row  ->  Drop row(s)

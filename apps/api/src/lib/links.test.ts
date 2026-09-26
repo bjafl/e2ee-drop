@@ -1,7 +1,44 @@
 // apps/api/src/lib/links.test.ts
-import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, type Drop } from "@e2ee-drop/db";
-import { deleteLinkIfExists, toDropSummary } from "./links";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { prisma, type Drop, type Link } from "@e2ee-drop/db";
+
+// toLinkStatusResponse must not derive codewords for an unclaimed link (no
+// recipientPublicKey to derive from) — wrap the real implementation so tests
+// can assert it was never called, following routes/links.test.ts's
+// vi.hoisted + vi.mock(importOriginal) pattern for wrapping a real dependency.
+const { deriveCodewordsSpy } = vi.hoisted(() => ({ deriveCodewordsSpy: vi.fn() }));
+
+vi.mock("./codewords", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./codewords")>();
+  return {
+    ...actual,
+    deriveCodewords: (...args: Parameters<typeof actual.deriveCodewords>) => {
+      deriveCodewordsSpy(...args);
+      return actual.deriveCodewords(...args);
+    },
+  };
+});
+
+import { deleteLinkIfExists, toDropSummary, toLinkStatusResponse } from "./links";
+
+function makeLink(overrides: Partial<Link> = {}): Link {
+  return {
+    id: "link1",
+    ownerId: null,
+    slug: "link-slug",
+    mode: "permanent",
+    visibility: "public",
+    recipientPublicKey: "recipient-pk",
+    codewordLocale: "en",
+    retentionDays: 7,
+    isDefault: false,
+    createdAt: new Date(),
+    expiresAt: null,
+    revokedAt: null,
+    ownerNote: null,
+    ...overrides,
+  };
+}
 
 function makeDrop(overrides: Partial<Drop> = {}): Drop {
   const now = new Date();
@@ -81,5 +118,122 @@ describe("toDropSummary", () => {
     const drop = makeDrop({ createdAt });
     const summary = toDropSummary(drop, { retentionDays: 3 });
     expect(summary.contentExpiresAt).toBe(createdAt.getTime() + 3 * 24 * 60 * 60 * 1000);
+  });
+});
+
+describe("toLinkStatusResponse", () => {
+  const BASE_RESPONSE_KEYS = [
+    "slug",
+    "mode",
+    "recipientPublicKey",
+    "drop",
+    "isAnonymous",
+    "codewords",
+    "ownerNote",
+    "retentionDays",
+    "expiresAt",
+  ].sort();
+
+  beforeEach(async () => {
+    deriveCodewordsSpy.mockClear();
+    await prisma.drop.deleteMany();
+    await prisma.link.deleteMany();
+    await prisma.user.deleteMany();
+  });
+
+  async function makeOwner(overrides: Partial<Parameters<typeof prisma.user.create>[0]["data"]> = {}) {
+    return prisma.user.create({
+      data: {
+        email: "owner@example.com",
+        emailVerified: true,
+        username: "owner",
+        name: "Owner Name",
+        passwordHash: "x",
+        passwordSalt: "x",
+        passwordWrappedPrivateKey: "x",
+        recoveryWrappedPrivateKey: "x",
+        publicKey: "b3duZXJrZXk=",
+        storageQuotaBytes: BigInt(1024 * 1024 * 1024), // 1GB
+        ...overrides,
+      },
+    });
+  }
+
+  it("returns only the base response fields for an unverified owner — no recipient* keys at all", async () => {
+    const owner = await makeOwner({ emailVerified: false, showEmailOnPublicProfile: true });
+    const link = { ...makeLink({ ownerId: owner.id, recipientPublicKey: owner.publicKey }), drops: [] };
+
+    const response = await toLinkStatusResponse(link);
+
+    // Exactly the base field set — not just undefined values for the recipient* keys,
+    // but the keys themselves absent (design spec §9/§6.4: an unverified owner is
+    // shown exactly like an anonymous link).
+    expect(Object.keys(response).sort()).toEqual(BASE_RESPONSE_KEYS);
+    for (const key of [
+      "recipientName",
+      "recipientUsername",
+      "recipientEmail",
+      "recipientEmailVerified",
+      "recipientTotpEnabled",
+    ]) {
+      expect(Object.prototype.hasOwnProperty.call(response, key)).toBe(false);
+    }
+  });
+
+  it("omits recipientEmail for a verified owner's default link when showEmailOnPublicProfile is false", async () => {
+    const owner = await makeOwner({
+      username: "hideemail",
+      email: "hideemail@example.com",
+      showEmailOnPublicProfile: false,
+    });
+    const link = { ...makeLink({ ownerId: owner.id, isDefault: true, recipientPublicKey: owner.publicKey }), drops: [] };
+
+    const response = await toLinkStatusResponse(link);
+
+    expect(Object.prototype.hasOwnProperty.call(response, "recipientEmail")).toBe(false);
+  });
+
+  it("includes recipientEmail for a verified owner's default link when showEmailOnPublicProfile is true", async () => {
+    const owner = await makeOwner({
+      username: "showemail",
+      email: "showemail@example.com",
+      showEmailOnPublicProfile: true,
+    });
+    const link = { ...makeLink({ ownerId: owner.id, isDefault: true, recipientPublicKey: owner.publicKey }), drops: [] };
+
+    const response = await toLinkStatusResponse(link);
+
+    expect(response.recipientEmail).toBe(owner.email);
+  });
+
+  it.each([
+    ["false", false],
+    ["true", true],
+  ])(
+    "includes recipientEmail for a non-default owned link regardless of showEmailOnPublicProfile (%s)",
+    async (label, showEmailOnPublicProfile) => {
+      const owner = await makeOwner({
+        username: `nondefault-${label}`,
+        email: `nondefault-${label}@example.com`,
+        showEmailOnPublicProfile,
+      });
+      const link = {
+        ...makeLink({ ownerId: owner.id, isDefault: false, recipientPublicKey: owner.publicKey }),
+        drops: [],
+      };
+
+      const response = await toLinkStatusResponse(link);
+
+      expect(response.recipientEmail).toBe(owner.email);
+    }
+  );
+
+  it("returns codewords: [] and never calls deriveCodewords for an unclaimed link", async () => {
+    const link = { ...makeLink({ ownerId: null, recipientPublicKey: null }), drops: [] };
+
+    const response = await toLinkStatusResponse(link);
+
+    expect(response.codewords).toEqual([]);
+    expect(deriveCodewordsSpy).not.toHaveBeenCalled();
   });
 });

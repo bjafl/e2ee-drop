@@ -55,6 +55,10 @@ export async function deleteLinkIfExists(id: string): Promise<void> {
 // which also handled the download-side "uploaded"->"downloading"->"downloaded" transitions —
 // those no longer live on a single column (see design spec §6.3); plan 2 adds dedicated CAS
 // helpers for messageEnvelopeStatus/fileEnvelopeStatus instead of overloading this one.
+//
+// Scoping by linkId matters because drop ids are not secret (GET /api/links/:slug
+// returns them), so a drop id alone must never authorize a transition on some
+// other link's drop.
 export async function transitionFileUploadStatus(
   dropId: string,
   linkId: string,

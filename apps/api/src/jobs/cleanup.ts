@@ -3,7 +3,6 @@ import { prisma } from "@e2ee-drop/db";
 import { deleteObject } from "../lib/storage";
 import { deleteLinkIfExists } from "../lib/links";
 import { deleteDropReleasingQuota, deleteLinkReleasingQuota } from "../lib/quota";
-import { env } from "../env";
 
 export async function runCleanup(): Promise<{ deletedLinks: number }> {
   const now = new Date();

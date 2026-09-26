@@ -41,7 +41,8 @@ identical to `POSTGRES_PASSWORD` (see the table below).
 | `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | — (required) | `api`, `cleanup` | Credentials the API uses to sign presigned URLs. **Must equal `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`** — nothing provisions a separate MinIO user, so these are the root credentials under another name |
 | `MAX_FILE_SIZE_BYTES` | `524288000` (500 MB) | `api` | Largest file a sender may upload. Uploads pass through `web`'s `/s3/` proxy, which has a static `client_max_body_size 550m` in `apps/web/nginx.conf`; raising this above ~500 MiB also requires raising that nginx setting, or large uploads are rejected at the proxy |
 | `LINK_EXPIRY_HOURS` | `24` | `api` | How long an anonymous/one-time link stays valid before it's swept |
-| `DROP_RETENTION_DAYS` | `7` | `api`, `cleanup` | Default max age for an undownloaded drop on a permanent link before it's purged; overridable per link |
+| `DROP_RETENTION_DAYS_DEFAULT` | `1` | `api`, `cleanup` | Default max age for an undownloaded drop on a permanent link before it's purged, when the link doesn't set its own retention |
+| `DROP_RETENTION_DAYS_MAX` | `7` | `api`, `cleanup` | Upper bound on the per-link retention a permanent link may set, overriding `DROP_RETENTION_DAYS_DEFAULT` |
 | `SESSION_SECRET` | — (required) | `api`, `cleanup` | Signs the httpOnly session cookie |
 | `APP_SECRET_KEY` | — (required) | `api`, `cleanup` | Encrypts stored TOTP secrets at rest |
 | `ALLOW_REGISTRATION` | `true` | `api`, `cleanup` | Set to `false` to close self-registration on this instance |
