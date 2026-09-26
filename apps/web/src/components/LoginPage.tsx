@@ -1,6 +1,7 @@
 // apps/web/src/components/LoginPage.tsx
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAuth } from "@/hooks/useAuth";
@@ -14,6 +15,14 @@ i18n.addResourceBundle("nb", "auth", authNb, true, false);
 export function LoginPage() {
   const { t } = useTranslation("auth");
   const { login } = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
+  // I8 (final review): the various "log in" links elsewhere (UploadPage's
+  // anonymous-consent dialog and reauth gate, ReceivePage's reauth gate and
+  // claim view) pass `state: { returnTo }` when navigating here, so a
+  // successful login can send the visitor back to where they actually meant
+  // to go instead of leaving them on this page's own terminal message.
+  const returnTo = (location.state as { returnTo?: string } | null)?.returnTo;
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [totpCode, setTotpCode] = useState("");
@@ -30,6 +39,10 @@ export function LoginPage() {
         setNeedsTotp(true);
         return;
       }
+      if (returnTo) {
+        navigate(returnTo, { replace: true });
+        return;
+      }
       setDone(true);
     } catch {
       setError(needsTotp ? t("login.errors.invalidTotp") : t("login.errors.invalid"));
@@ -37,8 +50,9 @@ export function LoginPage() {
   };
 
   // Same terminal-message pattern as RegisterPage/UploadPage/CreateLinkPage:
-  // no logged-in landing page exists yet in this codebase (Plan 3), so there's
-  // no established redirect target to navigate to after a successful login.
+  // no logged-in landing page exists yet in this codebase (Plan 3), so
+  // without a `returnTo` there's no established redirect target to navigate
+  // to after a successful login.
   if (done) return <p>{t("login.title")} ✓</p>;
 
   return (
