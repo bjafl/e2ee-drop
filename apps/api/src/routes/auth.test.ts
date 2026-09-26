@@ -468,6 +468,42 @@ describe("POST /api/auth/login, /api/auth/logout, GET /api/auth/me", () => {
     expect(replay.statusCode).toBe(401);
   });
 
+  it("accepts a valid unused backup code at login in place of a TOTP code", async () => {
+    const server = buildServer();
+    const registerRes = await register(server);
+    const cookieValue = registerRes.cookies.find((c) => c.name === "e2ee_drop_session")!.value;
+
+    const setupRes = await server.inject({
+      method: "POST",
+      url: "/api/auth/2fa/setup",
+      cookies: { e2ee_drop_session: cookieValue },
+    });
+    const { secretBase32 } = setupRes.json();
+    const totp = new TOTP({ secret: Secret.fromBase32(secretBase32) });
+    const enableRes = await server.inject({
+      method: "POST",
+      url: "/api/auth/2fa/enable",
+      cookies: { e2ee_drop_session: cookieValue },
+      payload: { code: totp.generate() },
+    });
+    const [backupCode] = enableRes.json().backupCodes as string[];
+
+    const loginRes = await server.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { email: "carol@example.com", authKey: "correct horse battery staple", totpCode: backupCode },
+    });
+    expect(loginRes.statusCode).toBe(200);
+
+    // Reused — must now fail.
+    const secondLoginRes = await server.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { email: "carol@example.com", authKey: "correct horse battery staple", totpCode: backupCode },
+    });
+    expect(secondLoginRes.statusCode).toBe(401);
+  });
+
   it("allows legitimate traffic well under the rate limit (regression guard against an overly strict window)", async () => {
     const server = buildServer();
     await register(server);

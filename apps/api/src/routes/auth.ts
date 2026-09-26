@@ -16,6 +16,7 @@ import { decryptTotpSecret, verifyTotpCode } from "../lib/totp";
 import { createDefaultLinkForUser } from "../lib/links";
 import { createSession, deleteSession } from "../lib/sessions";
 import { getUsedCodesForUser } from "../lib/totpReplayGuard";
+import { consumeBackupCodeIfValid } from "../lib/totpBackupCodes";
 import { loginRateLimiter, registerRateLimiter, rateLimitExceededBody } from "../lib/rateLimit";
 import { env } from "../env";
 import { SESSION_COOKIE_NAME } from "../plugins/auth";
@@ -339,7 +340,13 @@ export function registerAuthRoutes(server: FastifyInstance): void {
           return reply.status(401).send({ error: "TOTP code required", requiresTotp: true });
         }
         const secret = decryptTotpSecret(user.totpSecretEncrypted!);
-        if (!verifyTotpCode(secret, totpCode, getUsedCodesForUser(user.id))) {
+        const totpValid = verifyTotpCode(secret, totpCode, getUsedCodesForUser(user.id));
+        // A backup code is checked only when the TOTP check itself fails — a
+        // real TOTP code must never accidentally match a backup code's format
+        // and get treated as one, and this ordering guarantees that (backup
+        // codes are hyphenated 10-char strings, TOTP codes are 6 digits, but
+        // checking TOTP first costs nothing and removes any ambiguity).
+        if (!totpValid && !(await consumeBackupCodeIfValid(user.id, totpCode))) {
           return reply.status(401).send({ error: "Invalid TOTP code" });
         }
       }
