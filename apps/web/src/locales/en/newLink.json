@@ -7,6 +7,10 @@
   "visibilityLabel": "Who can send to it",
   "visibilityPublic": "Anyone with the link",
   "visibilityContactsOnly": "Only my accepted contacts",
+  "ownerNoteLabel": "Note for the recipient",
+  "ownerNotePlaceholder": "Optional note (not encrypted)",
+  "ownerNoteWarning": "This note is not encrypted and is visible to anyone with the link.",
+  "retentionDaysLabel": "Link expires after (days)",
   "createButton": "Create link",
   "success": "Link created:",
   "errors": { "createFailed": "Could not create that link. The name might already be taken." }

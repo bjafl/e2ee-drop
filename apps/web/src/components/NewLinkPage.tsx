@@ -15,6 +15,8 @@ export function NewLinkPage() {
   const [slug, setSlug] = useState("");
   const [mode, setMode] = useState<"permanent" | "one-time">("permanent");
   const [visibility, setVisibility] = useState<"public" | "contacts-only">("public");
+  const [ownerNote, setOwnerNote] = useState("");
+  const [retentionDays, setRetentionDays] = useState<number | "">("");
   const [createdSlug, setCreatedSlug] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -23,7 +25,13 @@ export function NewLinkPage() {
     const res = await fetch("/api/links/custom", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ slug, mode, visibility }),
+      body: JSON.stringify({
+        slug,
+        mode,
+        visibility,
+        ownerNote: ownerNote || undefined,
+        retentionDays: retentionDays === "" ? undefined : retentionDays,
+      }),
     });
     if (!res.ok) {
       setError(t("errors.createFailed"));
@@ -75,6 +83,28 @@ export function NewLinkPage() {
               <SelectItem value="contacts-only">{t("visibilityContactsOnly")}</SelectItem>
             </SelectContent>
           </Select>
+        </div>
+        <div>
+          <label htmlFor="ownerNote">{t("ownerNoteLabel")}</label>
+          <textarea
+            id="ownerNote"
+            value={ownerNote}
+            onChange={(e) => setOwnerNote(e.target.value)}
+            placeholder={t("ownerNotePlaceholder")}
+            className="w-full rounded border p-2 text-sm"
+          />
+          <p className="text-xs text-muted-foreground">{t("ownerNoteWarning")}</p>
+        </div>
+        <div>
+          <label htmlFor="retentionDays">{t("retentionDaysLabel")}</label>
+          <input
+            id="retentionDays"
+            type="number"
+            min={1}
+            value={retentionDays}
+            onChange={(e) => setRetentionDays(e.target.value === "" ? "" : Number(e.target.value))}
+            className="w-full rounded border p-2 text-sm"
+          />
         </div>
         <Button onClick={submit}>{t("createButton")}</Button>
       </CardContent>
