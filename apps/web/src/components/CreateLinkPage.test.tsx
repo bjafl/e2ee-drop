@@ -79,7 +79,8 @@ describe("CreateLinkPage", () => {
     render(<CreateLinkPage />);
 
     await user.type(screen.getByLabelText(/note for the recipient/i), "For the design team");
-    await user.type(screen.getByLabelText(/link expires after/i), "5");
+    await user.clear(screen.getByLabelText(/delete received files after/i));
+    await user.type(screen.getByLabelText(/delete received files after/i), "5");
     await user.click(screen.getByRole("button", { name: /create/i }));
 
     await waitFor(() => {
@@ -92,6 +93,11 @@ describe("CreateLinkPage", () => {
     });
     const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string);
     expect(body.retentionDays).toBe(5);
+  });
+
+  it("I7: pre-fills the retention field with a default value instead of leaving it blank", () => {
+    render(<CreateLinkPage />);
+    expect(screen.getByLabelText(/delete received files after/i)).toHaveValue(1);
   });
 
   it("keeps the private key in localStorage until the server's expiresAt, not a hardcoded expiry", async () => {

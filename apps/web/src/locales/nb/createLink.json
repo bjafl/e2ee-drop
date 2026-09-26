@@ -3,7 +3,7 @@
   "ownerNoteLabel": "Notat til mottakeren",
   "ownerNotePlaceholder": "Valgfritt notat (ikke kryptert)",
   "ownerNoteWarning": "Dette notatet er ikke kryptert og er synlig for alle med lenken.",
-  "retentionDaysLabel": "Lenken utløper etter (dager)",
+  "retentionDaysLabel": "Slett mottatte filer etter (dager)",
   "pinLabel": "Beskytt nøkkelen din med en PIN (valgfritt)",
   "pinPlaceholder": "4–6-sifret PIN",
   "pinWarning": "Denne PIN-en gjør det vanskeligere for andre som bruker samme nettleser å dekryptere innholdet ditt. Den er ikke en erstatning for ordentlig sikkerhet — unngå å stole på denne løsningen på en delt eller offentlig maskin.",

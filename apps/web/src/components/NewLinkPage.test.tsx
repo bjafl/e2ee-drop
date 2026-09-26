@@ -28,7 +28,7 @@ describe("NewLinkPage", () => {
     fireEvent.change(screen.getByLabelText(/note for the recipient/i), {
       target: { value: "For the design team" },
     });
-    fireEvent.change(screen.getByLabelText(/link expires after/i), { target: { value: "5" } });
+    fireEvent.change(screen.getByLabelText(/delete received files after/i), { target: { value: "5" } });
     fireEvent.click(screen.getByText(/create link/i));
 
     await waitFor(() => {
@@ -43,10 +43,11 @@ describe("NewLinkPage", () => {
     expect(body.retentionDays).toBe(5);
   });
 
-  it("omits owner note and retention days when left blank", async () => {
+  it("omits owner note, and retention days, when both are explicitly cleared", async () => {
     render(<NewLinkPage />);
 
     fireEvent.change(screen.getByLabelText(/link name/i), { target: { value: "team-drop" } });
+    fireEvent.change(screen.getByLabelText(/delete received files after/i), { target: { value: "" } });
     fireEvent.click(screen.getByText(/create link/i));
 
     await waitFor(() => {
@@ -55,5 +56,10 @@ describe("NewLinkPage", () => {
     const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string);
     expect(body.ownerNote).toBeUndefined();
     expect(body.retentionDays).toBeUndefined();
+  });
+
+  it("I7: pre-fills the retention field with a default value instead of leaving it blank", () => {
+    render(<NewLinkPage />);
+    expect(screen.getByLabelText(/delete received files after/i)).toHaveValue(1);
   });
 });

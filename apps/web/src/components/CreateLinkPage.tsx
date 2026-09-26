@@ -17,11 +17,17 @@ i18n.addResourceBundle("nb", "createLink", createLinkNb, true, false);
 
 const CODEWORD_DEFAULT_COUNT = 3;
 
+// I7 (final review): mirrors apps/api/src/env.ts's DROP_RETENTION_DAYS_DEFAULT
+// (1) — no frontend-visible response exposes the operator-configured value
+// before a link exists (see the same comment in RequestLinkPage.tsx). Update
+// if the documented backend default ever changes.
+const DEFAULT_RETENTION_DAYS_PLACEHOLDER = 1;
+
 export function CreateLinkPage() {
   const { t, i18n: i18next } = useTranslation("createLink");
   const { saveLink } = useLocalLinks();
   const [ownerNote, setOwnerNote] = useState("");
-  const [retentionDays, setRetentionDays] = useState<number | "">("");
+  const [retentionDays, setRetentionDays] = useState<number | "">(DEFAULT_RETENTION_DAYS_PLACEHOLDER);
   const [pin, setPin] = useState("");
   const [slug, setSlug] = useState<string | null>(null);
   const [codewords, setCodewords] = useState<string[]>([]);

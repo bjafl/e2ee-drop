@@ -10,7 +10,7 @@
   "ownerNoteLabel": "Notat til mottakeren",
   "ownerNotePlaceholder": "Valgfritt notat (ikke kryptert)",
   "ownerNoteWarning": "Dette notatet er ikke kryptert og er synlig for alle med lenken.",
-  "retentionDaysLabel": "Lenken utløper etter (dager)",
+  "retentionDaysLabel": "Slett mottatte filer etter (dager)",
   "createButton": "Opprett lenke",
   "success": "Lenke opprettet:",
   "errors": { "createFailed": "Kunne ikke opprette lenken. Navnet kan allerede være i bruk." }

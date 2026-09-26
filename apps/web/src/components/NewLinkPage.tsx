@@ -10,13 +10,19 @@ import newLinkNb from "@/locales/nb/newLink.json";
 i18n.addResourceBundle("en", "newLink", newLinkEn, true, false);
 i18n.addResourceBundle("nb", "newLink", newLinkNb, true, false);
 
+// I7 (final review): mirrors apps/api/src/env.ts's DROP_RETENTION_DAYS_DEFAULT
+// (1) — no frontend-visible response exposes the operator-configured value
+// before a link exists (see the same comment in RequestLinkPage.tsx). Update
+// if the documented backend default ever changes.
+const DEFAULT_RETENTION_DAYS_PLACEHOLDER = 1;
+
 export function NewLinkPage() {
   const { t } = useTranslation("newLink");
   const [slug, setSlug] = useState("");
   const [mode, setMode] = useState<"permanent" | "one-time">("permanent");
   const [visibility, setVisibility] = useState<"public" | "contacts-only">("public");
   const [ownerNote, setOwnerNote] = useState("");
-  const [retentionDays, setRetentionDays] = useState<number | "">("");
+  const [retentionDays, setRetentionDays] = useState<number | "">(DEFAULT_RETENTION_DAYS_PLACEHOLDER);
   const [createdSlug, setCreatedSlug] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 

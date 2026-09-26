@@ -3,7 +3,7 @@
   "ownerNoteLabel": "Note for the recipient",
   "ownerNotePlaceholder": "Optional note (not encrypted)",
   "ownerNoteWarning": "This note is not encrypted and is visible to anyone with the link.",
-  "retentionDaysLabel": "Link expires after (days)",
+  "retentionDaysLabel": "Delete received files after (days)",
   "pinLabel": "Protect your key with a PIN (optional)",
   "pinPlaceholder": "4–6 digit PIN",
   "pinWarning": "This PIN makes it harder for someone else using this browser to decrypt your content. It's not a substitute for real security — don't rely on it on a shared or public computer.",
