@@ -61,7 +61,7 @@ vi.mock("@/hooks/useAuth", () => ({
   }),
 }));
 
-import { ReceivePage } from "./ReceivePage";
+import { ReceivePage, STATUS_POLL_INTERVAL_MS } from "./ReceivePage";
 
 // Minimal controllable EventSource: tests push SSE messages with emit().
 // Like a real browser EventSource, it opens asynchronously some time after
@@ -270,11 +270,147 @@ describe("ReceivePage — anonymous single-drop view", () => {
     });
   });
 
+  it("I2: falls back to polling the plain status endpoint once the SSE connection closes for good, and picks up the new drop", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      let dropReady = false;
+      const fetchMock = vi.fn((url: string) => {
+        if (url.toString() === "/api/links/abc123") {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ ...CLAIMED_LINK_RESPONSE, drop: dropReady ? UPLOADED_DROP : UPLOADING_DROP }),
+          });
+        }
+        return Promise.resolve({ ok: true, json: async () => ({}) });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderAt("abc123");
+      await waitFor(() => {
+        expect(screen.getByText(/waiting/i)).toBeInTheDocument();
+      });
+
+      // The events route 403s for a claimed sender-initiated link's real
+      // claimant (a known, out-of-scope backend gap) and the connection
+      // closes for good — never reconnecting on its own.
+      act(() => {
+        latestEventSource().fail({ permanently: true });
+      });
+      await waitFor(() => {
+        expect(screen.getByText(/waiting/i)).toBeInTheDocument();
+      });
+
+      // The sender's upload only finishes well after the connection closed —
+      // without a repeating poll, this recipient would be stuck here forever.
+      dropReady = true;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(STATUS_POLL_INTERVAL_MS);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText(/download and decrypt/i)).toBeInTheDocument();
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("closes the SSE connection on unmount", async () => {
     const { unmount } = renderAt("abc123");
     await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
     unmount();
     expect(latestEventSource().closed).toBe(true);
+  });
+
+  it("I6: does not show the reveal-message button until metadata has successfully decrypted", async () => {
+    let resolveMetadata!: (value: typeof DECRYPTED_METADATA) => void;
+    decryptMetadataMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveMetadata = resolve;
+        })
+    );
+    renderAt("abc123");
+
+    await waitFor(() => {
+      expect(screen.getByText(/fox.*river.*lamp.*otter/i)).toBeInTheDocument();
+    });
+    // hasMessage is true on UPLOADED_DROP, but metadata hasn't resolved yet —
+    // metadata decrypting successfully is the first proof the loaded key
+    // actually works, so the reveal button must not appear before then.
+    expect(screen.queryByText(/reveal message/i)).not.toBeInTheDocument();
+
+    resolveMetadata(DECRYPTED_METADATA);
+    await waitFor(() => {
+      expect(screen.getByText(/reveal message/i)).toBeInTheDocument();
+    });
+  });
+
+  it("I6: shows an 'already revealed' error when the server reveal-message call 404s or 409s", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.toString().includes("/reveal-message")) {
+        return Promise.resolve({ ok: false, status: 409, json: async () => ({ error: "conflict" }) });
+      }
+      return Promise.resolve({ ok: true, json: async () => CLAIMED_LINK_RESPONSE });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAt("abc123");
+    await waitFor(() => {
+      expect(screen.getByText(/reveal message/i)).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByText(/reveal message/i));
+    await waitFor(() => {
+      expect(screen.getByText(/can only be revealed once/i)).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^reveal$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/already been revealed/i)).toBeInTheDocument();
+    });
+    expect(decryptMessageMock).not.toHaveBeenCalled();
+  });
+
+  it("I6: shows an honest 'permanently gone' error when decrypting the revealed message fails after the server already deleted it", async () => {
+    decryptMessageMock.mockRejectedValue(new Error("bad key"));
+    const fetchMock = vi.fn((url: string) => {
+      if (url.toString().includes("/reveal-message")) {
+        return Promise.resolve({ ok: true, json: async () => ({ encryptedMessage: "ZW5j", messageNonce: "bm9uY2U=" }) });
+      }
+      return Promise.resolve({ ok: true, json: async () => CLAIMED_LINK_RESPONSE });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAt("abc123");
+    await waitFor(() => {
+      expect(screen.getByText(/reveal message/i)).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByText(/reveal message/i));
+    await waitFor(() => {
+      expect(screen.getByText(/can only be revealed once/i)).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^reveal$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/permanently deleted from the server/i)).toBeInTheDocument();
+    });
+  });
+
+  it("I6: does not crash when unlocking a corrupted local key throws outside the PIN flow", async () => {
+    localLinksState.links = {
+      abc123: { pinProtected: false, privateKey: "corrupt", createdAt: Date.now(), expiresAt: Date.now() + 60_000 } as never,
+    };
+    unlockLinkMock.mockReset().mockRejectedValue(new Error("corrupted key"));
+
+    renderAt("abc123");
+
+    await waitFor(() => {
+      expect(screen.getByText(/fox.*river.*lamp.*otter/i)).toBeInTheDocument();
+    });
+    // The old pre-rewrite behavior this restores: leave the key pair unset
+    // and let the page render normally instead of crashing / rejecting
+    // unhandled.
+    expect(setKeyPairMock).not.toHaveBeenCalled();
   });
 
   it("reveals the message only after the confirmation dialog is accepted, and shows it once decrypted", async () => {
@@ -482,7 +618,11 @@ describe("ReceivePage — claim flow", () => {
         return Promise.resolve({ ok: true, json: async () => ({ claimed: true }) });
       }
       if (url.toString().includes("/mark-receiver-opened")) return Promise.resolve({ ok: true, json: async () => ({}) });
-      if (url.toString().endsWith("/drops")) return Promise.resolve({ ok: true, json: async () => ({ drops: [] }) });
+      // C1 (final review): the real backend 403s here — `link.ownerId` is
+      // always the request link's initiator, never its claimant. Stubbing
+      // this as 200 (as an earlier version of this test did) hid the exact
+      // bug this test now guards against.
+      if (url.toString().endsWith("/drops")) return Promise.resolve({ ok: false, status: 403, json: async () => ({ error: "Forbidden" }) });
       return Promise.resolve({
         ok: true,
         json: async () => (claimed ? { ...UNCLAIMED_LINK_RESPONSE, recipientPublicKey: OWNER_PUBLIC_KEY, drop: null } : UNCLAIMED_LINK_RESPONSE),
@@ -500,6 +640,49 @@ describe("ReceivePage — claim flow", () => {
     await waitFor(() => {
       expect(calledUrls(fetchMock)).toContain("/api/links/req123/claim");
     });
+  });
+
+  it("C1: a logged-in user claiming a request link with their account sees and can download the single drop, not link-not-found or a 403'd queue", async () => {
+    authState.user = LOGGED_IN_USER;
+    let claimed = false;
+    const fetchMock = vi.fn((url: string) => {
+      const u = url.toString();
+      if (u.includes("/claim")) {
+        claimed = true;
+        return Promise.resolve({ ok: true, json: async () => ({ claimed: true }) });
+      }
+      if (u.includes("/mark-receiver-opened")) return Promise.resolve({ ok: true, json: async () => ({}) });
+      // The real backend 403s here for this account: it claimed the link, but
+      // `link.ownerId` stays the request link's initiator (design spec
+      // §4.1/§4.2) — never the claimant. This is deliberately NOT mocked as a
+      // 200 (see the review finding this guards against).
+      if (u.endsWith("/drops")) return Promise.resolve({ ok: false, status: 403, json: async () => ({ error: "Forbidden" }) });
+      return Promise.resolve({
+        ok: true,
+        json: async () =>
+          claimed
+            ? { ...UNCLAIMED_LINK_RESPONSE, recipientPublicKey: OWNER_PUBLIC_KEY, drop: UPLOADED_DROP }
+            : UNCLAIMED_LINK_RESPONSE,
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAt("req123");
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /claim with my account/i })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /claim with my account/i }));
+
+    // Falls back to the single-drop claimant view, using the account's key
+    // pair — not "link not found", and not the (403'd) owner queue.
+    await waitFor(() => {
+      expect(screen.getByText(/report\.pdf/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/link is invalid or has expired/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/no private key found/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/incoming files/i)).not.toBeInTheDocument();
+    expect(setKeyPairMock).toHaveBeenCalledWith(OWNER_KEY_PAIR);
   });
 });
 

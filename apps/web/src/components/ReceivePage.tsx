@@ -38,6 +38,15 @@ i18n.addResourceBundle("nb", "receive", receiveNb, true, false);
 
 const AUTO_SAVE_STORAGE_KEY = "e2ee-drop:auto-save-zip";
 
+// I2 (final review): how often to re-poll the plain status endpoint once the
+// per-link SSE channel has closed for good (readyState CLOSED) and isn't
+// coming back on its own — see the onerror handler below. 10-15s per the
+// review; a claimant who just claimed and is waiting for the sender to
+// upload has no other way to find out short of a manual reload otherwise.
+// Exported for the I2 regression test only (ReceivePage.test.tsx uses fake
+// timers pinned to this exact value instead of a duplicated magic number).
+export const STATUS_POLL_INTERVAL_MS = 12_000;
+
 // Shape of a drop-shaped message from GET /api/links/:slug/events
 // (apps/api/src/lib/dropEvents.ts). The channel can also carry a
 // "link-claimed" event (for the sender-initiated flow's own page — Task 13);
@@ -128,6 +137,15 @@ function ReceivePageForLink() {
   const [autoSave, setAutoSave] = useState(
     () => window.localStorage.getItem(AUTO_SAVE_STORAGE_KEY) !== "false"
   );
+  // C1 (final review): a sender-initiated request link's real claimant is
+  // never `link.ownerId` (that's always the initiator who created the
+  // request link — see design spec §4.1/§4.2), even after they claim it with
+  // `recipientPublicKey: user.publicKey`. So the owner-gated GET /drops below
+  // 403s for them despite `mode` reading "owned" (recipientPublicKey does
+  // match their account). Once that happens, this flips true and the render
+  // logic below falls back to the single-drop claimant view instead of
+  // treating the 403 as "link not found" and permanently stranding the drop.
+  const [ownedAccessDenied, setOwnedAccessDenied] = useState(false);
 
   const stored = slug ? links[slug] : undefined;
   // A stored entry (PIN-protected or not — see useLocalLinks.ts's StoredLink)
@@ -156,7 +174,14 @@ function ReceivePageForLink() {
   useEffect(() => {
     if (!stored) return;
     if (!stored.pinProtected) {
-      unlockLink(slug!).then((raw) => setKeyPair(nacl.box.keyPair.fromSecretKey(decodeBase64(raw))));
+      unlockLink(slug!)
+        .then((raw) => setKeyPair(nacl.box.keyPair.fromSecretKey(decodeBase64(raw))))
+        .catch(() => {
+          // I6 (final review): a corrupted/malformed local key (bad storage
+          // format, tampering, etc.) must not crash the whole page over it —
+          // leave the key pair unset and let the rest of the page render
+          // normally, same as any other missing-key state here.
+        });
     } else {
       setPinPrompt(true);
     }
@@ -231,36 +256,61 @@ function ReceivePageForLink() {
   useEffect(() => {
     if (!slug || (mode !== "anonymous" && mode !== "owned")) return;
     let cancelled = false;
+    // Local to this effect run rather than the `ownedAccessDenied` state: once
+    // GET /drops 403s once (see the C1 comment on that state), every later
+    // snapshot within this same effect instance should go straight to the
+    // plain status fetch instead of hitting the owner-gated route again — no
+    // need to round-trip through a re-render to know that.
+    let deniedOwner = false;
+    let pollId: ReturnType<typeof setInterval> | null = null;
+
+    function stopPolling() {
+      if (pollId !== null) {
+        clearInterval(pollId);
+        pollId = null;
+      }
+    }
 
     async function loadSnapshot() {
       try {
-        if (mode === "owned") {
+        if (mode === "owned" && !deniedOwner) {
           const res = await fetch(`/api/links/${slug}/drops`);
           if (cancelled) return;
-          if (!res.ok) {
+          if (res.status === 403) {
+            // C1 (final review): this "owned" link is actually a
+            // sender-initiated request link this account merely claimed —
+            // never its real `ownerId` (the initiator). Fall back to the
+            // single-drop claimant view below instead of "link not found".
+            deniedOwner = true;
+            setOwnedAccessDenied(true);
+          } else if (!res.ok) {
             setLinkNotFound(true);
             return;
-          }
-          const data = (await res.json()) as ListDropsResponse;
-          if (cancelled) return;
-          setDrops((prev) => mergeDrops(prev, data.drops));
-        } else {
-          const res = await fetch(`/api/links/${slug}`);
-          if (cancelled) return;
-          if (!res.ok) {
-            setLinkNotFound(true);
+          } else {
+            const data = (await res.json()) as ListDropsResponse;
+            if (cancelled) return;
+            setDrops((prev) => mergeDrops(prev, data.drops));
             return;
           }
-          const data = (await res.json()) as LinkStatusResponse;
-          if (cancelled) return;
-          // Keep ownerNote/codewords fresh from the same response the live
-          // drop comes from, in addition to the one-off fetch above.
-          setLink(data);
-          // Narrowed into a local const: TS doesn't carry the `if (data.drop)`
-          // narrowing into the setDrops callback closure below.
-          const drop = data.drop;
-          if (drop) setDrops((prev) => mergeDrops(prev, [drop]));
         }
+        // Anonymous, or an "owned" link whose /drops just came back 403
+        // above: both are single-drop claimant views driven by the same
+        // plain status fetch (also used by the sender's page).
+        const res = await fetch(`/api/links/${slug}`);
+        if (cancelled) return;
+        if (!res.ok) {
+          setLinkNotFound(true);
+          return;
+        }
+        const data = (await res.json()) as LinkStatusResponse;
+        if (cancelled) return;
+        // Keep ownerNote/codewords fresh from the same response the live
+        // drop comes from, in addition to the one-off fetch above.
+        setLink(data);
+        // Narrowed into a local const: TS doesn't carry the `if (data.drop)`
+        // narrowing into the setDrops callback closure below.
+        const drop = data.drop;
+        if (drop) setDrops((prev) => mergeDrops(prev, [drop]));
       } catch {
         // Transient network failure — don't strand the recipient on a hard
         // error; the SSE stream (and its re-open snapshot) will catch up.
@@ -269,10 +319,24 @@ function ReceivePageForLink() {
 
     const source = new EventSource(`/api/links/${slug}/events`);
     source.onopen = () => {
+      // A real connection came back — stop any status-poll fallback that was
+      // running while it was down.
+      stopPolling();
       loadSnapshot();
     };
     source.onerror = () => {
-      if (source.readyState === EventSource.CLOSED) loadSnapshot();
+      if (source.readyState !== EventSource.CLOSED) return;
+      // I2 (final review): a CLOSED readyState never reconnects on its own
+      // (e.g. the events route 403s for a claimed sender-initiated link's
+      // real claimant — a known, out-of-scope backend gap). A claimant always
+      // claims before the sender sends, so this path is hit on essentially
+      // every claim; without a repeating fallback they'd be stuck on
+      // "waiting for the file" until a manual reload. Poll the plain status
+      // endpoint instead of a one-shot reload.
+      loadSnapshot();
+      if (pollId === null) {
+        pollId = setInterval(loadSnapshot, STATUS_POLL_INTERVAL_MS);
+      }
     };
     source.onmessage = (event: MessageEvent) => {
       try {
@@ -288,6 +352,7 @@ function ReceivePageForLink() {
 
     return () => {
       cancelled = true;
+      stopPolling();
       source.close();
     };
   }, [slug, mode]);
@@ -328,7 +393,7 @@ function ReceivePageForLink() {
 
   if (mode === "none") return <p>{t("errors.noLocalKey")}</p>;
 
-  if (mode === "owned") {
+  if (mode === "owned" && !ownedAccessDenied) {
     const needsRelogin = !userKeyPair;
     // Same server-side rule as GET /drops (which already excludes
     // delivered/shredded drops on the next reload) — plus anything this tab
@@ -349,7 +414,10 @@ function ReceivePageForLink() {
           {needsRelogin && (
             <Alert>
               <AlertDescription>
-                {t("reloginRequired")} <Link to="/login">{t("reloginLink")}</Link>
+                {t("reloginRequired")}{" "}
+                <Link to="/login" state={{ returnTo: `/receive/${slug}` }}>
+                  {t("reloginLink")}
+                </Link>
               </AlertDescription>
             </Alert>
           )}
@@ -375,7 +443,13 @@ function ReceivePageForLink() {
     );
   }
 
-  // Anonymous: a single drop.
+  // Single-drop claimant view: either a locally-held anonymous key (mode
+  // "anonymous"), or an "owned" link whose GET /drops came back 403 (a
+  // request link's real claimant, using their account key pair instead — see
+  // the C1 comment on `ownedAccessDenied` above). Only the latter can ever
+  // need a relogin gate here: an "anonymous" local key is always usable the
+  // moment it's loaded, so `needsRelogin` is trivially false for it.
+  const needsRelogin = mode === "owned" && !userKeyPair;
   const drop: DropSummary | null = drops[0] ?? link.drop ?? null;
 
   return (
@@ -384,37 +458,51 @@ function ReceivePageForLink() {
         <CardTitle>{t("title")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {link.codewords.length > 0 && (
-          <div>
-            <p className="text-sm text-muted-foreground">{t("codewordsLabel")}</p>
-            <p className="font-mono text-lg">{link.codewords.join(" · ")}</p>
-          </div>
-        )}
-        {link.ownerNote && (
+        {needsRelogin && (
           <Alert>
             <AlertDescription>
-              {link.ownerNote}
-              <br />
-              <span className="text-xs">{t("ownerNoteWarning")}</span>
+              {t("reloginRequired")}{" "}
+              <Link to="/login" state={{ returnTo: `/receive/${slug}` }}>
+                {t("reloginLink")}
+              </Link>
             </AlertDescription>
           </Alert>
         )}
-        {!drop && <p>{t("waitingForFile")}</p>}
-        {drop && (
-          <DropDetail
-            slug={slug!}
-            drop={drop}
-            decryptMetadata={decryptMetadata}
-            decryptMessage={decryptMessage}
-            decryptArchive={decryptArchive}
-            decryptPercent={decryptPercent}
-            autoSave={autoSave}
-            onAutoSaveChange={(value) => {
-              setAutoSave(value);
-              window.localStorage.setItem(AUTO_SAVE_STORAGE_KEY, String(value));
-            }}
-            t={t}
-          />
+        {!needsRelogin && (
+          <>
+            {link.codewords.length > 0 && (
+              <div>
+                <p className="text-sm text-muted-foreground">{t("codewordsLabel")}</p>
+                <p className="font-mono text-lg">{link.codewords.join(" · ")}</p>
+              </div>
+            )}
+            {link.ownerNote && (
+              <Alert>
+                <AlertDescription>
+                  {link.ownerNote}
+                  <br />
+                  <span className="text-xs">{t("ownerNoteWarning")}</span>
+                </AlertDescription>
+              </Alert>
+            )}
+            {!drop && <p>{t("waitingForFile")}</p>}
+            {drop && (
+              <DropDetail
+                slug={slug!}
+                drop={drop}
+                decryptMetadata={decryptMetadata}
+                decryptMessage={decryptMessage}
+                decryptArchive={decryptArchive}
+                decryptPercent={decryptPercent}
+                autoSave={autoSave}
+                onAutoSaveChange={(value) => {
+                  setAutoSave(value);
+                  window.localStorage.setItem(AUTO_SAVE_STORAGE_KEY, String(value));
+                }}
+                t={t}
+              />
+            )}
+          </>
         )}
       </CardContent>
     </Card>
@@ -503,7 +591,7 @@ function ClaimView({
           <Button onClick={claimWithAccount}>{t("claimWithAccount")}</Button>
         ) : (
           <p className="text-sm">
-            <Link to="/login" className="underline">
+            <Link to="/login" state={{ returnTo: `/receive/${slug}` }} className="underline">
               {t("logInToClaimWithAccount")}
             </Link>
           </p>
@@ -570,6 +658,7 @@ function DropDetail({
 }) {
   const [metadata, setMetadata] = useState<DecryptedMetadata | null>(null);
   const [revealedMessage, setRevealedMessage] = useState<string | null>(null);
+  const [revealError, setRevealError] = useState<"alreadyRevealed" | "decryptFailed" | "failed" | null>(null);
   const [confirmReveal, setConfirmReveal] = useState(false);
   const [downloadPercent, setDownloadPercent] = useState(0);
   const [downloadFailed, setDownloadFailed] = useState(false);
@@ -587,12 +676,32 @@ function DropDetail({
       .catch(() => {});
   }, [drop.encryptedMetadata, drop.metadataNonce, drop.senderPublicKey, decryptMetadata]);
 
+  // I6 (final review): the server permanently deletes the message ciphertext
+  // the moment reveal-message succeeds, so a decrypt failure *after* that
+  // point means the message is genuinely, permanently gone — not something to
+  // silently swallow via an unhandled promise rejection. Distinguishes
+  // "someone already revealed this" (404/409 — the drop or its message
+  // envelope no longer exists) from a generic server failure, and either of
+  // those from a post-success decrypt failure, so the recipient always sees
+  // an honest, specific reason instead of nothing happening.
   const revealMessage = async () => {
-    const res = await fetch(`/api/links/${slug}/drops/${drop.id}/reveal-message`, { method: "POST" });
-    if (!res.ok) return;
-    const { encryptedMessage, messageNonce } = (await res.json()) as RevealMessageResponse;
-    const plaintext = await decryptMessage(encryptedMessage, messageNonce, drop.senderPublicKey);
-    setRevealedMessage(plaintext);
+    setRevealError(null);
+    try {
+      const res = await fetch(`/api/links/${slug}/drops/${drop.id}/reveal-message`, { method: "POST" });
+      if (!res.ok) {
+        setRevealError(res.status === 404 || res.status === 409 ? "alreadyRevealed" : "failed");
+        return;
+      }
+      const { encryptedMessage, messageNonce } = (await res.json()) as RevealMessageResponse;
+      try {
+        const plaintext = await decryptMessage(encryptedMessage, messageNonce, drop.senderPublicKey);
+        setRevealedMessage(plaintext);
+      } catch {
+        setRevealError("decryptFailed");
+      }
+    } catch {
+      setRevealError("failed");
+    }
   };
 
   const download = useCallback(async () => {
@@ -643,12 +752,23 @@ function DropDetail({
           ))}
         </ul>
       )}
-      {drop.hasMessage && revealedMessage === null && (
+      {drop.hasMessage && revealedMessage === null && metadata !== null && (
         <Button variant="secondary" onClick={() => setConfirmReveal(true)}>
           {t("decryptMessageButton")}
         </Button>
       )}
       {revealedMessage !== null && <p className="italic">{revealedMessage}</p>}
+      {revealError && (
+        <Alert variant="destructive">
+          <AlertDescription>
+            {revealError === "alreadyRevealed"
+              ? t("errors.messageAlreadyRevealed")
+              : revealError === "decryptFailed"
+                ? t("errors.messageDecryptFailed")
+                : t("errors.revealFailed")}
+          </AlertDescription>
+        </Alert>
+      )}
       <p className="text-xs text-muted-foreground">
         {t("contentExpiresAt", { date: new Date(drop.contentExpiresAt).toLocaleString() })}
       </p>
