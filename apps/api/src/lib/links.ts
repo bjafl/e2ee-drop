@@ -151,6 +151,58 @@ export async function isSenderInitiatedReceiveCapability(
   return isClaimedSenderInitiatedLink(link);
 }
 
+const DELIVERY_STATUS_RANK: Record<string, number> = {
+  sender_opened: 0,
+  sent: 1,
+  receiver_opened: 2,
+  partial_delivery: 3,
+  delivered: 4,
+};
+
+// Re-derives Drop.deliveryStatus from both envelope statuses and writes it if — and only if — the
+// derived value is strictly ahead of the row's CURRENT value at write time. Always re-reads the
+// row itself rather than trusting a caller's snapshot: this is what makes it safe to call from two
+// endpoints (reveal-message, complete-download) that can race each other on the same drop.
+export async function recomputeDeliveryStatus(dropId: string, linkId: string): Promise<void> {
+  const drop = await prisma.drop.findFirst({
+    where: { id: dropId, linkId },
+    select: {
+      deliveryStatus: true,
+      encryptedMessage: true,
+      messageEnvelopeStatus: true,
+      fileEnvelopeStatus: true,
+    },
+  });
+  if (!drop) return;
+
+  // `messageEnvelopeStatus` can also reach a terminal "shredded" state (spec 1's Task 6/7/8
+  // cleanup scrub, once merged) when a message existed but was scrubbed WITHOUT ever being
+  // delivered. Checking only `=== "delivered"` here would misclassify that case as "no message
+  // ever existed", letting deliveryStatus reach "delivered" from file-delivery alone even though
+  // the message was lost unretrieved — it must cap at "partial_delivery" instead (see the
+  // messageDone check below). Checking `!== "sealed"` still correctly treats a genuinely
+  // message-less drop (whose messageEnvelopeStatus stays at its schema default "sealed" forever)
+  // as having no message, while treating both "delivered" and "shredded" as "a message existed
+  // and is now resolved one way or the other".
+  const hasMessage = drop.encryptedMessage !== null || drop.messageEnvelopeStatus !== "sealed";
+  const messageDone = !hasMessage || drop.messageEnvelopeStatus === "delivered";
+  const fileDone = drop.fileEnvelopeStatus === "delivered";
+
+  let derived: string;
+  if (messageDone && fileDone) derived = "delivered";
+  else if (messageDone !== fileDone && (messageDone || fileDone)) derived = "partial_delivery";
+  else derived = drop.deliveryStatus; // neither done yet — no change
+
+  if (DELIVERY_STATUS_RANK[derived] <= DELIVERY_STATUS_RANK[drop.deliveryStatus]) return;
+
+  // CAS on the current value read above: if a concurrent call already advanced the row further,
+  // this simply matches zero rows instead of stomping a newer status with a stale derivation.
+  await prisma.drop.updateMany({
+    where: { id: dropId, linkId, deliveryStatus: drop.deliveryStatus },
+    data: { deliveryStatus: derived },
+  });
+}
+
 export function toDropSummary(drop: Drop, link: { retentionDays: number }): DropSummary {
   return {
     id: drop.id,
