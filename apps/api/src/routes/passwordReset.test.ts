@@ -10,9 +10,15 @@ import { env } from "../env";
 import { encryptTotpSecret, generateTotpSecret } from "../lib/totp";
 import { TOTP, Secret } from "otpauth";
 
+// registerUser() (below) now exercises routes/auth.ts's own best-effort
+// verification-email side effect too, so sendVerificationEmail needs a stub
+// here as well — otherwise it's undefined and every registerUser() call
+// throws inside auth.ts's try/catch (silently swallowed there, but still
+// worth a real stub rather than relying on that catch).
 vi.mock("../lib/mailer", () => ({
   isMailerConfigured: vi.fn().mockReturnValue(false),
   sendPasswordResetEmail: vi.fn().mockResolvedValue(undefined),
+  sendVerificationEmail: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Pass-through spies, so individual tests can inject a failure mid-reset.
@@ -156,10 +162,16 @@ describe("password reset routes", () => {
   });
 
   it("emails a link to the token-consuming /reset-password/confirm page whose token verifies", async () => {
-    vi.mocked(isMailerConfigured).mockReturnValueOnce(true);
-    vi.mocked(sendPasswordResetEmail).mockClear();
     const server = buildServer();
     await registerUser(server);
+
+    // Registration itself now calls isMailerConfigured() as a best-effort
+    // side effect (routes/auth.ts sends a verification email) — the "once"
+    // override must be set AFTER registerUser() so it applies to the
+    // /password-reset/request call under test below, not to that incidental
+    // call inside registration.
+    vi.mocked(isMailerConfigured).mockReturnValueOnce(true);
+    vi.mocked(sendPasswordResetEmail).mockClear();
 
     await server.inject({
       method: "POST",

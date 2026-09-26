@@ -7,6 +7,21 @@ import { TOTP, Secret } from "otpauth";
 import { loginRateLimiter } from "../lib/rateLimit";
 import { env } from "../env";
 
+// Registration sends a best-effort verification email (routes/auth.ts); mock
+// the mailer for the whole file so every register() call in every describe
+// block below exercises that real code path against a stub instead of
+// needing real SMTP config, and so isMailerConfigured() always reports true
+// regardless of the test env's SMTP_* vars. vi.mock's factory is hoisted
+// above any top-level `const`, so the mock fn itself must be created via
+// vi.hoisted() to avoid a "Cannot access before initialization" error.
+const { sendVerificationEmailMock } = vi.hoisted(() => ({
+  sendVerificationEmailMock: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("../lib/mailer", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/mailer")>();
+  return { ...actual, sendVerificationEmail: sendVerificationEmailMock, isMailerConfigured: () => true };
+});
+
 // The /api/auth/login rate limiter (lib/rateLimit.ts) is a module-level Map
 // shared across every test in this file (and every buildServer() call,
 // since it's imported once per process) — without this, attempts made by
@@ -16,6 +31,7 @@ import { env } from "../env";
 // overrides it.
 beforeEach(() => {
   loginRateLimiter.clear();
+  sendVerificationEmailMock.mockClear();
 });
 
 describe("POST /api/auth/register", () => {
@@ -264,6 +280,64 @@ describe("POST /api/auth/register", () => {
   });
 });
 
+
+describe("POST /api/auth/register — email verification", () => {
+  beforeEach(async () => {
+    await prisma.session.deleteMany();
+    await prisma.drop.deleteMany();
+    await prisma.link.deleteMany();
+    await prisma.user.deleteMany();
+  });
+
+  it("sends a verification email and stores a hashed token on successful registration", async () => {
+    const server = buildServer();
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: {
+        email: "verify-me@example.com",
+        username: "verifyme",
+        name: "Verify Me",
+        authKey: "p",
+        passwordSalt: "s",
+        passwordWrappedPrivateKey: "w",
+        recoveryWrappedPrivateKey: "r",
+        publicKey: "k",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(sendVerificationEmailMock).toHaveBeenCalledTimes(1);
+    const [to, url] = sendVerificationEmailMock.mock.calls[0];
+    expect(to).toBe("verify-me@example.com");
+    expect(url).toContain("/verify-email/confirm?token=");
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { email: "verify-me@example.com" } });
+    expect(user.emailVerified).toBe(false);
+    const tokenRow = await prisma.emailVerificationToken.findFirst({ where: { userId: user.id } });
+    expect(tokenRow).not.toBeNull();
+  });
+
+  it("still succeeds when the mailer send throws (best-effort)", async () => {
+    sendVerificationEmailMock.mockRejectedValueOnce(new Error("smtp down"));
+    const server = buildServer();
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: {
+        email: "resilient@example.com",
+        username: "resilient",
+        name: "Resilient",
+        authKey: "p",
+        passwordSalt: "s",
+        passwordWrappedPrivateKey: "w",
+        recoveryWrappedPrivateKey: "r",
+        publicKey: "k",
+      },
+    });
+    expect(response.statusCode).toBe(200);
+  });
+});
 
 describe("POST /api/auth/register rate limiting (registerRateLimiter: 10 per 15 min, keyed by IP)", () => {
   beforeEach(async () => {
