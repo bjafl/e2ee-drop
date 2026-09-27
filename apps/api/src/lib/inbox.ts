@@ -42,6 +42,12 @@ export async function getInboxForUser(userId: string): Promise<InboxResponse> {
   // link) are genuinely different joins, and keeping them separate makes it
   // impossible to accidentally leak a WHERE clause meant for one branch into
   // the other (this plan's Review Focus).
+  //
+  // Note: a self-send (userId owns the link AND is drop.senderUserId on it)
+  // would surface the same Drop row once in each bucket below — intentional
+  // given the two-query split above, and left unhandled since a link's
+  // recipientPublicKey is the owner's own key, making self-send only
+  // reachable if the plan ever allows sending to one's own link.
   const [incomingLinks, blockedByMe, outgoingDrops] = await Promise.all([
     prisma.link.findMany({ where: { ownerId: userId }, include: { drops: true } }),
     prisma.contact.findMany({ where: { blockedByUserId: userId, status: "blocked" } }),
@@ -67,35 +73,43 @@ export async function getInboxForUser(userId: string): Promise<InboxResponse> {
   let nextAnonNumber = 1;
   const anonNumberByKey = new Map<string, number>();
 
-  for (const link of incomingLinks) {
-    const sortedDrops = [...link.drops].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-    for (const drop of sortedDrops) {
-      if (isDropResolved(drop)) continue;
-      if (drop.senderUserId && blockedUserIds.has(drop.senderUserId)) continue;
+  // Flatten every drop from every incoming link into one sequence BEFORE
+  // sorting: `incomingLinks` itself carries no ordering guarantee across
+  // links (no `orderBy` on the links query, and Prisma/Postgres promise
+  // nothing about array order), so sorting per-link and then iterating links
+  // in whatever order the DB returned them would make Anonym1/Anonym2
+  // numbering depend on link return order instead of true first-seen order
+  // across the owner's whole inbox (design spec §6). Sorting once over the
+  // flattened set fixes that.
+  const incomingDropsFlat = incomingLinks.flatMap((link) => link.drops.map((drop) => ({ drop, linkSlug: link.slug })));
+  incomingDropsFlat.sort((a, b) => a.drop.createdAt.getTime() - b.drop.createdAt.getTime());
 
-      const isKnown = drop.senderUserId !== null;
-      const bucketKey = isKnown ? `account:${drop.senderUserId}` : `anon:${drop.senderPublicKey}`;
+  for (const { drop, linkSlug } of incomingDropsFlat) {
+    if (isDropResolved(drop)) continue;
+    if (drop.senderUserId && blockedUserIds.has(drop.senderUserId)) continue;
 
-      let counterparty = incomingByCounterparty.get(bucketKey);
-      if (!counterparty) {
-        let displayName: string;
-        if (isKnown) {
-          displayName = usernameById.get(drop.senderUserId!) ?? "unknown";
-        } else {
-          if (!anonNumberByKey.has(bucketKey)) anonNumberByKey.set(bucketKey, nextAnonNumber++);
-          displayName = `Anonym${anonNumberByKey.get(bucketKey)}`;
-        }
-        counterparty = {
-          key: bucketKey,
-          kind: isKnown ? "account" : "anonymous",
-          displayName,
-          direction: "incoming",
-          drops: [],
-        };
-        incomingByCounterparty.set(bucketKey, counterparty);
+    const isKnown = drop.senderUserId !== null;
+    const bucketKey = isKnown ? `account:${drop.senderUserId}` : `anon:${drop.senderPublicKey}`;
+
+    let counterparty = incomingByCounterparty.get(bucketKey);
+    if (!counterparty) {
+      let displayName: string;
+      if (isKnown) {
+        displayName = usernameById.get(drop.senderUserId!) ?? "unknown";
+      } else {
+        if (!anonNumberByKey.has(bucketKey)) anonNumberByKey.set(bucketKey, nextAnonNumber++);
+        displayName = `Anonym${anonNumberByKey.get(bucketKey)}`;
       }
-      counterparty.drops.push(toInboxDrop(drop, link.slug));
+      counterparty = {
+        key: bucketKey,
+        kind: isKnown ? "account" : "anonymous",
+        displayName,
+        direction: "incoming",
+        drops: [],
+      };
+      incomingByCounterparty.set(bucketKey, counterparty);
     }
+    counterparty.drops.push(toInboxDrop(drop, linkSlug));
   }
 
   const outgoingByCounterparty = new Map<string, InboxCounterparty>();
@@ -105,7 +119,7 @@ export async function getInboxForUser(userId: string): Promise<InboxResponse> {
 
   for (const drop of outgoingDrops) {
     if (isDropResolved(drop)) continue;
-    if (!drop.link.ownerId) continue; // an outgoing drop always has an owned link on the other end
+    if (!drop.link.ownerId) continue; // defensive: skip if the other end's link is somehow unowned
     const bucketKey = `account:${drop.link.ownerId}`;
     let counterparty = outgoingByCounterparty.get(bucketKey);
     if (!counterparty) {

@@ -28,6 +28,7 @@ async function makeDrop(overrides: {
   messageEnvelopeStatus?: string;
   encryptedMessage?: string | null;
   messageRevealedAt?: Date | null;
+  createdAt?: Date;
 }) {
   return prisma.drop.create({
     data: {
@@ -46,6 +47,7 @@ async function makeDrop(overrides: {
       messageEnvelopeStatus: overrides.messageEnvelopeStatus ?? "sealed",
       encryptedMessage: overrides.encryptedMessage ?? null,
       messageRevealedAt: overrides.messageRevealedAt ?? null,
+      ...(overrides.createdAt ? { createdAt: overrides.createdAt } : {}),
     },
   });
 }
@@ -197,5 +199,40 @@ describe("getInboxForUser", () => {
 
     const inbox = await getInboxForUser(owner.id);
     expect(inbox.counterparties).toHaveLength(0);
+  });
+
+  it("numbers anonymous buckets by first-seen order across ALL of the owner's links, not per-link", async () => {
+    const owner = await makeUser("inbox-owner-10");
+    // Link A is created first, so an unordered `findMany` is likely (though
+    // not guaranteed) to return it before link B — the bug this test guards
+    // against numbered buckets by link iteration order instead of true
+    // first-seen (createdAt) order across the owner's whole inbox.
+    const linkA = await prisma.link.create({
+      data: { ownerId: owner.id, slug: "inbox-owner-10-a", mode: "permanent", recipientPublicKey: owner.publicKey, retentionDays: 7 },
+    });
+    const linkB = await prisma.link.create({
+      data: { ownerId: owner.id, slug: "inbox-owner-10-b", mode: "permanent", recipientPublicKey: owner.publicKey, retentionDays: 7 },
+    });
+    // Drop on link B is created with an EARLIER createdAt than the drop on
+    // link A, even though link A itself was created first.
+    await makeDrop({
+      linkId: linkB.id,
+      senderPublicKey: "key-on-b",
+      createdAt: new Date("2020-01-01T00:00:00Z"),
+    });
+    await makeDrop({
+      linkId: linkA.id,
+      senderPublicKey: "key-on-a",
+      createdAt: new Date("2020-01-02T00:00:00Z"),
+    });
+
+    const inbox = await getInboxForUser(owner.id);
+    const anon = inbox.counterparties.filter((c) => c.kind === "anonymous");
+
+    expect(anon).toHaveLength(2);
+    const anonymOne = anon.find((c) => c.displayName === "Anonym1")!;
+    const anonymTwo = anon.find((c) => c.displayName === "Anonym2")!;
+    expect(anonymOne.drops[0].linkSlug).toBe("inbox-owner-10-b"); // earlier createdAt, despite link A existing first
+    expect(anonymTwo.drops[0].linkSlug).toBe("inbox-owner-10-a");
   });
 });
