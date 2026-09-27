@@ -160,6 +160,7 @@ describe("SSE events route", () => {
 
   it("allows a claimed sender-initiated request link's non-owner claimant to open the connection", async () => {
     const initiator = await registerAndGetCookie(server, "sseinitiator");
+    await prisma.user.update({ where: { username: "sseinitiator" }, data: { emailVerified: true } });
     const requestRes = await server.inject({
       method: "POST",
       url: "/api/links/request",
@@ -188,6 +189,7 @@ describe("SSE events route", () => {
 
   it("still allows the initiator/owner themselves to open a claimed request link's connection", async () => {
     const initiator = await registerAndGetCookie(server, "sseinitiator2");
+    await prisma.user.update({ where: { username: "sseinitiator2" }, data: { emailVerified: true } });
     const requestRes = await server.inject({
       method: "POST",
       url: "/api/links/request",

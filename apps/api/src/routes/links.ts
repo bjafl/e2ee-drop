@@ -205,6 +205,22 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       if (typeof resolvedRetention !== "number") {
         return reply.status(400).send(resolvedRetention);
       }
+
+      const owner = await prisma.user.findUnique({ where: { id: request.user!.id } });
+      if (!owner) return reply.status(404).send({ error: "User not found" });
+
+      // Same gate as POST /api/links/custom, for the same reason: this route
+      // also creates an owned link. Without it, an unverified user could
+      // create a request link that immediately became unclaimable/invisible
+      // anyway — isLinkInactive's owner-emailVerified check (added alongside
+      // this gate, see /custom above) 404s GET /:slug and POST /:slug/claim
+      // for any owned link whose owner isn't verified, request links
+      // included, so a request link created here without this check would be
+      // dead on arrival rather than merely restricted at creation time.
+      if (!owner.emailVerified) {
+        return reply.status(403).send({ error: "Verify your email address before creating a link" });
+      }
+
       const link = await prisma.link.create({
         data: {
           ownerId: request.user!.id,

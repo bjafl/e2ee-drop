@@ -797,6 +797,7 @@ describe("link routes", () => {
     it("does not advance deliveryStatus when the caller is the initiator/owner of a claimed sender-initiated link", async () => {
       const server = buildServer();
       const initiator = await registerAndGetCookie(server, "markopenedinitiator2");
+      await prisma.user.update({ where: { username: "markopenedinitiator2" }, data: { emailVerified: true } });
       const requestRes = await server.inject({
         method: "POST",
         url: "/api/links/request",

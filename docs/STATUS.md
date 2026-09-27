@@ -41,21 +41,42 @@ implementation and test details); the write-ups below are kept as a record of wh
 
 ## Infrastructure gap — real E2E verification against `docker compose up` was never possible
 
-`docker-compose.yml`'s `web` service has no `ports:` mapping at all (only `expose: "80"`),
-so nothing is reachable at `verify-e2e.mjs`'s default `BASE_URL=http://localhost:8080` even
-with a fully healthy stack. Separately, `.env`'s `DATABASE_URL`/`MINIO_ENDPOINT` use
-`localhost`, which doesn't resolve from inside the compose network (container-to-container
-traffic needs service names like `postgres`/`minio`). This is independent of any sandbox
-port conflicts — the compose file itself needs a fix before `pnpm verify:e2e` can ever run
-against a real containerized stack. All correctness verification for plans 1-3 has instead
-relied on the unit/integration test suites (`pnpm -r test`, currently 522/522 passing)
-against a standalone Postgres + MinIO, which do exercise the real route handlers and real
-crypto, just not through the actual `web`/`api` Docker images.
+**FIXED.** `docker-compose.yml`'s `web` service had no `ports:` mapping at all (only
+`expose: "80"`), so nothing was reachable at `verify-e2e.mjs`'s default
+`BASE_URL=http://localhost:8080` even with a fully healthy stack. Separately, the
+`migrate`/`api`/`cleanup` services inherited `DATABASE_URL`/`MINIO_ENDPOINT` straight from
+`.env`'s host-facing values, which don't resolve from inside the compose network
+(container-to-container traffic needs service names like `postgres`/`minio`). `web` now
+publishes `${WEB_PORT:-8080}:80`, and the three services build/hardcode compose-internal
+values instead (`postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}`
+and `http://minio:9000`) — `.env`'s `DATABASE_URL`/`MINIO_ENDPOINT` are now host-side-tooling-only,
+documented as such in `.env.example`/`README.md`. Validated via `docker compose config`
+(resolved values confirmed correct) and a partial `docker compose up -d postgres minio` —
+still couldn't fully verify end-to-end in this sandbox specifically because `postgres`'s host
+port (127.0.0.1:5432) is already held by an unrelated container on this shared dev machine,
+a sandbox limitation independent of this fix.
 
-**Fix:** add a `ports:` entry to the `web` service (e.g. `"${WEB_PORT:-8080}:80"`), and give
-`.env`'s compose-facing vars their own values (or a `docker-compose.override.yml` for local
-dev) distinct from the host-facing ones `verify-e2e.mjs` and local `pnpm --filter api dev`
-use.
+## New integration bug found (and fixed) while merging plans together
+
+Discovered while merging this branch with `main`'s two newly-landed plans
+(`account-verification-2fa`, `verified-profile-contacts`): `verified-profile-contacts` added an
+`emailVerified` gate to `POST /api/links/custom` (403 for an unverified owner) and a broader
+`isLinkInactive()` check (expired OR revoked OR owner-unverified) to `GET /api/links/:slug` and
+`POST /api/links/:slug/claim` — but did **not** add the same `emailVerified` gate to
+`POST /api/links/request` (the other owner-creating route, from plan 2). Net effect: an
+unverified user could create a request link that was then immediately unclaimable and invisible
+via `isLinkInactive`'s owner-verification check — dead on arrival. **FIXED** by adding the same
+gate (`403` if `!owner.emailVerified`) to `POST /api/links/request`, matching `/custom` exactly.
+Several pre-existing tests that created request links with unverified test accounts needed the
+same one-line `emailVerified: true` fixture update already used elsewhere in the suite.
+
+**New consequence, not yet fixed:** `scripts/verify-e2e.mjs`'s sender-initiated scenario
+registers a fresh account and immediately calls `/api/links/request` — this will now 403 until
+the script also completes real email verification for that account first. The script isn't
+runnable in this sandbox regardless (see above), so this wasn't fixed now; whoever next gets a
+working `docker compose up` stack to test against will need to add an email-verification step
+(check how the account-verification-2fa plan's own tests capture/read the verification
+token/link — likely via a test-only SMTP capture or a dev-mode endpoint) to that scenario first.
 
 ## Deferred minor findings (polish, not correctness issues)
 
@@ -79,10 +100,8 @@ From plan 3's final review:
 
 ## Remaining plans (not started)
 
-Per the project's plan sequence, four more plans remain, with `dashboard-inbox-implementation`
-depending on the other three:
-- `account-verification-2fa` — independent, no dependencies.
+`account-verification-2fa` and `verified-profile-contacts` have since been implemented and
+merged to `main` (concurrently with this fix session). Two plans remain:
 - `delivery-lifecycle-retention` — depends only on the (already-merged) e2ee-flow schema.
-- `verified-profile-contacts` — independent to build/test, but its `emailVerified` gate is only
-  meaningful once `account-verification-2fa` ships the actual verification flow.
-- `dashboard-inbox-implementation` — explicitly requires the other three merged first.
+- `dashboard-inbox-implementation` — explicitly requires the other three (now all merged)
+  first, so this is next in the dependency order.

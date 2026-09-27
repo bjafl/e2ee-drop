@@ -1085,6 +1085,7 @@ describe("sender-initiated link receive access (finding C1)", () => {
   it("still denies a non-owner on an UNCLAIMED sender-initiated link (nothing to receive yet)", async () => {
     const server = buildServer();
     const initiator = await registerAndGetCookie(server, "initiator7");
+    await prisma.user.update({ where: { username: "initiator7" }, data: { emailVerified: true } });
     const requestRes = await server.inject({
       method: "POST",
       url: "/api/links/request",
