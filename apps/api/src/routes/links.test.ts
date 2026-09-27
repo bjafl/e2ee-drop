@@ -1363,6 +1363,114 @@ describe("link routes", () => {
       const revoke = await server.inject({ method: "POST", url: `/api/links/${slug}/revoke`, cookies });
       expect(revoke.statusCode).toBe(403);
     });
+
+    // F2: revoke previously only set revokedAt, leaving a sealed, already-uploaded
+    // drop's content (and message) fully reachable through download-url/reveal-message
+    // until the passive cleanup sweep eventually caught it. Revoke now shreds such a
+    // drop immediately (mirroring owner-cancel's scrubDropContent path exactly), and
+    // downloads.ts's receive-side routes now gate on isLinkInactive (which covers
+    // revokedAt), so both defenses apply here.
+    it("shreds a sealed, complete drop on revoke, and 404s download-url/reveal-message on it afterward", async () => {
+      const server = buildServer();
+      const { cookies } = await registerAndGetCookie(server, "revoke-shred-owner");
+      await prisma.user.update({ where: { username: "revoke-shred-owner" }, data: { emailVerified: true } });
+      await server.inject({
+        method: "POST", url: "/api/links/custom", cookies,
+        payload: { slug: "revoke-shred-link", mode: "permanent" },
+      });
+      const link = await prisma.link.findUniqueOrThrow({ where: { slug: "revoke-shred-link" } });
+      const drop = await prisma.drop.create({
+        data: {
+          linkId: link.id,
+          senderPublicKey: "c2VuZGVy",
+          s3Key: `${link.id}/revoke-shred-drop`,
+          archiveNonce: "YXJjaGl2ZQ==",
+          contentMD5: "bWQ1",
+          encryptedMetadata: "bWV0YWRhdGE=",
+          metadataNonce: "bWV0YS1ub25jZQ==",
+          fileSize: 1024,
+          fileUploadStatus: "complete",
+          deliveryStatus: "sent",
+          encryptedMessage: "c2VjcmV0",
+          messageNonce: "bm9uY2U=",
+        },
+      });
+
+      const revoke = await server.inject({ method: "POST", url: "/api/links/revoke-shred-link/revoke", cookies });
+      expect(revoke.statusCode).toBe(200);
+
+      expect(deleteObjectMock).toHaveBeenCalledWith(drop.s3Key);
+      const after = await prisma.drop.findUniqueOrThrow({ where: { id: drop.id } });
+      expect(after.fileEnvelopeStatus).toBe("shredded");
+      // The row survives as an audit trail — never hard-deleted by revoke.
+      expect(after.id).toBe(drop.id);
+
+      // The owner is also this normal owned link's recipient (canReceive allows the
+      // true owner here), so without isLinkInactive gating these receive-side routes
+      // would still have served the (now-shredded) drop's stale metadata/message.
+      const downloadUrl = await server.inject({
+        method: "GET",
+        url: `/api/links/revoke-shred-link/download-url?dropId=${drop.id}`,
+        cookies,
+      });
+      expect(downloadUrl.statusCode).toBe(404);
+
+      const reveal = await server.inject({
+        method: "POST",
+        url: `/api/links/revoke-shred-link/drops/${drop.id}/reveal-message`,
+        cookies,
+      });
+      expect(reveal.statusCode).toBe(404);
+    });
+
+    // Task 1 is deliberately scoped to receive-side routes only: unrevoke, PATCH,
+    // owner-cancel, and DELETE are true owner-management routes and must stay
+    // reachable on a revoked link by design (an owner must always be able to
+    // reverse or clean up their own revoked link).
+    it("keeps unrevoke, PATCH, owner-cancel, and DELETE reachable on a revoked link", async () => {
+      const server = buildServer();
+      const { cookies } = await registerAndGetCookie(server, "revoke-mgmt-owner");
+      await prisma.user.update({ where: { username: "revoke-mgmt-owner" }, data: { emailVerified: true } });
+      await server.inject({
+        method: "POST", url: "/api/links/custom", cookies,
+        payload: { slug: "revoke-mgmt-link", mode: "permanent" },
+      });
+      const link = await prisma.link.findUniqueOrThrow({ where: { slug: "revoke-mgmt-link" } });
+
+      const revoke = await server.inject({ method: "POST", url: "/api/links/revoke-mgmt-link/revoke", cookies });
+      expect(revoke.statusCode).toBe(200);
+
+      const unrevoke = await server.inject({ method: "POST", url: "/api/links/revoke-mgmt-link/unrevoke", cookies });
+      expect(unrevoke.statusCode).toBe(200);
+      expect((await prisma.link.findUniqueOrThrow({ where: { id: link.id } })).revokedAt).toBeNull();
+
+      // Re-revoke, then confirm PATCH/owner-cancel/DELETE all still reach their own
+      // logic on a revoked link (rather than being 404'd pre-emptively).
+      await server.inject({ method: "POST", url: "/api/links/revoke-mgmt-link/revoke", cookies });
+
+      const patch = await server.inject({
+        method: "PATCH",
+        url: "/api/links/revoke-mgmt-link",
+        cookies,
+        payload: { visibility: "contacts-only" },
+      });
+      expect(patch.statusCode).toBe(200);
+
+      // Added after revoke, so revoke's own shred loop never touched it.
+      const drop = await createSentDrop(link.id);
+      const cancel = await server.inject({
+        method: "POST",
+        url: `/api/links/revoke-mgmt-link/drops/${drop.id}/owner-cancel`,
+        cookies,
+      });
+      expect(cancel.statusCode).toBe(200);
+      expect(cancel.json()).toEqual({ cancelled: true });
+      expect((await prisma.drop.findUniqueOrThrow({ where: { id: drop.id } })).fileEnvelopeStatus).toBe("shredded");
+
+      const del = await server.inject({ method: "DELETE", url: "/api/links/revoke-mgmt-link", cookies });
+      expect(del.statusCode).toBe(200);
+      expect(await prisma.link.findUnique({ where: { id: link.id } })).toBeNull();
+    });
   });
 
   describe("GET /api/links/:slug enforces contacts-only visibility and link inactivity", () => {

@@ -217,8 +217,14 @@ async function createQueuedDrop(linkId: string, key: string, fileUploadStatus: "
 }
 
 // Registration creates the owner's default permanent link with slug === username.
+// isLinkInactive (now wired into download-url/complete-download/download-failed/
+// reveal-message by this fix) treats an unverified owner's links as inactive, so
+// every owned-link test using this helper needs a verified owner or these
+// receive-side routes would 404 for a reason unrelated to what's being tested —
+// same fix-up commit 9f7b591 already applied to upload-url/complete/claim.
 async function ownedLinkWithQueue(server: ReturnType<typeof buildServer>, username: string) {
   const owner = await registerAndGetCookie(server, username);
+  await prisma.user.update({ where: { id: owner.userId }, data: { emailVerified: true } });
   const link = (await prisma.link.findUnique({ where: { slug: username } }))!;
   const first = await createQueuedDrop(link.id, "first");
   const second = await createQueuedDrop(link.id, "second");
@@ -1167,6 +1173,10 @@ describe("owned-link reveal-message route", () => {
   it("rejects a non-owner revealing an owned link's message, and never scrubs it", async () => {
     const server = buildServer();
     const owner = await registerAndGetCookie(server, "revealowner");
+    // isLinkInactive treats an unverified owner's link as inactive — verify so
+    // this test's 403s come from the ownership check, not a 404 for an
+    // unrelated reason.
+    await prisma.user.update({ where: { id: owner.userId }, data: { emailVerified: true } });
     const link = (await prisma.link.findUnique({ where: { slug: "revealowner" } }))!;
     const drop = await createQueuedDropWithMessage(link.id);
     const intruder = await registerAndGetCookie(server, "revealintruder");
@@ -1183,6 +1193,7 @@ describe("owned-link reveal-message route", () => {
   it("lets the owner reveal their own link's message", async () => {
     const server = buildServer();
     const owner = await registerAndGetCookie(server, "revealowner2");
+    await prisma.user.update({ where: { id: owner.userId }, data: { emailVerified: true } });
     const link = (await prisma.link.findUnique({ where: { slug: "revealowner2" } }))!;
     const drop = await createQueuedDropWithMessage(link.id);
 
@@ -1539,6 +1550,10 @@ describe("sender-initiated link receive access (finding C1)", () => {
   it("still denies a stranger on a NORMAL owned link (custom, not sender-initiated) — no regression", async () => {
     const server = buildServer();
     const owner = await registerAndGetCookie(server, "normalowner1");
+    // isLinkInactive treats an unverified owner's link as inactive — verify so
+    // this test's 403s come from the ownership check, not a 404 for an
+    // unrelated reason.
+    await prisma.user.update({ where: { id: owner.userId }, data: { emailVerified: true } });
     const link = await prisma.link.create({
       data: {
         ownerId: owner.userId,

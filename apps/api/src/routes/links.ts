@@ -12,6 +12,7 @@ import type {
 } from "@e2ee-drop/shared";
 import { prisma, Prisma } from "@e2ee-drop/db";
 import {
+  abandonDrop,
   createOneTimeLink,
   deleteLinkIfExists,
   generateAnonymousSlug,
@@ -25,10 +26,10 @@ import {
 } from "../lib/links";
 import { hasAcceptedContact, hasBlockRelationship } from "../lib/contacts";
 import { deleteObject } from "../lib/storage";
-import { deleteLinkReleasingQuota } from "../lib/quota";
+import { deleteLinkReleasingQuota, scrubDropContent } from "../lib/quota";
 import { resolveLocale, deriveCodewords } from "../lib/codewords";
 import { resolveRetentionDays } from "../lib/retention";
-import { emitDropEvent } from "../lib/dropEvents";
+import { emitDropEvent, emitOwnerDropEvent, type DropEvent } from "../lib/dropEvents";
 import { env } from "../env";
 
 export function registerLinkRoutes(server: FastifyInstance): void {
@@ -460,11 +461,31 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       const link = await requireOwnedLink(request.params.slug, request.user!.id, reply);
       if (!link) return;
       await prisma.link.update({ where: { id: link.id }, data: { revokedAt: new Date() } });
-      // NOTE (see plan self-review / spec §3.1): shredding this link's still-
-      // sealed/delivery_failed drops on revoke is spec 2's job (owner-cancel
-      // mechanism) and is intentionally NOT done here — spec 2's plan should
-      // add that call once its shred function exists. Revoke here only makes
-      // the link stop being servable; it does not touch existing drops.
+      // Spec §3.1/§7: revoke immediately shreds any of this link's drops that
+      // are still sealed/delivery_failed — same distinction, and the same
+      // scrubDropContent/abandonDrop pair, as owner-cancel's per-drop handling
+      // (downloads.ts). Iterated the same way DELETE /:slug's owned-link
+      // branch already iterates link.drops above, for consistency with this
+      // file's own style.
+      for (const drop of link.drops) {
+        if (drop.fileUploadStatus !== "complete") {
+          // Nothing sealed yet — same outcome as the sender abandoning their own upload.
+          await abandonDrop(drop.id, link.id);
+          continue;
+        }
+        const result = await scrubDropContent(drop.id);
+        if (result) {
+          await deleteObject(result.s3Key);
+          const updated = await prisma.drop.findUnique({ where: { id: drop.id } });
+          if (updated) {
+            const event: DropEvent = { type: "drop-updated", drop: toDropSummary(updated, link) };
+            emitDropEvent(link.id, event);
+            if (link.ownerId) {
+              emitOwnerDropEvent(link.ownerId, event);
+            }
+          }
+        }
+      }
       return reply.send({ revoked: true });
     }
   );

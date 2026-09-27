@@ -137,8 +137,26 @@ describe("SSE events route", () => {
     expect(response.statusCode).toBe(404);
   });
 
+  // This route previously gated on isLinkExpired only, so a revoked link's
+  // events stream stayed subscribable. isLinkInactive (which covers
+  // revokedAt) now gates it the same way GET /api/links/:slug already does.
+  it("returns 404 for a revoked link", async () => {
+    const createRes = await server.inject({
+      method: "POST",
+      url: "/api/links",
+      payload: { recipientPublicKey: "cmVjaXBpZW50" },
+    });
+    const { slug } = createRes.json();
+    await prisma.link.updateMany({ where: { slug }, data: { revokedAt: new Date() } });
+
+    const response = await server.inject({ method: "GET", url: `/api/links/${slug}/events` });
+
+    expect(response.statusCode).toBe(404);
+  });
+
   it("rejects an unauthenticated subscriber to an owned link's events", async () => {
     await registerAndGetCookie(server, "sseowner");
+    await prisma.user.update({ where: { username: "sseowner" }, data: { emailVerified: true } });
 
     const response = await server.inject({ method: "GET", url: "/api/links/sseowner/events" });
 
@@ -147,6 +165,7 @@ describe("SSE events route", () => {
 
   it("rejects another authenticated user subscribing to an owned link's events", async () => {
     await registerAndGetCookie(server, "sseowner");
+    await prisma.user.update({ where: { username: "sseowner" }, data: { emailVerified: true } });
     const intruder = await registerAndGetCookie(server, "intruder");
 
     const response = await server.inject({
@@ -240,6 +259,7 @@ describe("SSE events route", () => {
 
   it("streams an owned link's events to its owner, and cleans up each connection independently", async () => {
     const owner = await registerAndGetCookie(server, "sseowner");
+    await prisma.user.update({ where: { username: "sseowner" }, data: { emailVerified: true } });
     const link = (await prisma.link.findUnique({ where: { slug: "sseowner" } }))!;
     await server.listen({ port: 0, host: "127.0.0.1" });
     const { port } = server.server.address() as AddressInfo;

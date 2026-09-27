@@ -1,6 +1,6 @@
 // apps/api/src/routes/events.ts
 import type { FastifyInstance } from "fastify";
-import { canReceive, getLinkBySlug, isLinkExpired } from "../lib/links";
+import { canReceive, getLinkBySlug, isLinkInactive } from "../lib/links";
 import { subscribeToLink } from "../lib/dropEvents";
 
 // A comment line written periodically so a reverse proxy never sees the stream
@@ -12,7 +12,7 @@ export const SSE_HEARTBEAT_INTERVAL_MS = 25_000;
 export function registerEventRoutes(server: FastifyInstance): void {
   server.get<{ Params: { slug: string } }>("/api/links/:slug/events", async (request, reply) => {
     const link = await getLinkBySlug(request.params.slug);
-    if (!link || isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+    if (!link || (await isLinkInactive(link))) return reply.status(404).send({ error: "Link not found" });
     // Anonymous (ownerless) links stay open to any link holder, exactly like
     // Plan 1's other link routes. `request.user` is set on every request
     // (null when there's no valid session) by the global onRequest hook in

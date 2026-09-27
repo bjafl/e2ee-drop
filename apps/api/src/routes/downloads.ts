@@ -6,7 +6,7 @@ import {
   abandonDrop,
   canReceive,
   getLinkBySlug,
-  isLinkExpired,
+  isLinkInactive,
   recomputeDeliveryStatus,
   toDropSummary,
 } from "../lib/links";
@@ -28,7 +28,7 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
       if (!link) return reply.status(404).send({ error: "Link not found" });
       // Not deleted here — see the GET /api/links/:slug handler: only the cleanup
       // job deletes expired links, so storage objects are never orphaned.
-      if (isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+      if (await isLinkInactive(link)) return reply.status(404).send({ error: "Link not found" });
       // Anonymous (ownerId === null) links stay open to any link holder, as in
       // Plan 1. A normal owned link is restricted to its true owner; a claimed
       // sender-initiated link's receive actions are open to any non-owner slug
@@ -76,7 +76,7 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
     "/api/links/:slug/drops/:dropId/complete-download",
     async (request, reply) => {
       const link = await getLinkBySlug(request.params.slug);
-      if (!link || isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+      if (!link || (await isLinkInactive(link))) return reply.status(404).send({ error: "Link not found" });
       // Same receive-side rule as download-url: see canReceive in lib/links.ts.
       if (!(await canReceive(link, request.user?.id))) {
         return reply.status(403).send({ error: "Forbidden" });
@@ -188,7 +188,7 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
     "/api/links/:slug/drops/:dropId/download-failed",
     async (request, reply) => {
       const link = await getLinkBySlug(request.params.slug);
-      if (!link || isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+      if (!link || (await isLinkInactive(link))) return reply.status(404).send({ error: "Link not found" });
       // Same receive-side rule as download-url/complete-download: see
       // canReceive in lib/links.ts.
       if (!(await canReceive(link, request.user?.id))) {
@@ -228,7 +228,7 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
     "/api/links/:slug/drops/:dropId/reveal-message",
     async (request, reply) => {
       const link = await getLinkBySlug(request.params.slug);
-      if (!link || isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+      if (!link || (await isLinkInactive(link))) return reply.status(404).send({ error: "Link not found" });
       // Same receive-side rule as this route's siblings: see canReceive in
       // lib/links.ts. Previously missing entirely (finding I5) — this route had
       // no ownership check at all, so a non-owner could reveal (and permanently
