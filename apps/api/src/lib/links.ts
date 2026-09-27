@@ -4,6 +4,7 @@ import { prisma, Prisma, type Link, type Drop } from "@e2ee-drop/db";
 import type { FileUploadStatus, DropSummary, LinkStatusResponse } from "@e2ee-drop/shared";
 import { env } from "../env";
 import { resolveLocale, deriveCodewords } from "./codewords";
+import { deleteObject } from "./storage";
 
 // Also used by routes/links.ts's sender-initiated POST /api/links/request (Task 12), which
 // needs the same anonymous-slug shape but isn't creating a one-time link.
@@ -74,6 +75,27 @@ export async function transitionFileUploadStatus(
     where: { id: dropId, linkId, fileUploadStatus: { in: [...fromStatuses] } },
     data: { fileUploadStatus: toStatus },
   });
+  return count === 1;
+}
+
+// Deletes a drop outright IF it is still "uploading" for this link — never a drop that has
+// completed or that never existed. Used both by the sender-facing /abandon route (uploads.ts,
+// unauthenticated — drop ids aren't secret) and by the owner-facing owner-cancel route
+// (downloads.ts) for a drop that's still mid-upload, where there's no sealed content yet to
+// scrub. Returns whether it actually abandoned something.
+export async function abandonDrop(dropId: string, linkId: string): Promise<boolean> {
+  const candidate = await prisma.drop.findFirst({
+    where: { id: dropId, linkId, fileUploadStatus: "uploading" },
+    select: { s3Key: true },
+  });
+  if (!candidate) return false;
+
+  const { count } = await prisma.drop.deleteMany({
+    where: { id: dropId, linkId, fileUploadStatus: "uploading" },
+  });
+  if (count === 1) {
+    await deleteObject(candidate.s3Key);
+  }
   return count === 1;
 }
 

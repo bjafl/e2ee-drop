@@ -2,8 +2,9 @@
 import type { FastifyInstance } from "fastify";
 import { prisma } from "@e2ee-drop/db";
 import type { DownloadUrlResponse, RevealMessageResponse } from "@e2ee-drop/shared";
-import { canReceive, getLinkBySlug, isLinkExpired, recomputeDeliveryStatus } from "../lib/links";
+import { abandonDrop, canReceive, getLinkBySlug, isLinkExpired, recomputeDeliveryStatus } from "../lib/links";
 import { getSignedDownloadUrl, deleteObject } from "../lib/storage";
+import { scrubDropContent } from "../lib/quota";
 
 // fileEnvelopeStatus values that mean "this drop's file bytes are gone/spoken
 // for" — a compare-and-swap gate never lets a write clobber either of these.
@@ -229,6 +230,33 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
 
       const body: RevealMessageResponse = { encryptedMessage, messageNonce: messageNonce! };
       return reply.send(body);
+    }
+  );
+
+  // Owner-triggered immediate scrub/abandon of one of their own link's drops, without waiting
+  // for any timer (retention sweep, upload-window expiry, etc.). Gated on true ownership
+  // (request.user.id === link.ownerId), not canReceive — this is a management operation, same
+  // trust model as delete-link/edit-ownerNote, not a receive-side action.
+  server.post<{ Params: { slug: string; dropId: string } }>(
+    "/api/links/:slug/drops/:dropId/owner-cancel",
+    { preHandler: server.requireAuth },
+    async (request, reply) => {
+      const link = await getLinkBySlug(request.params.slug);
+      if (!link) return reply.status(404).send({ error: "Link not found" });
+      if (link.ownerId !== request.user!.id) return reply.status(403).send({ error: "Forbidden" });
+      const { dropId } = request.params;
+      const drop = link.drops.find((candidate) => candidate.id === dropId);
+      if (!drop) return reply.status(404).send({ error: "Drop not found" });
+
+      if (drop.fileUploadStatus !== "complete") {
+        // Nothing sealed yet — same outcome as the sender abandoning their own upload.
+        const abandoned = await abandonDrop(dropId, link.id);
+        return reply.send({ cancelled: abandoned });
+      }
+
+      const result = await scrubDropContent(dropId);
+      if (result) await deleteObject(result.s3Key);
+      return reply.send({ cancelled: result !== null });
     }
   );
 }

@@ -991,6 +991,105 @@ describe("owned-link reveal-message route", () => {
   });
 });
 
+describe("owner-cancel route", () => {
+  beforeEach(async () => {
+    deleteObjectMock.mockReset();
+    deleteObjectMock.mockResolvedValue(undefined);
+    await prisma.contact.deleteMany();
+    await prisma.session.deleteMany();
+    await prisma.drop.deleteMany();
+    await prisma.link.deleteMany();
+    await prisma.user.deleteMany();
+  });
+
+  it("owner-cancel scrubs a sealed drop's content", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "cancelowner1");
+    const link = (await prisma.link.findUnique({ where: { slug: "cancelowner1" } }))!;
+    const drop = await createQueuedDrop(link.id, "sealed", "complete");
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/drops/${drop.id}/owner-cancel`,
+      cookies: owner.cookies,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ cancelled: true });
+    expect(deleteObjectMock).toHaveBeenCalledWith(drop.s3Key);
+    const after = await prisma.drop.findUniqueOrThrow({ where: { id: drop.id } });
+    expect(after.fileEnvelopeStatus).toBe("shredded");
+  });
+
+  it("rejects a non-owner", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "cancelowner2");
+    const link = (await prisma.link.findUnique({ where: { slug: "cancelowner2" } }))!;
+    const drop = await createQueuedDrop(link.id, "sealed", "complete");
+    const intruder = await registerAndGetCookie(server, "cancelintruder2");
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/drops/${drop.id}/owner-cancel`,
+      cookies: intruder.cookies,
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(deleteObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op, not an error, on an already-delivered drop", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "cancelowner3");
+    const link = (await prisma.link.findUnique({ where: { slug: "cancelowner3" } }))!;
+    const drop = await prisma.drop.create({
+      data: {
+        linkId: link.id,
+        senderPublicKey: "c2VuZGVy",
+        s3Key: `${link.id}/delivered`,
+        archiveNonce: "YXJjaGl2ZQ==",
+        contentMD5: "bWQ1",
+        encryptedMetadata: "bWV0YWRhdGE=",
+        metadataNonce: "bWV0YW5vbmNl",
+        fileSize: 1024,
+        fileUploadStatus: "complete",
+        fileEnvelopeStatus: "delivered",
+        messageEnvelopeStatus: "delivered",
+        encryptedMessage: "c2VjcmV0",
+        messageNonce: "bm9uY2U=",
+      },
+    });
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/drops/${drop.id}/owner-cancel`,
+      cookies: owner.cookies,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ cancelled: false });
+    expect(deleteObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("delegates to abandon semantics for a still-uploading drop", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "cancelowner4");
+    const link = (await prisma.link.findUnique({ where: { slug: "cancelowner4" } }))!;
+    const drop = await createQueuedDrop(link.id, "uploading", "uploading");
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/drops/${drop.id}/owner-cancel`,
+      cookies: owner.cookies,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ cancelled: true });
+    const after = await prisma.drop.findUnique({ where: { id: drop.id } });
+    expect(after).toBeNull(); // abandoned (row removed), not scrubbed-in-place
+  });
+});
+
 // Finding C1: POST /api/links/request + /claim previously shipped a flow that
 // could never actually deliver anything — every receive-side route gated on
 // `request.user?.id === link.ownerId`, but the owner of a sender-initiated
