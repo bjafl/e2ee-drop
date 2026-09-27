@@ -241,7 +241,7 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       if (!recipientPublicKey) return reply.status(400).send({ error: "Missing recipientPublicKey" });
 
       const link = await getLinkBySlug(request.params.slug);
-      if (!link || isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+      if (!link || (await isLinkInactive(link))) return reply.status(404).send({ error: "Link not found" });
 
       const { count } = await prisma.link.updateMany({
         where: { id: link.id, recipientPublicKey: null },

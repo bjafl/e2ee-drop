@@ -3,7 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { nanoid } from "nanoid";
 import { prisma, Prisma, type Drop } from "@e2ee-drop/db";
 import type { RequestUploadUrlRequest, RequestUploadUrlResponse } from "@e2ee-drop/shared";
-import { getLinkBySlug, isLinkExpired, toDropSummary, transitionFileUploadStatus } from "../lib/links";
+import { getLinkBySlug, isLinkExpired, isLinkInactive, toDropSummary, transitionFileUploadStatus } from "../lib/links";
 import { deleteObject, getSignedUploadUrl, objectHasSize } from "../lib/storage";
 import { emitDropEvent } from "../lib/dropEvents";
 import { hasAcceptedContact } from "../lib/contacts";
@@ -90,14 +90,18 @@ export function registerUploadRoutes(server: FastifyInstance): void {
       if (!link) return reply.status(404).send({ error: "Link not found" });
       // Not deleted here — see the GET /api/links/:slug handler: only the cleanup
       // job deletes expired links, so storage objects are never orphaned.
-      if (isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+      if (await isLinkInactive(link)) return reply.status(404).send({ error: "Link not found" });
       // Checked before any DB writes or the Serializable transaction below: a
       // disallowed sender should be rejected as cheaply as possible, and must
       // never cause a drop row (or queue-limit bookkeeping) to be created.
+      // Same 404 shape as GET /api/links/:slug uses for this identical case
+      // (this handler's link.visibility check, above): a contacts-only link
+      // must be indistinguishable from a nonexistent one everywhere, not just
+      // on GET — a distinguishable 403 here would leak that the link exists.
       if (link.visibility === "contacts-only") {
         const allowed = request.user ? await hasAcceptedContact(link.ownerId!, request.user.id) : false;
         if (!allowed) {
-          return reply.status(403).send({ error: "This link only accepts uploads from approved contacts" });
+          return reply.status(404).send({ error: "Link not found" });
         }
       }
       // Fast path only: avoids opening a transaction for the common case where we
@@ -277,7 +281,7 @@ export function registerUploadRoutes(server: FastifyInstance): void {
     "/api/links/:slug/drops/:dropId/complete",
     async (request, reply) => {
       const link = await getLinkBySlug(request.params.slug);
-      if (!link || isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+      if (!link || (await isLinkInactive(link))) return reply.status(404).send({ error: "Link not found" });
       const { dropId } = request.params;
 
       // Scoped by link: a drop id alone must never act on another link's drop.

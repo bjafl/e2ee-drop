@@ -901,6 +901,7 @@ describe("link routes", () => {
     it("rejects claiming an already-claimed link", async () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "claimowner2");
+      await prisma.user.update({ where: { username: "claimowner2" }, data: { emailVerified: true } });
       const requestRes = await server.inject({
         method: "POST",
         url: "/api/links/request",
@@ -966,9 +967,38 @@ describe("link routes", () => {
       expect(res.statusCode).toBe(404);
     });
 
+    // Finding 2 (final review): the claim handler used to check only
+    // isLinkExpired, so a revoked link could still be claimed even though
+    // GET /api/links/:slug already 404s it.
+    it("404s a claim attempt on a revoked link", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "claimowner5");
+      await prisma.user.update({ where: { username: "claimowner5" }, data: { emailVerified: true } });
+      const requestRes = await server.inject({
+        method: "POST",
+        url: "/api/links/request",
+        payload: {},
+        cookies: owner.cookies,
+      });
+      const { slug } = requestRes.json();
+
+      const revoke = await server.inject({ method: "POST", url: `/api/links/${slug}/revoke`, cookies: owner.cookies });
+      expect(revoke.statusCode).toBe(200);
+
+      const res = await server.inject({
+        method: "POST",
+        url: `/api/links/${slug}/claim`,
+        payload: { recipientPublicKey: "x" },
+      });
+      expect(res.statusCode).toBe(404);
+      const link = await prisma.link.findUniqueOrThrow({ where: { slug } });
+      expect(link.recipientPublicKey).toBeNull();
+    });
+
     it("resolves true concurrency to exactly one winner", async () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "claimowner4");
+      await prisma.user.update({ where: { username: "claimowner4" }, data: { emailVerified: true } });
       const requestRes = await server.inject({
         method: "POST",
         url: "/api/links/request",
@@ -994,6 +1024,7 @@ describe("link routes", () => {
     it("emits a link-claimed SSE event once the claim CAS wins, and not on a losing claim", async () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "claimeventowner");
+      await prisma.user.update({ where: { username: "claimeventowner" }, data: { emailVerified: true } });
       const requestRes = await server.inject({
         method: "POST",
         url: "/api/links/request",

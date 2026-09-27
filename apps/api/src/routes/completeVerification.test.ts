@@ -43,6 +43,10 @@ async function createOwnedLink(slug: string) {
       recoveryWrappedPrivateKey: "r",
       publicKey: "pk",
       storageQuotaBytes: 10_000,
+      // isLinkInactive (wired into upload-url/complete by this fix) treats an
+      // unverified owner's links as inactive; these tests are about
+      // verifying real uploads/charging, not email verification.
+      emailVerified: true,
     },
   });
   await prisma.link.create({ data: { ownerId: owner.id, slug, mode: "permanent", recipientPublicKey: "pk", retentionDays: 7 } });
