@@ -22,6 +22,7 @@ import {
 } from "../lib/rateLimit";
 import { decryptTotpSecret, verifyTotpCode } from "../lib/totp";
 import { getUsedCodesForUser } from "../lib/totpReplayGuard";
+import { consumeBackupCodeIfValid } from "../lib/totpBackupCodes";
 
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 
@@ -113,7 +114,11 @@ async function checkResetTotp(token: string, totpCode: unknown): Promise<ResetTo
     return { status: 429, body: rateLimitExceededBody() };
   }
   const secret = decryptTotpSecret(user.totpSecretEncrypted!);
-  if (!verifyTotpCode(secret, totpCode, getUsedCodesForUser(user.id))) {
+  const totpValid = verifyTotpCode(secret, totpCode, getUsedCodesForUser(user.id));
+  // Same ordering as /api/auth/login (routes/auth.ts) and the 2FA-management
+  // routes (routes/twoFactor.ts): a backup code is checked only when the TOTP
+  // check itself fails.
+  if (!totpValid && !(await consumeBackupCodeIfValid(user.id, totpCode))) {
     return { status: 401, body: { error: "Invalid TOTP code", requiresTotp: true } };
   }
   return null;

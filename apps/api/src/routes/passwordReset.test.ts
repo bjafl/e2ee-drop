@@ -8,6 +8,7 @@ import { createDefaultLinkForUser } from "../lib/links";
 import { isMailerConfigured, sendPasswordResetEmail } from "../lib/mailer";
 import { env } from "../env";
 import { encryptTotpSecret, generateTotpSecret } from "../lib/totp";
+import { generateAndStoreBackupCodes } from "../lib/totpBackupCodes";
 import { TOTP, Secret } from "otpauth";
 
 // registerUser() (below) now exercises routes/auth.ts's own best-effort
@@ -679,6 +680,71 @@ describe("password reset routes", () => {
           expect(response.statusCode).toBe(400);
           expect(response.json().requiresTotp).toBeUndefined();
         }
+      });
+
+      it(`${route.name}: accepts a backup code in place of a TOTP code`, async () => {
+        const server = buildServer();
+        const { userId } = await registerUser(server);
+        await enableTotp(userId);
+        const codes = await generateAndStoreBackupCodes(userId);
+        const token = await issueResetToken(userId);
+
+        const response = await server.inject({
+          method: "POST",
+          url: route.url,
+          payload: { ...route.payload, token, totpCode: codes[0] },
+        });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ reset: true });
+      });
+
+      it(`${route.name}: a backup code already consumed at login can't be reused for a reset`, async () => {
+        const server = buildServer();
+        const { userId } = await registerUser(server);
+        await enableTotp(userId);
+        const codes = await generateAndStoreBackupCodes(userId);
+
+        const login = await server.inject({
+          method: "POST",
+          url: "/api/auth/login",
+          payload: { email: "dana@example.com", authKey: "original password", totpCode: codes[0] },
+        });
+        expect(login.statusCode).toBe(200);
+
+        const token = await issueResetToken(userId);
+        const before = await snapshot(userId);
+        const replayed = await server.inject({
+          method: "POST",
+          url: route.url,
+          payload: { ...route.payload, token, totpCode: codes[0] },
+        });
+        expect(replayed.statusCode).toBe(401);
+        expect(replayed.json().requiresTotp).toBe(true);
+        expect(await snapshot(userId)).toEqual(before);
+      });
+
+      it(`${route.name}: rejects a well-formed but never-issued backup code exactly like a wrong TOTP code, and changes nothing`, async () => {
+        const server = buildServer();
+        const { userId } = await registerUser(server);
+        await enableTotp(userId);
+        await generateAndStoreBackupCodes(userId);
+        const token = await issueResetToken(userId);
+        const before = await snapshot(userId);
+
+        // "zzzzz-zzzzz" is well-formed — z IS part of the backup-code
+        // alphabet, only 0, 1, i, l, o are excluded — but was never issued to
+        // this user, so it's rejected purely for not matching any stored
+        // hash (the exhaustion/never-issued case), with the exact same
+        // outcome as a wrong TOTP code: no crash, no distinguishing message,
+        // no state change.
+        const response = await server.inject({
+          method: "POST",
+          url: route.url,
+          payload: { ...route.payload, token, totpCode: "zzzzz-zzzzz" },
+        });
+        expect(response.statusCode).toBe(401);
+        expect(response.json().requiresTotp).toBe(true);
+        expect(await snapshot(userId)).toEqual(before);
       });
     }
 
