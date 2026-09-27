@@ -38,7 +38,11 @@ services:
       dockerfile: apps/api/Dockerfile
     command: ["pnpm", "--filter", "@e2ee-drop/db", "migrate:deploy"]
     environment:
-      DATABASE_URL: ${DATABASE_URL}
+      # Compose-internal Postgres URL, built from the separate POSTGRES_* vars.
+      # Do NOT use ${DATABASE_URL} here: that's the host-facing value in .env,
+      # meant for host-side tooling (pnpm dev, tests), and its hostname won't
+      # resolve from inside the compose network.
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
     depends_on:
       postgres:
         condition: service_healthy
@@ -49,14 +53,18 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     environment:
-      DATABASE_URL: ${DATABASE_URL}
+      # Compose-internal Postgres URL — see the comment on migrate's DATABASE_URL above.
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       PORT: ${PORT}
       MAX_FILE_SIZE_BYTES: ${MAX_FILE_SIZE_BYTES}
       LINK_EXPIRY_HOURS: ${LINK_EXPIRY_HOURS}
       DROP_RETENTION_DAYS_DEFAULT: ${DROP_RETENTION_DAYS_DEFAULT}
       DROP_RETENTION_DAYS_MAX: ${DROP_RETENTION_DAYS_MAX}
       CODEWORD_WORD_COUNT: ${CODEWORD_WORD_COUNT}
-      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      # Compose-internal MinIO S3 API endpoint (the minio container's own listen
+      # port; 9001 is only the admin console). Do NOT use ${MINIO_ENDPOINT} here,
+      # same reasoning as DATABASE_URL above.
+      MINIO_ENDPOINT: http://minio:9000
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:${WEB_PORT:-8080}/s3}
       MINIO_REGION: ${MINIO_REGION}
       MINIO_BUCKET: ${MINIO_BUCKET}
@@ -86,10 +94,12 @@ services:
       dockerfile: apps/api/Dockerfile
     command: ["pnpm", "--filter", "@e2ee-drop/api", "cleanup"]
     environment:
-      DATABASE_URL: ${DATABASE_URL}
+      # Compose-internal Postgres URL — see the comment on migrate's DATABASE_URL above.
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       DROP_RETENTION_DAYS_DEFAULT: ${DROP_RETENTION_DAYS_DEFAULT}
       DROP_RETENTION_DAYS_MAX: ${DROP_RETENTION_DAYS_MAX}
-      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      # Compose-internal MinIO S3 API endpoint — see the comment on api's MINIO_ENDPOINT above.
+      MINIO_ENDPOINT: http://minio:9000
       MINIO_REGION: ${MINIO_REGION}
       MINIO_BUCKET: ${MINIO_BUCKET}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
@@ -115,8 +125,8 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
-    expose:
-      - "80"
+    ports:
+      - "${WEB_PORT:-8080}:80"
     depends_on:
       - api
       - minio

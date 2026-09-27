@@ -30,11 +30,11 @@ identical to `POSTGRES_PASSWORD` (see the table below).
 
 | Variable | Default | Used by | Purpose |
 | --- | --- | --- | --- |
-| `DATABASE_URL` | — (required) | `api`, `migrate`, `cleanup` | Postgres connection string |
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | — (required) | `postgres` | Postgres container credentials, must match `DATABASE_URL` |
+| `DATABASE_URL` | — (required) | host-side tooling only (`pnpm --filter db`, `pnpm -r test`) | Postgres connection string. **Not read by `docker compose up`**: the `api`/`migrate`/`cleanup` containers build their own Postgres URL internally from `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB` against the `postgres` service directly, so editing this value has no effect on the containers — it only matters for host-side processes, which should point at `localhost` (the compose-published Postgres port) rather than the `postgres` hostname |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | — (required) | `postgres`, and indirectly `api`/`migrate`/`cleanup` (their `DATABASE_URL` is built from these) | Postgres container credentials, must match `DATABASE_URL` |
 | `PORT` | `3000` | `api` | Port the Fastify server listens on inside its container. Not freely changeable: `apps/web/nginx.conf` hardcodes `proxy_pass http://api:3000`, so changing `PORT` without also editing that file breaks the web → api proxy |
 | `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` | — (required) | `minio` | MinIO admin credentials |
-| `MINIO_ENDPOINT` | — (required) | `api`, `cleanup` | Internal MinIO endpoint, reachable inside the compose network — used by `api`/`cleanup` for direct calls (bucket setup, deletes) |
+| `MINIO_ENDPOINT` | — (required) | host-side tooling only | **Not read by `docker compose up`**: the `api`/`cleanup` containers hardcode `http://minio:9000` (the compose-internal MinIO hostname) directly in `docker-compose.yml`, so editing this value has no effect on the containers. It only matters for host-side tooling that talks to MinIO directly — note `docker-compose.yml` publishes no host port for `minio`, so that means a separate, standalone MinIO instance, not the one `docker compose up` starts |
 | `MINIO_PUBLIC_ENDPOINT` | `http://localhost:8080/s3` | `api` | Browser-reachable endpoint embedded in presigned upload/download URLs. The `web` service proxies its `/s3/` route through to MinIO, so this must stay in sync with how users actually reach `web` (i.e. with `WEB_PORT` below). If you point it at a different origin (e.g. an external S3 endpoint), also add that origin to `connect-src` in `apps/web/nginx.conf`'s Content-Security-Policy, or the browser will block uploads and downloads |
 | `MINIO_REGION` | `us-east-1` | `api`, `cleanup` | S3 region (MinIO ignores the value but the SDK requires one) |
 | `MINIO_BUCKET` | — (required) | `api`, `cleanup` | Bucket used for encrypted file storage |
@@ -56,7 +56,10 @@ identical to `POSTGRES_PASSWORD` (see the table below).
 **Defaults only apply to variables that are truly unset.** Most
 variables above are passed in `docker-compose.yml` as `VAR: ${VAR}`
 (only `WEB_PORT` and `MINIO_PUBLIC_ENDPOINT` carry compose-level `:-`
-fallbacks), and docker compose passes a variable that is missing or
+fallbacks; `DATABASE_URL` and `MINIO_ENDPOINT` are the other exceptions —
+for `api`/`migrate`/`cleanup` they're built from other vars or hardcoded
+to compose-internal hostnames instead of passed through, per the table
+above), and docker compose passes a variable that is missing or
 blank in `.env` as an *empty string*, not as unset. The numeric
 variables happen to treat an empty string as "use the default", but
 others do not: a blank `ALLOW_REGISTRATION` silently *closes*
