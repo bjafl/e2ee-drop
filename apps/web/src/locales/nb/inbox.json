@@ -11,5 +11,12 @@
     "receiver_opened": "Du har åpnet denne",
     "partial_delivery": "Delvis hentet",
     "delivered": "Levert"
+  },
+  "outgoingStatus": {
+    "sender_opened": "Du har åpnet denne",
+    "sent": "Sendt",
+    "receiver_opened": "Åpnet av mottaker",
+    "partial_delivery": "Delvis hentet",
+    "delivered": "Levert"
   }
 }

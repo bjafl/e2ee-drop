@@ -11,5 +11,12 @@
     "receiver_opened": "You've opened this",
     "partial_delivery": "Partially retrieved",
     "delivered": "Delivered"
+  },
+  "outgoingStatus": {
+    "sender_opened": "You've opened this",
+    "sent": "Sent",
+    "receiver_opened": "Opened by recipient",
+    "partial_delivery": "Partially retrieved",
+    "delivered": "Delivered"
   }
 }

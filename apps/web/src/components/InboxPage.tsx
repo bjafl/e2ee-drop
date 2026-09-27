@@ -69,7 +69,11 @@ export function InboxPage() {
               {selected.drops.map((drop) => (
                 <li key={drop.id} className="border-b pb-2 text-sm last:border-0">
                   <p className="font-mono">{drop.linkSlug}</p>
-                  <p className="text-muted-foreground">{t(`status.${drop.deliveryStatus}`)}</p>
+                  <p className="text-muted-foreground">
+                    {selected.direction === "incoming"
+                      ? t(`status.${drop.deliveryStatus}`)
+                      : t(`outgoingStatus.${drop.deliveryStatus}`)}
+                  </p>
                 </li>
               ))}
             </ul>

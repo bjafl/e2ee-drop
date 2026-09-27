@@ -60,4 +60,69 @@ describe("InboxPage", () => {
 
     await waitFor(() => expect(screen.getByText("myslug")).toBeInTheDocument());
   });
+
+  it("keeps incoming and outgoing entries for the same person independently selectable even though they share a displayName", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          counterparties: [
+            {
+              key: "incoming:account:1",
+              kind: "account",
+              displayName: "friend1",
+              direction: "incoming",
+              drops: [{ id: "d-in", linkSlug: "in-slug", deliveryStatus: "sent", messageEnvelopeStatus: "sealed", fileEnvelopeStatus: "sealed", hasMessage: false, createdAt: 1 }],
+            },
+            {
+              key: "outgoing:account:1",
+              kind: "account",
+              displayName: "friend1",
+              direction: "outgoing",
+              drops: [{ id: "d-out", linkSlug: "out-slug", deliveryStatus: "sent", messageEnvelopeStatus: "sealed", fileEnvelopeStatus: "sealed", hasMessage: false, createdAt: 1 }],
+            },
+          ],
+        }),
+      })
+    );
+
+    render(<InboxPage />);
+    const entries = await screen.findAllByText("friend1");
+    expect(entries).toHaveLength(2);
+
+    entries[0].click();
+    await waitFor(() => expect(screen.getByText("in-slug")).toBeInTheDocument());
+
+    entries[1].click();
+    await waitFor(() => expect(screen.getByText("out-slug")).toBeInTheDocument());
+    expect(screen.queryByText("in-slug")).not.toBeInTheDocument();
+  });
+
+  it("shows the sender-perspective status label for an outgoing drop, not the recipient-perspective one", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          counterparties: [
+            {
+              key: "outgoing:account:1",
+              kind: "account",
+              displayName: "friend1",
+              direction: "outgoing",
+              drops: [{ id: "d1", linkSlug: "myslug", deliveryStatus: "receiver_opened", messageEnvelopeStatus: "sealed", fileEnvelopeStatus: "sealed", hasMessage: false, createdAt: 1 }],
+            },
+          ],
+        }),
+      })
+    );
+
+    render(<InboxPage />);
+    const entry = await screen.findByText("friend1");
+    entry.click();
+
+    await waitFor(() => expect(screen.getByText("Opened by recipient")).toBeInTheDocument());
+    expect(screen.queryByText("You've opened this")).not.toBeInTheDocument();
+  });
 });
