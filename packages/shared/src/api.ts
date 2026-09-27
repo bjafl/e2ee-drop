@@ -94,6 +94,46 @@ export interface LinkStatusResponse {
   recipientAllowContactRequests?: boolean;
 }
 
+export interface LinkSummary {
+  slug: string;
+  mode: LinkMode;
+  visibility: LinkVisibility;
+  isDefault: boolean;
+  createdAt: number; // epoch ms
+  expiresAt?: number; // epoch ms, omitted for permanent links
+  revokedAt?: number; // epoch ms, omitted if not revoked
+  lastSenderOpenedAt?: number; // epoch ms, omitted if never opened by a sender
+  retentionDays: number;
+}
+
+export interface ListLinksResponse {
+  links: LinkSummary[];
+}
+
+export interface InboxDrop {
+  id: string;
+  linkSlug: string;
+  deliveryStatus: "sender_opened" | "sent" | "receiver_opened" | "partial_delivery" | "delivered";
+  messageEnvelopeStatus: "sealed" | "delivery_failed" | "delivered" | "shredded";
+  fileEnvelopeStatus: "sealed" | "delivery_failed" | "delivered" | "shredded";
+  hasMessage: boolean;
+  createdAt: number; // epoch ms
+}
+
+export interface InboxCounterparty {
+  // Stable within one response; "account:<userId>" or "anon:<senderPublicKey>".
+  // Never persisted or reused as a lookup key server-side beyond this response.
+  key: string;
+  kind: "account" | "anonymous";
+  displayName: string; // username for "account", "Anonym1"/"Anonym2"/... for "anonymous"
+  direction: "incoming" | "outgoing";
+  drops: InboxDrop[];
+}
+
+export interface InboxResponse {
+  counterparties: InboxCounterparty[];
+}
+
 // Body for POST /api/links/:slug/upload-url. Replaces the old flat "message"/"metadata" shape —
 // all three envelopes are now independently-nonced ciphertext (design spec §3.1/§5).
 export interface RequestUploadUrlRequest {
