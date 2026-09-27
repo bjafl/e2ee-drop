@@ -1,8 +1,19 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
-const authState: { user: { id: string; username: string } | null } = { user: null };
+interface MockUser {
+  id: string;
+  username: string;
+  name?: string;
+  email?: string;
+  emailVerified?: boolean;
+  publicKey?: string;
+  totpEnabled?: boolean;
+  keyPair?: unknown;
+}
+
+const authState: { user: MockUser | null } = { user: null };
 vi.mock("@/hooks/useAuth", () => ({
   useAuth: () => ({ user: authState.user, loading: false, login: vi.fn(), logout: vi.fn(), register: vi.fn() }),
 }));
@@ -57,5 +68,79 @@ describe("HomePage", () => {
     renderHome();
 
     expect(screen.queryByRole("link", { name: /my account/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("HomePage dashboard branch", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    // A local (anonymous-browser) link so the "still renders the anonymous
+    // local-links section" test below has something to assert on — the
+    // dashboard branch must not swallow this pre-existing block.
+    const now = Date.now();
+    window.localStorage.setItem(
+      "e2ee-drop:links",
+      JSON.stringify({
+        localslug: { privateKey: "c2VjcmV0", createdAt: now, expiresAt: now + 60_000 },
+      })
+    );
+    authState.user = {
+      id: "u1",
+      username: "verifieduser",
+      name: "Verified User",
+      email: "v@example.com",
+      emailVerified: true,
+      publicKey: "x",
+      totpEnabled: false,
+      keyPair: null,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          links: [
+            { slug: "verifieduser", mode: "permanent", visibility: "public", isDefault: true, createdAt: 1, retentionDays: 7 },
+          ],
+        }),
+      })
+    );
+  });
+
+  it("shows the active-links dashboard section for a verified user instead of the generic landing content", async () => {
+    renderHome();
+
+    await waitFor(() => expect(screen.getByTestId("dashboard-active-links")).toBeInTheDocument());
+    expect(screen.getByText("verifieduser")).toBeInTheDocument();
+  });
+
+  it("still renders the anonymous local-links section as its own block for a verified user", async () => {
+    renderHome();
+
+    await waitFor(() => expect(screen.getByTestId("dashboard-active-links")).toBeInTheDocument());
+    expect(screen.getByTestId("anonymous-links-section")).toBeInTheDocument();
+  });
+});
+
+describe("HomePage generic landing (unchanged)", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  it("shows the generic landing content, not the dashboard, for an unverified logged-in user", () => {
+    authState.user = {
+      id: "u2",
+      username: "unverified",
+      name: "Unverified",
+      email: "u@example.com",
+      emailVerified: false,
+      publicKey: "x",
+      totpEnabled: false,
+      keyPair: null,
+    };
+
+    renderHome();
+
+    expect(screen.queryByTestId("dashboard-active-links")).not.toBeInTheDocument();
   });
 });
