@@ -21,6 +21,7 @@ import {
   toLinkStatusResponse,
 } from "../lib/links";
 import { deleteObject } from "../lib/storage";
+import { scrubDropContent } from "../lib/quota";
 import { resolveLocale, deriveCodewords } from "../lib/codewords";
 import { resolveRetentionDays } from "../lib/retention";
 import { emitDropEvent } from "../lib/dropEvents";
@@ -350,7 +351,22 @@ export function registerLinkRoutes(server: FastifyInstance): void {
     // rationale and for the creator "manage token" design to adopt if this
     // route ever needs to be restricted to the link's creator.
     if (link.ownerId !== null) {
-      return reply.status(403).send({ error: "Owned links cannot be deleted through this endpoint" });
+      if (link.ownerId !== request.user?.id) {
+        return reply.status(403).send({ error: "Forbidden" });
+      }
+      // Owner-initiated delete of their own link: scrub each drop's content (audit
+      // trail semantics per design spec §5, same as the retention sweeps) before hard-
+      // deleting the Link row, which cascades to remove the Drop rows regardless of
+      // what scrubDropContent did to them. No fileUploadStatus guard is needed here
+      // (unlike sweepAbandonedUploads/Tasks 7-8): those run repeatedly in a cron loop
+      // and could double-process a row, but this is a one-off action immediately
+      // followed by the cascading Link delete, so there's no double-processing hazard.
+      for (const drop of link.drops) {
+        const result = await scrubDropContent(drop.id);
+        if (result) await deleteObject(result.s3Key);
+      }
+      await prisma.link.deleteMany({ where: { id: link.id } });
+      return reply.send({ deleted: true });
     }
     // Same order as runCleanup (jobs/cleanup.ts): storage objects first, then the
     // row. If a storage delete throws, the row (and thus the s3Key) survives, so the
