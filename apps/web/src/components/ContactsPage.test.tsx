@@ -69,4 +69,56 @@ describe("ContactsPage", () => {
       expect(fetch).toHaveBeenCalledWith("/api/contacts/c3/reject", { method: "POST" });
     });
   });
+
+  it("shows a block button on an accepted contact and calls the block endpoint", async () => {
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        pending: [],
+        accepted: [{ id: "c1", userId: "u2", username: "bob", status: "accepted", direction: "outgoing" }],
+        blocked: [],
+      }),
+    });
+
+    render(
+      <MemoryRouter>
+        <ContactsPage />
+      </MemoryRouter>
+    );
+
+    const blockButton = await screen.findByRole("button", { name: /block/i });
+    await userEvent.click(blockButton);
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith("/api/contacts/c1/block", { method: "POST" });
+    });
+  });
+
+  it("shows blocked users in their own section with an unblock button that calls the unblock endpoint", async () => {
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        pending: [],
+        accepted: [],
+        blocked: [{ id: "c4", userId: "u5", username: "eve", status: "blocked", direction: "outgoing" }],
+      }),
+    });
+
+    render(
+      <MemoryRouter>
+        <ContactsPage />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("eve")).toBeInTheDocument();
+    });
+
+    const unblockButton = screen.getByRole("button", { name: /unblock/i });
+    await userEvent.click(unblockButton);
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith("/api/contacts/c4/unblock", { method: "POST" });
+    });
+  });
 });

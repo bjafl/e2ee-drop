@@ -256,6 +256,19 @@ export function UploadPage() {
               <p>{link.recipientEmailVerified ? t("emailVerified") : t("emailUnverified")}</p>
               {link.recipientEmail && <p>{link.recipientEmail}</p>}
               <p>{link.recipientTotpEnabled ? t("totpEnabled") : t("totpDisabled")}</p>
+              <Button
+                size="sm"
+                disabled={!link.recipientAllowContactRequests}
+                onClick={() =>
+                  fetch("/api/contacts", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ username: link.recipientUsername }),
+                  })
+                }
+              >
+                {t("connectButton")}
+              </Button>
             </>
           )}
         </div>

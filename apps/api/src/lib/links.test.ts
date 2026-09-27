@@ -175,9 +175,22 @@ describe("toLinkStatusResponse", () => {
       "recipientEmail",
       "recipientEmailVerified",
       "recipientTotpEnabled",
+      "recipientAllowContactRequests",
     ]) {
       expect(Object.prototype.hasOwnProperty.call(response, key)).toBe(false);
     }
+  });
+
+  it.each([
+    ["true", true],
+    ["false", false],
+  ])("includes recipientAllowContactRequests: %s reflecting owner.allowContactRequests", async (_label, allowContactRequests) => {
+    const owner = await makeOwner({ username: `allow-${allowContactRequests}`, allowContactRequests });
+    const link = { ...makeLink({ ownerId: owner.id, recipientPublicKey: owner.publicKey }), drops: [] };
+
+    const response = await toLinkStatusResponse(link);
+
+    expect(response.recipientAllowContactRequests).toBe(allowContactRequests);
   });
 
   it("omits recipientEmail for a verified owner's default link when showEmailOnPublicProfile is false", async () => {

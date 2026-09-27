@@ -262,6 +262,7 @@ export async function toLinkStatusResponse(
     recipientUsername: owner.username,
     recipientEmailVerified: owner.emailVerified,
     recipientTotpEnabled: owner.totpEnabled,
+    recipientAllowContactRequests: owner.allowContactRequests,
     ...(showEmail ? { recipientEmail: owner.email } : {}),
   };
 }
