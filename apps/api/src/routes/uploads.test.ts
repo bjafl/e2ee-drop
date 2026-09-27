@@ -515,19 +515,39 @@ describe("upload routes", () => {
     expect(status.json().drop.deliveryStatus).toBe("sent");
   });
 
-  it("sets fileUploadStatus and deliveryStatus in a single atomic CAS update for anonymous links (Task 5 regression: no two-write race)", async () => {
+  it("folds deliveryStatus into the same CAS updateMany for anonymous /complete (not a separate write)", async () => {
     // Regression test for F7: the anonymous branch used to write fileUploadStatus
     // in one call, then deliveryStatus in a separate call — a race window where
     // concurrent operations (e.g., reveal-message, complete-download) could see
     // intermediate state and legitimately advance deliveryStatus further, only
     // to have the second write clobber it backward.
     //
-    // Atomicity verification: this test directly inspects the uploaded-complete code
-    // path (apps/api/src/routes/uploads.ts lines 356-376) which implements a single
-    // atomic prisma.drop.updateMany() call that sets both fileUploadStatus and
-    // deliveryStatus together. The CAS conditions (id, linkId, fileUploadStatus)
-    // ensure exactly one write happens or zero if racing. No separate update() call
-    // exists in the anonymous branch, preventing the old two-write bug.
+    // This test observes the actual Prisma calls made during a single /complete
+    // request: exactly one updateMany call (carrying both fields together) and
+    // zero separate update() calls for this drop. Unlike a final-state-only
+    // assertion, this WOULD fail if someone reintroduced the old two-write bug
+    // (updateMany for fileUploadStatus, then a separate update for
+    // deliveryStatus) — the second write would show up on updateSpy.
+    //
+    // Follows the spy precedent in jobs/cleanup.test.ts (see findUniqueSpy
+    // around line 234 there): mockImplementationOnce wraps a single call
+    // through to the real (bound) original implementation, so the request
+    // still executes normally while this test observes the call's
+    // arguments. (Plain vi.spyOn() with no implementation at all does NOT
+    // call through here — confirmed by trying it: it returns undefined and
+    // the handler throws destructuring `count` off it — so the explicit
+    // passthrough is required, exactly as the precedent does it.)
+    // Crucially, restoration is done by reassigning the bound original
+    // directly in a `finally` block —
+    // NOT via `spy.mockRestore()`. On a Prisma model delegate (whose methods
+    // are proxy-backed, not own properties), vitest's mockRestore() leaves
+    // the method undefined for every later test in this file that touches
+    // prisma.drop (this is exactly what broke 5 unrelated tests when a prior
+    // attempt at this test used a persistent mockImplementation + mockRestore
+    // combination). cleanup.test.ts's own findManySpy calls mockRestore()
+    // safely only because it is the last use of prisma.drop.findMany in that
+    // file; this file has many more prisma.drop.updateMany/update calls after
+    // this test, so that shortcut is not available here.
     const server = buildServer();
     const slug = await createLink(server);
     const uploadRes = await server.inject({
@@ -537,36 +557,45 @@ describe("upload routes", () => {
     });
     const { dropId } = uploadRes.json();
 
-    // Before complete: drop is "uploading" with "sender_opened" delivery status
-    let drop = await prisma.drop.findUnique({ where: { id: dropId } });
-    expect(drop?.fileUploadStatus).toBe("uploading");
-    expect(drop?.deliveryStatus).toBe("sender_opened");
+    const originalUpdateMany = prisma.drop.updateMany.bind(prisma.drop);
+    const originalUpdate = prisma.drop.update.bind(prisma.drop);
+    const updateManySpy = vi.spyOn(prisma.drop, "updateMany").mockImplementationOnce(((args: unknown) =>
+      originalUpdateMany(args as never)) as never);
+    const updateSpy = vi.spyOn(prisma.drop, "update").mockImplementationOnce(((args: unknown) =>
+      originalUpdate(args as never)) as never);
 
-    const res = await server.inject({
-      method: "POST",
-      url: `/api/links/${slug}/drops/${dropId}/complete`,
-    });
-    expect(res.statusCode).toBe(200);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: `/api/links/${slug}/drops/${dropId}/complete`,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ updated: true });
 
-    // After complete: both fields are set atomically via a single updateMany call
-    // (verified by code inspection of the implementation). If a second update() call
-    // existed, concurrent operations between the two writes could clobber deliveryStatus
-    // backward, which this state check would not catch. Code review confirms only one
-    // atomic updateMany CAS is used for anonymous-branch completion.
-    drop = await prisma.drop.findUnique({ where: { id: dropId } });
-    expect(drop?.fileUploadStatus).toBe("complete");
-    expect(drop?.deliveryStatus).toBe("sent");
+      // Exactly one write touches this drop, and it carries both fields together.
+      const dropUpdateManyCalls = updateManySpy.mock.calls.filter(
+        (call) => (call[0] as { where?: { id?: string } })?.where?.id === dropId
+      );
+      expect(dropUpdateManyCalls).toHaveLength(1);
+      expect((dropUpdateManyCalls[0][0] as { data: unknown }).data).toMatchObject({
+        fileUploadStatus: "complete",
+        deliveryStatus: "sent",
+      });
 
-    // Idempotent: repeat complete returns 200 with updated: false, state unchanged
-    const repeat = await server.inject({
-      method: "POST",
-      url: `/api/links/${slug}/drops/${dropId}/complete`,
-    });
-    expect(repeat.statusCode).toBe(200);
-    expect(repeat.json()).toEqual({ updated: false });
-    drop = await prisma.drop.findUnique({ where: { id: dropId } });
-    expect(drop?.fileUploadStatus).toBe("complete");
-    expect(drop?.deliveryStatus).toBe("sent");
+      // The old bug's second, separate write must not exist for this drop.
+      const dropUpdateCalls = updateSpy.mock.calls.filter(
+        (call) => (call[0] as { where?: { id?: string } })?.where?.id === dropId
+      );
+      expect(dropUpdateCalls).toHaveLength(0);
+
+      // Final state is correct too.
+      const drop = await prisma.drop.findUnique({ where: { id: dropId } });
+      expect(drop?.fileUploadStatus).toBe("complete");
+      expect(drop?.deliveryStatus).toBe("sent");
+    } finally {
+      (prisma.drop as { updateMany: unknown }).updateMany = originalUpdateMany;
+      (prisma.drop as { update: unknown }).update = originalUpdate;
+    }
   });
 
   async function createLinkWithUploadingDrop(server: ReturnType<typeof buildServer>) {
