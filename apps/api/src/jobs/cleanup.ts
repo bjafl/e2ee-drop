@@ -1,5 +1,6 @@
 // apps/api/src/jobs/cleanup.ts
 import { prisma } from "@e2ee-drop/db";
+import { env } from "../env";
 import { deleteObject } from "../lib/storage";
 import { reservationCutoff, scrubDropContent } from "../lib/quota";
 
@@ -121,6 +122,42 @@ export async function pruneExpiredPasswordResetTokens(): Promise<{ deletedTokens
   return { deletedTokens: result.count };
 }
 
+// The other sweeps above only ever scrub a Drop's content (row survives as the audit trail —
+// design spec §5). This is the sweep that finally hard-deletes that audit-trail row, once it's
+// been sitting scrubbed for longer than AUDIT_RETENTION_DAYS past contentDeletedAt.
+//
+// A one-time link's sole reason to keep existing after its drop is scrubbed is to let that drop
+// row serve as the audit trail; once the drop itself is purged there's nothing left worth keeping
+// the Link row for either, so it cascades. A permanent link's Link row is never purged here — only
+// its expired-and-scrubbed drops are — since the link itself stays valid for new drops.
+export async function purgeAuditExpiredRows(): Promise<{ purgedDrops: number; purgedLinks: number }> {
+  const cutoff = new Date(Date.now() - env.AUDIT_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+  const expired = await prisma.drop.findMany({
+    where: { contentDeletedAt: { lt: cutoff } },
+    include: { link: true },
+  });
+
+  let purgedDrops = 0;
+  let purgedLinks = 0;
+  for (const drop of expired) {
+    // Tolerant of a concurrent removal of this exact row (e.g. a concurrent DELETE
+    // /api/links/:slug on this drop's link, whose onDelete: Cascade would take this
+    // row with it) — deleteMany simply matches zero rows instead of throwing P2025,
+    // consistent with the Link deleteMany just below.
+    const { count } = await prisma.drop.deleteMany({ where: { id: drop.id } });
+    if (count !== 1) continue; // already gone via a concurrent path — nothing more to do for this row
+    purgedDrops++;
+    if (drop.link.mode === "one-time") {
+      // Deleting a one-time link's sole drop leaves nothing worth keeping the Link row for.
+      // deleteMany (not delete) tolerates a link already removed by a concurrent purge/DELETE call.
+      const { count: linkCount } = await prisma.link.deleteMany({ where: { id: drop.link.id } });
+      purgedLinks += linkCount;
+    }
+  }
+
+  return { purgedDrops, purgedLinks };
+}
+
 async function main() {
   const INTERVAL_MS = 15 * 60 * 1000;
   // eslint-disable-next-line no-constant-condition
@@ -130,9 +167,11 @@ async function main() {
       const dropResult = await sweepExpiredDrops();
       const abandonedResult = await sweepAbandonedUploads();
       const tokenResult = await pruneExpiredPasswordResetTokens();
+      const purgeResult = await purgeAuditExpiredRows();
       console.log(
         `[cleanup] scrubbed ${linkResult.scrubbedLinks} expired link(s), ${dropResult.scrubbedDrops} expired drop(s), ` +
-          `${abandonedResult.deletedDrops} abandoned upload(s), ${tokenResult.deletedTokens} expired password-reset token(s)`
+          `${abandonedResult.deletedDrops} abandoned upload(s), ${tokenResult.deletedTokens} expired password-reset token(s), ` +
+          `purged ${purgeResult.purgedDrops} drop(s) and ${purgeResult.purgedLinks} link(s) past audit retention`
       );
     } catch (error) {
       console.error("[cleanup] sweep failed", error);

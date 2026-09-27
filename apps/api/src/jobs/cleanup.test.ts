@@ -6,7 +6,13 @@ vi.mock("../lib/storage", () => ({ deleteObject: vi.fn().mockResolvedValue(undef
 
 import { deleteObject } from "../lib/storage";
 import { UPLOAD_RESERVATION_WINDOW_MS } from "../lib/quota";
-import { runCleanup, sweepExpiredDrops, sweepAbandonedUploads, pruneExpiredPasswordResetTokens } from "./cleanup";
+import {
+  runCleanup,
+  sweepExpiredDrops,
+  sweepAbandonedUploads,
+  pruneExpiredPasswordResetTokens,
+  purgeAuditExpiredRows,
+} from "./cleanup";
 
 const deleteObjectMock = vi.mocked(deleteObject);
 
@@ -479,6 +485,155 @@ describe("storage quota release", () => {
     const persistedFresh = await prisma.drop.findUniqueOrThrow({ where: { id: fresh.id } });
     expect(persistedFresh.contentDeletedAt).toBeNull();
     expect(await used(owner.id)).toBe(BASELINE + 916n);
+  });
+});
+
+describe("purgeAuditExpiredRows", () => {
+  const dropDefaults = {
+    senderPublicKey: "c2VuZGVy",
+    archiveNonce: "bm9uY2U=",
+    encryptedMetadata: "ZW5jcnlwdGVkLW1ldGFkYXRh",
+    metadataNonce: "bWV0YWRhdGEtbm9uY2U=",
+    fileSize: 1024,
+    contentMD5: "bWQ1",
+    fileUploadStatus: "complete",
+    fileEnvelopeStatus: "shredded",
+  };
+
+  beforeEach(async () => {
+    await prisma.drop.deleteMany();
+    await prisma.link.deleteMany();
+  });
+
+  const AUDIT_RETENTION_DAYS = 30; // env.ts default
+
+  it("hard-deletes a drop whose contentDeletedAt is past the audit retention window", async () => {
+    const link = await prisma.link.create({
+      data: { slug: "audit-expired", mode: "permanent", recipientPublicKey: "x", retentionDays: 7 },
+    });
+    const drop = await prisma.drop.create({
+      data: {
+        ...dropDefaults,
+        linkId: link.id,
+        s3Key: `${link.id}/audit-expired`,
+        contentDeletedAt: new Date(Date.now() - (AUDIT_RETENTION_DAYS + 1) * 24 * 60 * 60 * 1000),
+      },
+    });
+
+    const result = await purgeAuditExpiredRows();
+
+    expect(result.purgedDrops).toBe(1);
+    expect(await prisma.drop.findUnique({ where: { id: drop.id } })).toBeNull();
+  });
+
+  it("does not purge a drop scrubbed within the retention window", async () => {
+    const link = await prisma.link.create({
+      data: { slug: "audit-fresh", mode: "permanent", recipientPublicKey: "x", retentionDays: 7 },
+    });
+    const drop = await prisma.drop.create({
+      data: {
+        ...dropDefaults,
+        linkId: link.id,
+        s3Key: `${link.id}/audit-fresh`,
+        contentDeletedAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000),
+      },
+    });
+
+    const result = await purgeAuditExpiredRows();
+
+    expect(result.purgedDrops).toBe(0);
+    expect(await prisma.drop.findUnique({ where: { id: drop.id } })).not.toBeNull();
+  });
+
+  it("also purges the Link when its sole one-time drop is purged", async () => {
+    const link = await prisma.link.create({
+      data: {
+        slug: "audit-one-time",
+        mode: "one-time",
+        recipientPublicKey: "x",
+        retentionDays: 7,
+        expiresAt: new Date(Date.now() - 1000),
+      },
+    });
+    await prisma.drop.create({
+      data: {
+        ...dropDefaults,
+        linkId: link.id,
+        s3Key: `${link.id}/audit-one-time`,
+        contentDeletedAt: new Date(Date.now() - (AUDIT_RETENTION_DAYS + 1) * 24 * 60 * 60 * 1000),
+      },
+    });
+
+    const result = await purgeAuditExpiredRows();
+
+    expect(result.purgedDrops).toBe(1);
+    expect(result.purgedLinks).toBe(1);
+    expect(await prisma.link.findUnique({ where: { slug: "audit-one-time" } })).toBeNull();
+  });
+
+  it("never purges a permanent link's own row, only its expired drops", async () => {
+    const link = await prisma.link.create({
+      data: { slug: "audit-permanent", mode: "permanent", recipientPublicKey: "x", retentionDays: 7 },
+    });
+    await prisma.drop.create({
+      data: {
+        ...dropDefaults,
+        linkId: link.id,
+        s3Key: `${link.id}/audit-permanent`,
+        contentDeletedAt: new Date(Date.now() - (AUDIT_RETENTION_DAYS + 1) * 24 * 60 * 60 * 1000),
+      },
+    });
+
+    const result = await purgeAuditExpiredRows();
+
+    expect(result.purgedDrops).toBe(1);
+    expect(result.purgedLinks).toBe(0);
+    expect(await prisma.link.findUnique({ where: { slug: "audit-permanent" } })).not.toBeNull();
+  });
+
+  it("tolerates a drop already removed by a concurrent path between the scan and the delete", async () => {
+    // Reproduces the actual TOCTOU window: findMany() sees the row, then — before
+    // purgeAuditExpiredRows' per-row deleteMany runs — a concurrent DELETE /api/links/:slug
+    // on this drop's one-time link removes both rows via the schema's onDelete: Cascade
+    // (Drop.linkId -> Link). purgeAuditExpiredRows must not throw, and must report this
+    // row as not purged by IT (already gone via the concurrent path), consistent with the
+    // deleteMany-based fix: a zero-row match is silently skipped rather than throwing P2025.
+    const link = await prisma.link.create({
+      data: {
+        slug: "audit-toctou",
+        mode: "one-time",
+        recipientPublicKey: "x",
+        retentionDays: 7,
+        expiresAt: new Date(Date.now() - 1000),
+      },
+    });
+    await prisma.drop.create({
+      data: {
+        ...dropDefaults,
+        linkId: link.id,
+        s3Key: `${link.id}/audit-toctou`,
+        contentDeletedAt: new Date(Date.now() - (AUDIT_RETENTION_DAYS + 1) * 24 * 60 * 60 * 1000),
+      },
+    });
+
+    const originalFindMany = prisma.drop.findMany.bind(prisma.drop);
+    const findManySpy = vi.spyOn(prisma.drop, "findMany").mockImplementationOnce(((args: unknown) =>
+      (async () => {
+        const rows = await originalFindMany(args as never);
+        // Simulate the concurrent DELETE /api/links/:slug landing right here, between this
+        // findMany and purgeAuditExpiredRows' subsequent per-row delete loop.
+        await prisma.link.delete({ where: { id: link.id } });
+        return rows;
+      })()) as typeof prisma.drop.findMany);
+
+    try {
+      const result = await purgeAuditExpiredRows();
+      expect(result.purgedDrops).toBe(0); // gone by the time this sweep's deleteMany ran
+      expect(result.purgedLinks).toBe(0); // cascaded away by the concurrent delete, not by this sweep
+      expect(await prisma.link.findUnique({ where: { slug: "audit-toctou" } })).toBeNull();
+    } finally {
+      findManySpy.mockRestore();
+    }
   });
 });
 
