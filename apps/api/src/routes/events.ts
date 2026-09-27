@@ -1,6 +1,6 @@
 // apps/api/src/routes/events.ts
 import type { FastifyInstance } from "fastify";
-import { getLinkBySlug, isLinkExpired } from "../lib/links";
+import { canReceive, getLinkBySlug, isLinkExpired } from "../lib/links";
 import { subscribeToLink } from "../lib/dropEvents";
 
 // A comment line written periodically so a reverse proxy never sees the stream
@@ -14,11 +14,22 @@ export function registerEventRoutes(server: FastifyInstance): void {
     const link = await getLinkBySlug(request.params.slug);
     if (!link || isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
     // Anonymous (ownerless) links stay open to any link holder, exactly like
-    // Plan 1's other link routes. Owned links: owner only. `request.user` is
-    // set on every request (null when there's no valid session) by the global
-    // onRequest hook in plugins/auth.ts, so a missing session can never
-    // equal a real ownerId.
-    if (link.ownerId && link.ownerId !== request.user?.id) {
+    // Plan 1's other link routes. `request.user` is set on every request
+    // (null when there's no valid session) by the global onRequest hook in
+    // plugins/auth.ts, so a missing session can never equal a real ownerId.
+    //
+    // Two callers may subscribe to an owned link: the true owner (a normal
+    // owned link's recipient, or a request link's initiator/sender — the
+    // initiator needs this to detect the link-claimed event over this same
+    // channel, per POST /api/links/:slug/claim), and anyone canReceive says
+    // may receive (covers an anonymous link, already true above, and a
+    // claimed sender-initiated link's real claimant, who is never
+    // link.ownerId and so was previously always 403'd here — see
+    // docs/STATUS.md gap 1). canReceive itself denies a normal owned link's
+    // non-owner and a claimed request link's own initiator, so neither of
+    // those gets a new hole through this second check.
+    const isOwner = request.user?.id != null && request.user.id === link.ownerId;
+    if (!isOwner && !(await canReceive(link, request.user?.id))) {
       return reply.status(403).send({ error: "Forbidden" });
     }
 

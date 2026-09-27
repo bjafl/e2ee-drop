@@ -158,6 +158,60 @@ describe("SSE events route", () => {
     expect(response.statusCode).toBe(403);
   });
 
+  it("allows a claimed sender-initiated request link's non-owner claimant to open the connection", async () => {
+    const initiator = await registerAndGetCookie(server, "sseinitiator");
+    const requestRes = await server.inject({
+      method: "POST",
+      url: "/api/links/request",
+      payload: {},
+      cookies: initiator.cookies,
+    });
+    const { slug } = requestRes.json();
+    await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/claim`,
+      payload: { recipientPublicKey: "claimant-pubkey" },
+    });
+    const link = (await prisma.link.findUnique({ where: { slug } }))!;
+    await server.listen({ port: 0, host: "127.0.0.1" });
+    const { port } = server.server.address() as AddressInfo;
+
+    // The claimant has no session at all here (an anonymous claim) — the slug
+    // itself is the receive capability, same trust model as an anonymous link.
+    const stream = await openStream(port, `/api/links/${slug}/events`);
+    expect(stream.statusCode).toBe(200);
+    await stream.waitFor(": connected");
+
+    stream.close();
+    await waitUntil(() => linkListenerCount(link.id) === 0);
+  });
+
+  it("still allows the initiator/owner themselves to open a claimed request link's connection", async () => {
+    const initiator = await registerAndGetCookie(server, "sseinitiator2");
+    const requestRes = await server.inject({
+      method: "POST",
+      url: "/api/links/request",
+      payload: {},
+      cookies: initiator.cookies,
+    });
+    const { slug } = requestRes.json();
+    await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/claim`,
+      payload: { recipientPublicKey: "claimant-pubkey" },
+    });
+    const link = (await prisma.link.findUnique({ where: { slug } }))!;
+    await server.listen({ port: 0, host: "127.0.0.1" });
+    const { port } = server.server.address() as AddressInfo;
+
+    const stream = await openStream(port, `/api/links/${slug}/events`, initiator.value);
+    expect(stream.statusCode).toBe(200);
+    await stream.waitFor(": connected");
+
+    stream.close();
+    await waitUntil(() => linkListenerCount(link.id) === 0);
+  });
+
   it("streams events to an unauthenticated subscriber of an anonymous link", async () => {
     const createRes = await server.inject({
       method: "POST",
