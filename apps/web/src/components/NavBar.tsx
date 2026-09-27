@@ -97,6 +97,11 @@ export function NavBar() {
               <Button asChild variant="ghost" size="sm">
                 <Link to="/links/new">{t("newLink")}</Link>
               </Button>
+              {user?.emailVerified && (
+                <Button asChild variant="ghost" size="sm">
+                  <Link to="/inbox">{t("inbox")}</Link>
+                </Button>
+              )}
               <Button asChild variant="ghost" size="sm">
                 <Link to="/account">{t("account")}</Link>
               </Button>
