@@ -2,5 +2,19 @@
   "title": "Kontoen din",
   "signedInAs": "Logget inn som {{username}}",
   "email": "E-post: {{email}}",
-  "dangerZone": "Faresone"
+  "dangerZone": "Faresone",
+  "twoFactor": {
+    "heading": "Tofaktorautentisering",
+    "enable": "Aktiver 2FA",
+    "replace": "Erstatt autentisering",
+    "disable": "Deaktiver 2FA",
+    "regenerateBackupCodes": "Generer nye backup-koder",
+    "scanQr": "Skann denne QR-koden med autentiseringsappen din, eller skriv inn koden manuelt:",
+    "codeLabel": "Skriv inn 6-sifret kode fra appen",
+    "confirm": "Bekreft",
+    "currentCodeLabel": "Skriv inn din nåværende 6-sifrede kode eller en backup-kode for å fortsette",
+    "backupCodesWarning": "Lagre disse kodene nå — de vises ikke igjen. Hver kan brukes én gang for å logge inn hvis du mister tilgang til autentiseringsappen.",
+    "backupCodesCopy": "Kopier alle",
+    "backupCodesDone": "Jeg har lagret disse kodene"
+  }
 }

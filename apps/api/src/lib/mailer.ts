@@ -24,3 +24,15 @@ export async function sendPasswordResetEmail(to: string, resetUrl: string): Prom
     html: `<p>Reset your password: <a href="${resetUrl}">${resetUrl}</a></p><p>If you did not request this, ignore this email.</p>`,
   });
 }
+
+export async function sendVerificationEmail(to: string, verifyUrl: string): Promise<void> {
+  if (!isMailerConfigured()) throw new Error("SMTP is not configured");
+  const transport = getTransport();
+  await transport.sendMail({
+    to,
+    from: env.SMTP_FROM,
+    subject: "Verify your e2ee-drop email address",
+    text: `Verify your email: ${verifyUrl}\n\nIf you did not create this account, ignore this email.`,
+    html: `<p>Verify your email: <a href="${verifyUrl}">${verifyUrl}</a></p><p>If you did not create this account, ignore this email.</p>`,
+  });
+}

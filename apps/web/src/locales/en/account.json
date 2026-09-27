@@ -2,5 +2,19 @@
   "title": "Your account",
   "signedInAs": "Signed in as {{username}}",
   "email": "Email: {{email}}",
-  "dangerZone": "Danger zone"
+  "dangerZone": "Danger zone",
+  "twoFactor": {
+    "heading": "Two-factor authentication",
+    "enable": "Enable 2FA",
+    "replace": "Replace authenticator",
+    "disable": "Disable 2FA",
+    "regenerateBackupCodes": "Generate new backup codes",
+    "scanQr": "Scan this QR code with your authenticator app, or enter the code manually:",
+    "codeLabel": "Enter the 6-digit code from your app",
+    "confirm": "Confirm",
+    "currentCodeLabel": "Enter your current 6-digit code or a backup code to continue",
+    "backupCodesWarning": "Save these codes now — they will not be shown again. Each can be used once to log in if you lose access to your authenticator.",
+    "backupCodesCopy": "Copy all",
+    "backupCodesDone": "I've saved these codes"
+  }
 }

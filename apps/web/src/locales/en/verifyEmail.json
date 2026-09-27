@@ -1,0 +1,1 @@
+{ "verifying": "Verifying your email…", "success": "Your email has been verified.", "errors": { "invalidToken": "This verification link is invalid or has expired." } }

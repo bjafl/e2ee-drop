@@ -16,9 +16,11 @@ import { decryptTotpSecret, verifyTotpCode } from "../lib/totp";
 import { createDefaultLinkForUser } from "../lib/links";
 import { createSession, deleteSession } from "../lib/sessions";
 import { getUsedCodesForUser } from "../lib/totpReplayGuard";
+import { consumeBackupCodeIfValid } from "../lib/totpBackupCodes";
 import { loginRateLimiter, registerRateLimiter, rateLimitExceededBody } from "../lib/rateLimit";
 import { env } from "../env";
 import { SESSION_COOKIE_NAME } from "../plugins/auth";
+import { sendVerificationEmailFor } from "./verifyEmail";
 
 // A registered user's default personal Link is always addressable at
 // `/d/<username>` (see spec §5) — the username therefore doubles as a
@@ -254,6 +256,20 @@ export function registerAuthRoutes(server: FastifyInstance): void {
 
       const session = await createSession(user.id);
 
+      // Best-effort, fire-and-forget: an SMTP failure must not fail
+      // registration, and — deliberately not awaited here — a slow or
+      // blackholed SMTP host must not delay this response either. Awaiting
+      // inline risked exceeding nginx's proxy_read_timeout before
+      // nodemailer's own connection timeout fired, turning a successful
+      // account creation into a client-visible 504. The promise is still
+      // kicked off synchronously (so a test asserting the mock was called
+      // observes that immediately), it just isn't awaited on the response
+      // path. Logs the error only (spec §3.1) — never the verification URL
+      // or token.
+      sendVerificationEmailFor(user.id, user.email).catch((err: unknown) => {
+        request.log.warn({ err }, "verification email send failed");
+      });
+
       reply.setCookie(SESSION_COOKIE_NAME, session.id, {
         ...sessionCookieAttributes(),
         signed: true,
@@ -331,7 +347,13 @@ export function registerAuthRoutes(server: FastifyInstance): void {
           return reply.status(401).send({ error: "TOTP code required", requiresTotp: true });
         }
         const secret = decryptTotpSecret(user.totpSecretEncrypted!);
-        if (!verifyTotpCode(secret, totpCode, getUsedCodesForUser(user.id))) {
+        const totpValid = verifyTotpCode(secret, totpCode, getUsedCodesForUser(user.id));
+        // A backup code is checked only when the TOTP check itself fails — a
+        // real TOTP code must never accidentally match a backup code's format
+        // and get treated as one, and this ordering guarantees that (backup
+        // codes are hyphenated 10-char strings, TOTP codes are 6 digits, but
+        // checking TOTP first costs nothing and removes any ambiguity).
+        if (!totpValid && !(await consumeBackupCodeIfValid(user.id, totpCode))) {
           return reply.status(401).send({ error: "Invalid TOTP code" });
         }
       }

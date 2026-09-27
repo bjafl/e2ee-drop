@@ -4,6 +4,7 @@ import cookie from "@fastify/cookie";
 import authPlugin from "./plugins/auth";
 import { registerAuthRoutes } from "./routes/auth";
 import { registerPasswordResetRoutes } from "./routes/passwordReset";
+import { registerVerifyEmailRoutes } from "./routes/verifyEmail";
 import { registerLinkRoutes } from "./routes/links";
 import { registerUploadRoutes } from "./routes/uploads";
 import { registerDownloadRoutes } from "./routes/downloads";
@@ -95,6 +96,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   server.get("/api/health", async () => ({ status: "ok" }));
   registerAuthRoutes(server);
   registerPasswordResetRoutes(server);
+  registerVerifyEmailRoutes(server);
   registerLinkRoutes(server);
   registerUploadRoutes(server);
   registerDownloadRoutes(server);
