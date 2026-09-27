@@ -21,7 +21,7 @@ import {
   toLinkStatusResponse,
 } from "../lib/links";
 import { deleteObject } from "../lib/storage";
-import { scrubDropContent } from "../lib/quota";
+import { deleteLinkReleasingQuota } from "../lib/quota";
 import { resolveLocale, deriveCodewords } from "../lib/codewords";
 import { resolveRetentionDays } from "../lib/retention";
 import { emitDropEvent } from "../lib/dropEvents";
@@ -354,18 +354,25 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       if (link.ownerId !== request.user?.id) {
         return reply.status(403).send({ error: "Forbidden" });
       }
-      // Owner-initiated delete of their own link: scrub each drop's content (audit
-      // trail semantics per design spec §5, same as the retention sweeps) before hard-
-      // deleting the Link row, which cascades to remove the Drop rows regardless of
-      // what scrubDropContent did to them. No fileUploadStatus guard is needed here
-      // (unlike sweepAbandonedUploads/Tasks 7-8): those run repeatedly in a cron loop
-      // and could double-process a row, but this is a one-off action immediately
-      // followed by the cascading Link delete, so there's no double-processing hazard.
-      for (const drop of link.drops) {
-        const result = await scrubDropContent(drop.id);
-        if (result) await deleteObject(result.s3Key);
+      // Spec §5: a user's default link is non-deletable.
+      if (link.isDefault) {
+        return reply.status(403).send({ error: "The default link cannot be deleted" });
       }
-      await prisma.link.deleteMany({ where: { id: link.id } });
+      // Owner-initiated delete of their own link. The Link row (and, by cascade, every
+      // Drop row) is hard-deleted in this same request, so scrubbing first would add
+      // nothing but a race window. Storage objects first (same order as the anonymous
+      // branch below), skipping drops whose object is already gone (file envelope
+      // terminal). Then deleteLinkReleasingQuota: it row-locks the owner and the Link
+      // (blocking a concurrent drop insert or /complete from racing the delete) and
+      // releases quota from its atomic DELETE ... RETURNING — only for drops still
+      // charged, i.e. whose file side was not already delivered/shredded (their charge
+      // was released when that terminal transition happened).
+      for (const drop of link.drops) {
+        if (drop.fileEnvelopeStatus !== "delivered" && drop.fileEnvelopeStatus !== "shredded") {
+          await deleteObject(drop.s3Key);
+        }
+      }
+      await deleteLinkReleasingQuota(link);
       return reply.send({ deleted: true });
     }
     // Same order as runCleanup (jobs/cleanup.ts): storage objects first, then the

@@ -11,6 +11,7 @@ vi.mock("../lib/storage", async (importOriginal) => ({
 
 import { buildServer } from "../server";
 import { env } from "../env";
+import { chargedBytes } from "../lib/quota";
 import { subscribeToLink, type DropEvent } from "../lib/dropEvents";
 
 // The brief this suite was drafted from used a placeholder `x-test-user-id`
@@ -311,7 +312,7 @@ describe("link routes", () => {
       expect(res.statusCode).toBe(200);
     });
 
-    it("scrubs (not deletes) each drop's content, then deletes the Link row", async () => {
+    it("deletes each still-present drop's storage object, releases only still-charged quota, then deletes the Link row", async () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "deleteowner2");
       const link = await prisma.link.create({
@@ -319,6 +320,14 @@ describe("link routes", () => {
       });
       const sealed = await createOwnedDrop(link.id, "sealed-drop", "sealed");
       const delivered = await createOwnedDrop(link.id, "delivered-drop", "delivered");
+      // Quota fixture: both drops were charged at /complete, but the delivered drop's
+      // charge was already released when its complete-download CAS won (lib/quota.ts
+      // header invariant). So only the still-sealed drop is charged right now — and the
+      // delete must release exactly that, never the delivered drop's charge a second time.
+      await prisma.user.update({
+        where: { id: owner.userId },
+        data: { storageUsedBytes: chargedBytes(sealed.fileSize) },
+      });
 
       const res = await server.inject({
         method: "DELETE",
@@ -327,14 +336,34 @@ describe("link routes", () => {
       });
 
       expect(res.statusCode).toBe(200);
-      // The already-terminal (delivered) drop's content was already gone, so
-      // scrubDropContent is a no-op for it (returns null) and its storage object is
-      // never touched here; only the still-sealed drop's object is deleted.
+      // The already-terminal (delivered) drop's object is already gone, so its
+      // storage object is never touched here; only the still-sealed drop's object
+      // is deleted.
       expect(deleteObjectMock).toHaveBeenCalledWith(sealed.s3Key);
       expect(deleteObjectMock).not.toHaveBeenCalledWith(delivered.s3Key);
       const found = await prisma.link.findUnique({ where: { slug: link.slug } });
       expect(found).toBeNull();
       expect(await prisma.drop.count({ where: { linkId: link.id } })).toBe(0);
+      const after = await prisma.user.findUniqueOrThrow({ where: { id: owner.userId } });
+      expect(after.storageUsedBytes).toBe(0n);
+    });
+
+    it("refuses to let the owner delete their own default link (403)", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "deleteowner4");
+      const defaultLink = await prisma.link.findFirstOrThrow({ where: { ownerId: owner.userId, isDefault: true } });
+      await createOwnedDrop(defaultLink.id, "default-drop", "sealed");
+
+      const res = await server.inject({
+        method: "DELETE",
+        url: `/api/links/${defaultLink.slug}`,
+        cookies: owner.cookies,
+      });
+
+      expect(res.statusCode).toBe(403);
+      expect(await prisma.link.findUnique({ where: { id: defaultLink.id } })).not.toBeNull();
+      expect(await prisma.drop.count({ where: { linkId: defaultLink.id } })).toBe(1);
+      expect(deleteObjectMock).not.toHaveBeenCalled();
     });
 
     it("still rejects a non-owner for an owned link", async () => {
