@@ -1,0 +1,20 @@
+# Local-dev-only override: publishes `web` on a host port so you can reach
+# the stack at http://localhost:8080 (or `pnpm verify:e2e`'s default
+# BASE_URL) from a plain `docker compose up`.
+#
+# The main docker-compose.yml deliberately does NOT publish this port —
+# see its comment on the `web` service (commit 52a2450): this app is
+# deployed via Coolify, whose Traefik proxy already permanently binds
+# 0.0.0.0:8080 on the host for its own dashboard/API, and routes to `web`
+# over the internal Docker network via the SERVICE_FQDN_WEB label instead.
+# Publishing a host port in the tracked compose file would collide with
+# that in production.
+#
+# To use this locally: `cp docker-compose.override.yml.example
+# docker-compose.override.yml` (the real file is gitignored — `docker
+# compose up` merges it automatically whenever it's present next to
+# docker-compose.yml, no extra flag needed). Never commit the real file.
+services:
+  web:
+    ports:
+      - "${WEB_PORT:-8080}:80"

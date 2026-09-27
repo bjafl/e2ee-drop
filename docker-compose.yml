@@ -125,8 +125,15 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
-    ports:
-      - "${WEB_PORT:-8080}:80"
+    # expose, not ports: publishing a host port here collides with
+    # coolify-proxy (Traefik), which permanently binds 0.0.0.0:8080 on this
+    # host for its own dashboard/API (see commit 52a2450). Coolify routes to
+    # this service over the internal Docker network via the SERVICE_FQDN_WEB
+    # label, so a host-published port was never needed for real deployment —
+    # only for the local `pnpm verify:e2e` scenario, which needs its own
+    # docker-compose.override.yml (see README) rather than a port bind here.
+    expose:
+      - "80"
     depends_on:
       - api
       - minio

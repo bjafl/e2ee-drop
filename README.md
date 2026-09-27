@@ -16,10 +16,16 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-The app is served on `http://localhost:8080` (see `docker-compose.yml`
-and the `WEB_PORT` variable below to change the published port).
 `docker compose ps` should show `migrate` exited with code 0 and the
-rest of the services running.
+rest of the services running. The `web` service is intentionally not
+published on a host port by default (see `docker-compose.yml`'s
+comment on it) — this app is meant to run behind Coolify's Traefik
+proxy, which routes to it over the internal Docker network. To reach
+it directly from your host (local development, or `pnpm verify:e2e`),
+copy `docker-compose.override.yml.example` to
+`docker-compose.override.yml` (gitignored, merged automatically by
+`docker compose up`) — it publishes `web` on `${WEB_PORT:-8080}` for
+you, and you can then adjust `WEB_PORT` in `.env` as usual.
 
 When changing the "change-me" values, keep `MINIO_ACCESS_KEY` /
 `MINIO_SECRET_KEY` identical to `MINIO_ROOT_USER` /
@@ -51,7 +57,7 @@ identical to `POSTGRES_PASSWORD` (see the table below).
 | `APP_URL` | `http://localhost:8080` | `api`, `cleanup` | Public base URL: used when building links in emails, and to decide whether the session cookie is sent as `Secure` (only when this starts with `https://`). Must be a valid `http://` or `https://` URL — an invalid value stops the API from starting |
 | `TRUST_PROXY_HOPS` | `1` | `api` | How many reverse-proxy hops in front of the API are trusted when reading the client IP from `X-Forwarded-For` (used to rate-limit login attempts per IP). `1` = the shipped `web` (nginx) container only. Set to `2` if you put your own reverse proxy in front of `web`; see [Fronting with TLS](#fronting-with-tls) |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | — (optional) | `api`, `cleanup` | Outgoing mail for email verification and password-reset requests; those flows are unavailable if unset |
-| `WEB_PORT` | `8080` | `web` | Host port the `web` service (SPA + `/api` + `/s3` proxy) is published on — this is the port you visit in a browser |
+| `WEB_PORT` | `8080` | `web` (only if you've added `docker-compose.override.yml`, see Quickstart) | Host port the `web` service (SPA + `/api` + `/s3` proxy) is published on when using the local-dev override — not read by the tracked `docker-compose.yml` itself, which intentionally publishes no host port for `web` (Coolify-routed) |
 
 **Defaults only apply to variables that are truly unset.** Most
 variables above are passed in `docker-compose.yml` as `VAR: ${VAR}`

@@ -41,20 +41,38 @@ implementation and test details); the write-ups below are kept as a record of wh
 
 ## Infrastructure gap — real E2E verification against `docker compose up` was never possible
 
-**FIXED.** `docker-compose.yml`'s `web` service had no `ports:` mapping at all (only
-`expose: "80"`), so nothing was reachable at `verify-e2e.mjs`'s default
-`BASE_URL=http://localhost:8080` even with a fully healthy stack. Separately, the
-`migrate`/`api`/`cleanup` services inherited `DATABASE_URL`/`MINIO_ENDPOINT` straight from
-`.env`'s host-facing values, which don't resolve from inside the compose network
-(container-to-container traffic needs service names like `postgres`/`minio`). `web` now
-publishes `${WEB_PORT:-8080}:80`, and the three services build/hardcode compose-internal
-values instead (`postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}`
-and `http://minio:9000`) — `.env`'s `DATABASE_URL`/`MINIO_ENDPOINT` are now host-side-tooling-only,
-documented as such in `.env.example`/`README.md`. Validated via `docker compose config`
-(resolved values confirmed correct) and a partial `docker compose up -d postgres minio` —
-still couldn't fully verify end-to-end in this sandbox specifically because `postgres`'s host
-port (127.0.0.1:5432) is already held by an unrelated container on this shared dev machine,
-a sandbox limitation independent of this fix.
+**Correction:** an earlier version of this note wrongly called `web`'s missing host-port
+publish a bug and "fixed" it by adding `ports: ["${WEB_PORT:-8080}:80"]`. That was wrong — it
+directly undid a deliberate, already-documented decision (commit `52a2450`, before this note
+was even written): this app deploys via Coolify, whose Traefik proxy permanently binds
+`0.0.0.0:8080` on the host for its own dashboard/API, so publishing `web` on that same port
+collides with it. Coolify routes to `web` over the internal Docker network via the
+`SERVICE_FQDN_WEB` label instead — a host-published port was never needed for real deployment.
+**Reverted** back to `expose: "80"`, with a comment on the service pointing at this history so
+it doesn't get "fixed" a third time. For local dev / `pnpm verify:e2e`, use
+`docker-compose.override.yml.example` (copy to `docker-compose.override.yml`, gitignored,
+merged automatically by `docker compose up`) — it adds the port publish without touching the
+tracked, production-safe compose file.
+
+The OTHER half of that earlier fix remains correct and is kept: `migrate`/`api`/`cleanup`
+previously inherited `DATABASE_URL`/`MINIO_ENDPOINT` straight from `.env`'s host-facing values,
+which don't resolve from inside the compose network (container-to-container traffic needs
+service names like `postgres`/`minio`, not `localhost`). These three services now build/
+hardcode compose-internal values instead
+(`postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}` and
+`http://minio:9000`) — `.env`'s `DATABASE_URL`/`MINIO_ENDPOINT` are host-side-tooling-only now,
+documented as such in `.env.example`/`README.md`. This part was validated via `docker compose
+config` and a partial `docker compose up -d postgres minio` (which hit only the pre-existing,
+documented `127.0.0.1:5432` host-port conflict from an unrelated container on this shared dev
+machine — a sandbox limitation, not a bug in this fix).
+
+**Also noticed, pre-existing, not fixed:** README's "Fronting with TLS" section (the
+`TRUST_PROXY_HOPS` security guidance) still describes `web`'s port as published by default
+across all interfaces — that text predates commit `52a2450` and was never updated when that
+commit changed `web` to `expose`-only, so it's been stale since before this session started.
+Worth a follow-up pass whenever someone next touches that section, to describe the actual
+current threat model (Coolify-routed by default; the port is only reachable at all via the
+opt-in local override).
 
 ## New integration bug found (and fixed) while merging plans together
 
