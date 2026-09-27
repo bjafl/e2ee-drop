@@ -26,7 +26,7 @@ vi.mock("../lib/storage", async (importOriginal) => {
 });
 
 import { buildServer } from "../server";
-import { subscribeToLink, type DropEvent } from "../lib/dropEvents";
+import { subscribeToLink, subscribeToOwner, type DropEvent } from "../lib/dropEvents";
 
 // The brief this suite was drafted from used a placeholder `x-test-user-id`
 // header to fake `request.user` in .inject() calls; that header doesn't exist
@@ -688,6 +688,98 @@ describe("upload routes", () => {
     expect(dropEvents.map((e) => [e.type, e.drop.id, e.drop.fileUploadStatus, e.drop.deliveryStatus])).toEqual([
       ["drop-created", dropId, "uploading", "sender_opened"],
       ["drop-updated", dropId, "complete", "sent"],
+    ]);
+  });
+
+  it("also emits drop-created/drop-updated on the owner-keyed channel for an owned link", async () => {
+    // Regression test for wiring emitOwnerDropEvent into upload-url and /complete
+    // (dashboard/inbox design spec §4): a link owner's GET /api/inbox/events
+    // subscription (subscribeToOwner) must see the same events as the existing
+    // link-keyed subscriber, not just the link channel.
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "ownerchannelowner");
+    await prisma.user.update({ where: { username: "ownerchannelowner" }, data: { emailVerified: true } });
+    const link = await prisma.link.create({
+      data: {
+        ownerId: owner.userId, slug: "owner-channel-test", mode: "permanent",
+        recipientPublicKey: "ownerchannelowner-pubkey", retentionDays: 7,
+      },
+    });
+
+    const linkEvents: DropEvent[] = [];
+    const ownerEvents: DropEvent[] = [];
+    const unsubLink = subscribeToLink(link.id, (event) => linkEvents.push(event));
+    const unsubOwner = subscribeToOwner(owner.userId, (event) => ownerEvents.push(event));
+
+    const uploadRes = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/upload-url`,
+      payload: uploadPayload(),
+    });
+    expect(uploadRes.statusCode).toBe(200);
+    const { dropId } = uploadRes.json();
+
+    const completeRes = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/drops/${dropId}/complete`,
+    });
+    expect(completeRes.statusCode).toBe(200);
+
+    unsubLink();
+    unsubOwner();
+
+    expect(ownerEvents).toEqual(linkEvents);
+    expect(ownerEvents.map((e) => e.type)).toEqual(["drop-created", "drop-updated"]);
+  });
+
+  it("never fires an anonymous link's drop events on another owner's owner-channel, and never crashes for the anonymous link itself", async () => {
+    // Complements the test above: an anonymous link's ownerId is null, so
+    // emitOwnerDropEvent must never be called for it. Proven here by creating
+    // an owned link and an anonymous link side by side, subscribing only to the
+    // owned link's owner channel, and confirming drops on the anonymous link
+    // never appear there (there is no owner channel an anonymous link's drops
+    // could appear on at all).
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "ownerscopeowner");
+    await prisma.user.update({ where: { username: "ownerscopeowner" }, data: { emailVerified: true } });
+    const ownedLink = await prisma.link.create({
+      data: {
+        ownerId: owner.userId, slug: "owner-scope-owned-test", mode: "permanent",
+        recipientPublicKey: "ownerscopeowner-pubkey", retentionDays: 7,
+      },
+    });
+    const anonymousSlug = await createLink(server);
+
+    const ownerEvents: DropEvent[] = [];
+    const unsubOwner = subscribeToOwner(owner.userId, (event) => ownerEvents.push(event));
+
+    const anonUpload = await server.inject({
+      method: "POST",
+      url: `/api/links/${anonymousSlug}/upload-url`,
+      payload: uploadPayload(),
+    });
+    expect(anonUpload.statusCode).toBe(200);
+    const anonDropId = anonUpload.json().dropId;
+    const anonComplete = await server.inject({
+      method: "POST",
+      url: `/api/links/${anonymousSlug}/drops/${anonDropId}/complete`,
+    });
+    expect(anonComplete.statusCode).toBe(200);
+
+    const ownedUpload = await server.inject({
+      method: "POST",
+      url: `/api/links/${ownedLink.slug}/upload-url`,
+      payload: uploadPayload({ senderPublicKey: "c2VuZGVyMg==" }),
+    });
+    expect(ownedUpload.statusCode).toBe(200);
+    const ownedDropId = ownedUpload.json().dropId;
+
+    unsubOwner();
+
+    // Only the owned link's drop-created reached the owner channel; the
+    // anonymous link's events never did (and never crashed the request).
+    expect(ownerEvents.map((e) => [e.type, "drop" in e ? e.drop.id : undefined])).toEqual([
+      ["drop-created", ownedDropId],
     ]);
   });
 

@@ -12,7 +12,7 @@ import {
   transitionFileUploadStatus,
 } from "../lib/links";
 import { getSignedUploadUrl, objectHasSize } from "../lib/storage";
-import { emitDropEvent } from "../lib/dropEvents";
+import { emitDropEvent, emitOwnerDropEvent, type DropEvent } from "../lib/dropEvents";
 import { hasAcceptedContact } from "../lib/contacts";
 import {
   NACL_BOX_OVERHEAD_BYTES,
@@ -276,7 +276,11 @@ export function registerUploadRoutes(server: FastifyInstance): void {
       // Emitted only after the drop row has committed (for one-time links, after
       // the Serializable transaction), so subscribers never hear about a drop
       // that a lost race rolled back.
-      emitDropEvent(link.id, { type: "drop-created", drop: toDropSummary(created, link) });
+      const createdEvent: DropEvent = { type: "drop-created", drop: toDropSummary(created, link) };
+      emitDropEvent(link.id, createdEvent);
+      if (link.ownerId) {
+        emitOwnerDropEvent(link.ownerId, createdEvent);
+      }
 
       const uploadUrl = await getSignedUploadUrl(s3Key, metadata.fileSize + NACL_BOX_OVERHEAD_BYTES);
       const body: RequestUploadUrlResponse = { dropId, uploadUrl };
@@ -401,10 +405,14 @@ export function registerUploadRoutes(server: FastifyInstance): void {
       // (as "uploading") before this request fetched `link`, so it's in the snapshot.
       const snapshot = link.drops.find((candidate) => candidate.id === dropId);
       if (snapshot) {
-        emitDropEvent(link.id, {
+        const updatedEvent: DropEvent = {
           type: "drop-updated",
           drop: toDropSummary({ ...snapshot, fileUploadStatus: "complete", deliveryStatus: "sent" }, link),
-        });
+        };
+        emitDropEvent(link.id, updatedEvent);
+        if (link.ownerId) {
+          emitOwnerDropEvent(link.ownerId, updatedEvent);
+        }
       }
       return reply.send({ updated: true });
     }
