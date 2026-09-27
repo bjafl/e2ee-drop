@@ -12,6 +12,7 @@ import { ContactsPage } from "@/components/ContactsPage";
 import { NewLinkPage } from "@/components/NewLinkPage";
 import { RequestLinkPage } from "@/components/RequestLinkPage";
 import { AccountPage } from "@/components/AccountPage";
+import { InboxPage } from "@/components/InboxPage";
 import { NavBar } from "@/components/NavBar";
 import { AuthProvider } from "@/hooks/useAuth";
 
@@ -28,6 +29,7 @@ export default function App() {
         <Route path="/links/new" element={<NewLinkPage />} />
         <Route path="/links/request" element={<RequestLinkPage />} />
         <Route path="/account" element={<AccountPage />} />
+        <Route path="/inbox" element={<InboxPage />} />
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/reset-password" element={<RequestPasswordResetPage />} />

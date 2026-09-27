@@ -1,0 +1,22 @@
+{
+  "title": "Innboks",
+  "loading": "Laster…",
+  "empty": "Ingenting her ennå.",
+  "selectPrompt": "Velg noen fra listen for å se leveransene deres.",
+  "incomingBadge": "innkommende",
+  "outgoingBadge": "utgående",
+  "status": {
+    "sender_opened": "Åpnet av avsender",
+    "sent": "Sendt",
+    "receiver_opened": "Du har åpnet denne",
+    "partial_delivery": "Delvis hentet",
+    "delivered": "Levert"
+  },
+  "outgoingStatus": {
+    "sender_opened": "Du har åpnet denne",
+    "sent": "Sendt",
+    "receiver_opened": "Åpnet av mottaker",
+    "partial_delivery": "Delvis hentet",
+    "delivered": "Levert"
+  }
+}

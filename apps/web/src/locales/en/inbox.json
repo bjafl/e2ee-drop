@@ -1,0 +1,22 @@
+{
+  "title": "Inbox",
+  "loading": "Loading…",
+  "empty": "Nothing here yet.",
+  "selectPrompt": "Select someone from the list to see their deliveries.",
+  "incomingBadge": "incoming",
+  "outgoingBadge": "outgoing",
+  "status": {
+    "sender_opened": "Opened by sender",
+    "sent": "Sent",
+    "receiver_opened": "You've opened this",
+    "partial_delivery": "Partially retrieved",
+    "delivered": "Delivered"
+  },
+  "outgoingStatus": {
+    "sender_opened": "You've opened this",
+    "sent": "Sent",
+    "receiver_opened": "Opened by recipient",
+    "partial_delivery": "Partially retrieved",
+    "delivered": "Delivered"
+  }
+}

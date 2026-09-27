@@ -12,6 +12,7 @@ import { registerTwoFactorRoutes } from "./routes/twoFactor";
 import { registerContactRoutes } from "./routes/contacts";
 import { registerEventRoutes } from "./routes/events";
 import { registerAccountRoutes } from "./routes/account";
+import { registerInboxRoutes } from "./routes/inbox";
 import { env } from "./env";
 import { createTrustProxyFn } from "./lib/trustProxy";
 import { errorHandler } from "./lib/httpErrors";
@@ -104,6 +105,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   registerContactRoutes(server);
   registerEventRoutes(server);
   registerAccountRoutes(server);
+  registerInboxRoutes(server);
 
   return server;
 }

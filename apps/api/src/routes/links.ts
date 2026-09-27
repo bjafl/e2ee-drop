@@ -8,6 +8,7 @@ import type {
   CreateRequestLinkResponse,
   ClaimLinkRequest,
   ListDropsResponse,
+  ListLinksResponse,
 } from "@e2ee-drop/shared";
 import { prisma, Prisma } from "@e2ee-drop/db";
 import {
@@ -20,6 +21,7 @@ import {
   isSenderInitiatedReceiveCapability,
   toDropSummary,
   toLinkStatusResponse,
+  toLinkSummary,
 } from "../lib/links";
 import { hasAcceptedContact, hasBlockRelationship } from "../lib/contacts";
 import { deleteObject } from "../lib/storage";
@@ -273,6 +275,19 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       return reply.send({ claimed: true });
     }
   );
+
+  // List-mine (dashboard/unified-inbox plan, Task 3). Must not be shadowed by
+  // the parameterized GET below: Fastify matches static/literal routes before
+  // parameterized ones regardless of declaration order, but this is placed
+  // here to keep related routes visually grouped.
+  server.get("/api/links", { preHandler: server.requireAuth }, async (request, reply) => {
+    const links = await prisma.link.findMany({
+      where: { ownerId: request.user!.id },
+      orderBy: { createdAt: "asc" },
+    });
+    const body: ListLinksResponse = { links: links.map(toLinkSummary) };
+    return reply.send(body);
+  });
 
   server.get<{ Params: { slug: string } }>("/api/links/:slug", async (request, reply) => {
     const link = await getLinkBySlug(request.params.slug);

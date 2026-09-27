@@ -2,9 +2,17 @@
 import type { FastifyInstance } from "fastify";
 import { prisma } from "@e2ee-drop/db";
 import type { DownloadUrlResponse, RevealMessageResponse } from "@e2ee-drop/shared";
-import { abandonDrop, canReceive, getLinkBySlug, isLinkExpired, recomputeDeliveryStatus } from "../lib/links";
+import {
+  abandonDrop,
+  canReceive,
+  getLinkBySlug,
+  isLinkExpired,
+  recomputeDeliveryStatus,
+  toDropSummary,
+} from "../lib/links";
 import { getSignedDownloadUrl, deleteObject } from "../lib/storage";
 import { scrubDropContent, lockOwnerQuota, releaseCharged, QUOTA_TX_OPTIONS } from "../lib/quota";
+import { emitDropEvent, emitOwnerDropEvent, type DropEvent } from "../lib/dropEvents";
 
 // fileEnvelopeStatus values that mean "this drop's file bytes are gone/spoken
 // for" — a compare-and-swap gate never lets a write clobber either of these.
@@ -157,6 +165,15 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
       // message" and "reveal message, then download file" sequences.
       await recomputeDeliveryStatus(dropId, link.id);
 
+      const updated = await prisma.drop.findUnique({ where: { id: dropId } });
+      if (updated) {
+        const event: DropEvent = { type: "drop-updated", drop: toDropSummary(updated, link) };
+        emitDropEvent(link.id, event);
+        if (link.ownerId) {
+          emitOwnerDropEvent(link.ownerId, event);
+        }
+      }
+
       return reply.send({ completed: true });
     }
   );
@@ -185,10 +202,20 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
       // started before it landed. Overwriting a "sealed" or "delivery_failed"
       // row is fine either way (idempotent, and lets a client retry after a
       // previously reported failure).
-      await prisma.drop.updateMany({
+      const { count } = await prisma.drop.updateMany({
         where: { id: dropId, linkId: link.id, fileEnvelopeStatus: { notIn: [...TERMINAL_FILE_ENVELOPE_STATUSES] } },
         data: { fileEnvelopeStatus: "delivery_failed" },
       });
+      if (count === 1) {
+        const updated = await prisma.drop.findUnique({ where: { id: dropId } });
+        if (updated) {
+          const event: DropEvent = { type: "drop-updated", drop: toDropSummary(updated, link) };
+          emitDropEvent(link.id, event);
+          if (link.ownerId) {
+            emitOwnerDropEvent(link.ownerId, event);
+          }
+        }
+      }
       return reply.send({ ok: true });
     }
   );
@@ -247,6 +274,15 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
       // message" both converge on "delivered" regardless of order.
       await recomputeDeliveryStatus(dropId, link.id);
 
+      const updated = await prisma.drop.findUnique({ where: { id: dropId } });
+      if (updated) {
+        const event: DropEvent = { type: "drop-updated", drop: toDropSummary(updated, link) };
+        emitDropEvent(link.id, event);
+        if (link.ownerId) {
+          emitOwnerDropEvent(link.ownerId, event);
+        }
+      }
+
       const body: RevealMessageResponse = { encryptedMessage, messageNonce: messageNonce! };
       return reply.send(body);
     }
@@ -275,6 +311,16 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
 
       const result = await scrubDropContent(dropId);
       if (result) await deleteObject(result.s3Key);
+      if (result) {
+        const updated = await prisma.drop.findUnique({ where: { id: dropId } });
+        if (updated) {
+          const event: DropEvent = { type: "drop-updated", drop: toDropSummary(updated, link) };
+          emitDropEvent(link.id, event);
+          if (link.ownerId) {
+            emitOwnerDropEvent(link.ownerId, event);
+          }
+        }
+      }
       return reply.send({ cancelled: result !== null });
     }
   );

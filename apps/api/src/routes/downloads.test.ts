@@ -16,6 +16,7 @@ vi.mock("../lib/storage", async (importOriginal) => ({
 import { buildServer } from "../server";
 import { prisma } from "@e2ee-drop/db";
 import { chargedBytes } from "../lib/quota";
+import { subscribeToLink, subscribeToOwner, type DropEvent } from "../lib/dropEvents";
 
 // Creates an anonymous link with a single drop against the current schema
 // (mirrors the reveal-message suite's createLinkWithMessage below). Calling
@@ -601,6 +602,58 @@ describe("owned-link complete-download route", () => {
     const afterRepeat = await prisma.user.findUniqueOrThrow({ where: { id: owner.userId } });
     expect(afterRepeat.storageUsedBytes).toBe(chargedBytes(second.fileSize)); // not released twice
   });
+
+  // This file previously had zero SSE emission of any kind: neither a sender
+  // watching UploadPage.tsx's live status view nor a link owner's inbox ever
+  // saw a live update when a recipient completed a download. Proves both
+  // channels now fire with a "drop-updated" event carrying the fully-derived
+  // post-recompute state (see complete-download's implementation).
+  it("emits drop-updated on both the link-keyed and owner-keyed SSE channels when the CAS wins", async () => {
+    const server = buildServer();
+    const { owner, link, first } = await ownedLinkWithQueue(server, "cdsseowner");
+
+    const linkEvents: DropEvent[] = [];
+    const ownerEvents: DropEvent[] = [];
+    const unsubLink = subscribeToLink(link.id, (event) => linkEvents.push(event));
+    const unsubOwner = subscribeToOwner(owner.userId, (event) => ownerEvents.push(event));
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/drops/${first.id}/complete-download`,
+      cookies: owner.cookies,
+    });
+
+    unsubLink();
+    unsubOwner();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ completed: true });
+    expect(linkEvents).toHaveLength(1);
+    expect(linkEvents[0]).toMatchObject({
+      type: "drop-updated",
+      drop: { id: first.id, fileEnvelopeStatus: "delivered", deliveryStatus: "delivered" },
+    });
+    expect(ownerEvents).toEqual(linkEvents);
+  });
+
+  // A lost race (second call, count !== 1) must not re-emit — the winner
+  // already did.
+  it("does not emit on a losing complete-download call (count !== 1)", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithDrop(server);
+    const link = (await prisma.link.findUnique({ where: { slug } }))!;
+    const url = `/api/links/${slug}/drops/${dropId}/complete-download`;
+
+    await server.inject({ method: "POST", url });
+
+    const events: DropEvent[] = [];
+    const unsubscribe = subscribeToLink(link.id, (event) => events.push(event));
+    const second = await server.inject({ method: "POST", url });
+    unsubscribe();
+
+    expect(second.json()).toEqual({ completed: false });
+    expect(events).toHaveLength(0);
+  });
 });
 
 describe("download-failed route", () => {
@@ -704,6 +757,81 @@ describe("download-failed route", () => {
 
     expect(res.statusCode).toBe(404);
     expect(deleteObjectMock).not.toHaveBeenCalled();
+  });
+
+  // This route previously never checked its updateMany's count for anything —
+  // it unconditionally reported { ok: true }. Proves the link-keyed SSE
+  // channel now fires a "drop-updated" event when the CAS actually matches a
+  // row.
+  it("emits drop-updated on the link-keyed SSE channel when the CAS matches a row", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithDrop(server);
+    const link = (await prisma.link.findUnique({ where: { slug } }))!;
+
+    const events: DropEvent[] = [];
+    const unsubscribe = subscribeToLink(link.id, (event) => events.push(event));
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/${dropId}/download-failed`,
+    });
+
+    unsubscribe();
+
+    expect(res.statusCode).toBe(200);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "drop-updated",
+      drop: { id: dropId, fileEnvelopeStatus: "delivery_failed" },
+    });
+  });
+
+  // New coverage this fix specifically needs: since the route previously never
+  // checked the updateMany count, a call against a dropId that never matches a
+  // row (nonexistent here) must never emit on either channel.
+  it("does not emit on either SSE channel when the count-check gate is not satisfied (nonexistent dropId)", async () => {
+    const server = buildServer();
+    const { slug } = await createLinkWithDrop(server);
+    const link = (await prisma.link.findUnique({ where: { slug } }))!;
+
+    const linkEvents: DropEvent[] = [];
+    const unsubscribe = subscribeToLink(link.id, (event) => linkEvents.push(event));
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/does-not-exist/download-failed`,
+    });
+
+    unsubscribe();
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true });
+    expect(linkEvents).toHaveLength(0);
+  });
+
+  // Same count-check gate, but against an already-terminal ("delivered") drop
+  // rather than a missing one — the updateMany's WHERE excludes terminal
+  // statuses, so count is 0 here too, and this must not emit either.
+  it("does not emit when the drop is already terminal (delivered), matching zero rows", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithDrop(server);
+    await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/complete-download` });
+    const link = (await prisma.link.findUnique({ where: { slug } }))!;
+
+    const linkEvents: DropEvent[] = [];
+    const unsubscribe = subscribeToLink(link.id, (event) => linkEvents.push(event));
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/${dropId}/download-failed`,
+    });
+
+    unsubscribe();
+
+    expect(res.statusCode).toBe(200);
+    // No re-emission for this terminal-drop call — the earlier complete-download
+    // already emitted its own drop-updated event before this subscription began.
+    expect(linkEvents).toHaveLength(0);
   });
 });
 
@@ -953,6 +1081,57 @@ describe("reveal-message route", () => {
     const status = await server.inject({ method: "GET", url: `/api/links/${slug}` });
     expect(status.json().drop.deliveryStatus).toBe("delivered");
   });
+
+  // Same pre-existing gap as complete-download: this route never emitted on
+  // either SSE channel. Proves the link-keyed channel now fires a
+  // "drop-updated" event with the fully-derived post-recompute state once the
+  // reveal CAS wins.
+  it("emits drop-updated on the link-keyed SSE channel once the reveal CAS wins", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithMessage(server, {
+      encryptedMessage: "c2VjcmV0IG1lc3NhZ2U=",
+      messageNonce: "bXNnbm9uY2U=",
+    });
+    const link = (await prisma.link.findUnique({ where: { slug } }))!;
+
+    const events: DropEvent[] = [];
+    const unsubscribe = subscribeToLink(link.id, (event) => events.push(event));
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/${dropId}/reveal-message`,
+    });
+
+    unsubscribe();
+
+    expect(res.statusCode).toBe(200);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "drop-updated",
+      drop: { id: dropId, messageEnvelopeStatus: "delivered", hasMessage: false },
+    });
+  });
+
+  // A losing reveal call (409, count !== 1) must not emit — the winner already did.
+  it("does not emit on a losing reveal-message call (count !== 1)", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithMessage(server, {
+      encryptedMessage: "c2VjcmV0IG1lc3NhZ2U=",
+      messageNonce: "bXNnbm9uY2U=",
+    });
+    const link = (await prisma.link.findUnique({ where: { slug } }))!;
+    const url = `/api/links/${slug}/drops/${dropId}/reveal-message`;
+
+    await server.inject({ method: "POST", url });
+
+    const events: DropEvent[] = [];
+    const unsubscribe = subscribeToLink(link.id, (event) => events.push(event));
+    const second = await server.inject({ method: "POST", url });
+    unsubscribe();
+
+    expect(second.statusCode).toBe(409);
+    expect(events).toHaveLength(0);
+  });
 });
 
 // Finding I5: reveal-message previously had no ownership check at all — a
@@ -1114,6 +1293,77 @@ describe("owner-cancel route", () => {
     expect(res.json()).toEqual({ cancelled: true });
     const after = await prisma.drop.findUnique({ where: { id: drop.id } });
     expect(after).toBeNull(); // abandoned (row removed), not scrubbed-in-place
+  });
+
+  // This route previously never emitted on either SSE channel. Proves the
+  // link-keyed channel now fires a "drop-updated" event once scrubDropContent
+  // actually scrubs a sealed drop (the abandonDrop branch above deliberately
+  // stays unchanged and un-instrumented — see uploads.ts's own /abandon route
+  // for the same convention).
+  it("emits drop-updated on the link-keyed SSE channel once scrubDropContent succeeds", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "cancelowner5");
+    const link = (await prisma.link.findUnique({ where: { slug: "cancelowner5" } }))!;
+    const drop = await createQueuedDrop(link.id, "sealed", "complete");
+
+    const events: DropEvent[] = [];
+    const unsubscribe = subscribeToLink(link.id, (event) => events.push(event));
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/drops/${drop.id}/owner-cancel`,
+      cookies: owner.cookies,
+    });
+
+    unsubscribe();
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ cancelled: true });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "drop-updated",
+      drop: { id: drop.id, fileEnvelopeStatus: "shredded" },
+    });
+  });
+
+  // The no-op (already-delivered) branch above must not emit either — nothing
+  // was scrubbed (result === null).
+  it("does not emit when owner-cancel is a no-op on an already-delivered drop", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "cancelowner6");
+    const link = (await prisma.link.findUnique({ where: { slug: "cancelowner6" } }))!;
+    const drop = await prisma.drop.create({
+      data: {
+        linkId: link.id,
+        senderPublicKey: "c2VuZGVy",
+        s3Key: `${link.id}/delivered6`,
+        archiveNonce: "YXJjaGl2ZQ==",
+        contentMD5: "bWQ1",
+        encryptedMetadata: "bWV0YWRhdGE=",
+        metadataNonce: "bWV0YW5vbmNl",
+        fileSize: 1024,
+        fileUploadStatus: "complete",
+        fileEnvelopeStatus: "delivered",
+        messageEnvelopeStatus: "delivered",
+        encryptedMessage: "c2VjcmV0",
+        messageNonce: "bm9uY2U=",
+      },
+    });
+
+    const events: DropEvent[] = [];
+    const unsubscribe = subscribeToLink(link.id, (event) => events.push(event));
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/drops/${drop.id}/owner-cancel`,
+      cookies: owner.cookies,
+    });
+
+    unsubscribe();
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ cancelled: false });
+    expect(events).toHaveLength(0);
   });
 });
 
