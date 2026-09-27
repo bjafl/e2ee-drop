@@ -150,12 +150,14 @@ describe("toDropSummary", () => {
 
 describe("toLinkStatusResponse", () => {
   const BASE_RESPONSE_KEYS = [
+    "linkId",
     "slug",
     "mode",
     "recipientPublicKey",
     "drop",
     "isAnonymous",
     "codewords",
+    "codewordLocale",
     "ownerNote",
     "retentionDays",
     "expiresAt",

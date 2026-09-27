@@ -13,6 +13,7 @@ import { buildServer } from "../server";
 import { env } from "../env";
 import { chargedBytes } from "../lib/quota";
 import { subscribeToLink, type DropEvent } from "../lib/dropEvents";
+import { deriveCodewords } from "../lib/codewords";
 
 // The brief this suite was drafted from used a placeholder `x-test-user-id`
 // header to fake `request.user` in .inject() calls; that header doesn't exist
@@ -215,6 +216,28 @@ describe("link routes", () => {
     const body = getResponse.json();
 
     expect(body.codewords).toEqual(createBody.codewords);
+  });
+
+  // Review finding F1: clients derive the phrase themselves from (their own
+  // key, linkId, codewordLocale). Both responses must expose the latter two,
+  // and the server's own `codewords` field must equal exactly what the
+  // shared client-side derivation produces from them.
+  it("exposes linkId and codewordLocale so clients can derive the same phrase locally", async () => {
+    const server = buildServer();
+    const createResponse = await server.inject({
+      method: "POST",
+      url: "/api/links",
+      payload: { recipientPublicKey: "cmVjaXBpZW50a2V5", locale: "nb" },
+    });
+    const createBody = createResponse.json();
+    expect(createBody.codewordLocale).toBe("nb");
+
+    const body = (await server.inject({ method: "GET", url: `/api/links/${createBody.slug}` })).json();
+    expect(body.linkId).toBe(createBody.linkId);
+    expect(body.codewordLocale).toBe("nb");
+    expect(body.codewords).toEqual(
+      await deriveCodewords("cmVjaXBpZW50a2V5", createBody.linkId, "nb", env.CODEWORD_WORD_COUNT)
+    );
   });
 
   it("returns the link's actual server-side expiresAt (epoch ms) on create", async () => {
@@ -2083,6 +2106,36 @@ describe("link routes", () => {
       const mine = body.links.find((l) => l.slug === "carol-links-list")!;
       expect(mine.lastSenderOpenedAt).toBe(now.getTime());
       expect(mine.revokedAt).toBeUndefined();
+    });
+
+    // Review finding F1: the dashboard shows the owner a locally derived
+    // phrase only for links whose recipient key is the owner's own —
+    // never for a sender-initiated request link, whose recipient key (once
+    // claimed) belongs to the claimant.
+    it("reports recipientIsOwner, linkId and codewordLocale per link", async () => {
+      const server = buildServer();
+      const dave = await registerAndGetCookie(server, "dave-links-list");
+      const custom = await prisma.link.create({
+        data: { ownerId: dave.userId, slug: "daves-custom", mode: "permanent", recipientPublicKey: dave.publicKey, retentionDays: 7 },
+      });
+      await prisma.link.create({
+        data: { ownerId: dave.userId, slug: "daves-request-unclaimed", mode: "permanent", recipientPublicKey: null, retentionDays: 7 },
+      });
+      await prisma.link.create({
+        data: { ownerId: dave.userId, slug: "daves-request-claimed", mode: "permanent", recipientPublicKey: "claimant-pk", retentionDays: 7 },
+      });
+
+      const response = await server.inject({ method: "GET", url: "/api/links", cookies: dave.cookies });
+      const body = response.json() as {
+        links: Array<{ slug: string; linkId: string; codewordLocale: string; recipientIsOwner: boolean }>;
+      };
+      const bySlug = Object.fromEntries(body.links.map((l) => [l.slug, l]));
+      expect(bySlug["dave-links-list"].recipientIsOwner).toBe(true); // default link
+      expect(bySlug["daves-custom"].recipientIsOwner).toBe(true);
+      expect(bySlug["daves-custom"].linkId).toBe(custom.id);
+      expect(bySlug["daves-custom"].codewordLocale).toBe("en");
+      expect(bySlug["daves-request-unclaimed"].recipientIsOwner).toBe(false);
+      expect(bySlug["daves-request-claimed"].recipientIsOwner).toBe(false);
     });
   });
 });

@@ -23,6 +23,7 @@ import { Progress } from "@/components/ui/progress";
 import { useFileEncryption } from "@/hooks/useFileEncryption";
 import { uploadWithProgress } from "@/hooks/useXhrUpload";
 import { useAuth } from "@/hooks/useAuth";
+import { useCodewords } from "@/hooks/useCodewords";
 import i18n from "@/i18n";
 import uploadEn from "@/locales/en/upload.json";
 import uploadNb from "@/locales/nb/upload.json";
@@ -129,6 +130,15 @@ export function UploadPage() {
       source.close();
     };
   }, [slug, isWaitingForClaim]);
+
+  // Review finding F1: derived locally from `link.recipientPublicKey` — the
+  // exact same state value doSend() below passes to encryptForSend — never
+  // from the response's `codewords` field. If the server hands this sender a
+  // key the recipient doesn't actually hold, the phrase shown here is derived
+  // from THAT key and won't match what the recipient derives from their own.
+  // Shows every one of the shared CODEWORD_WORD_COUNT words, the same count
+  // every recipient-side surface shows.
+  const codewords = useCodewords(link?.recipientPublicKey, link?.linkId, link?.codewordLocale);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop: (accepted) => setFiles((prev) => [...prev, ...accepted]),
@@ -291,10 +301,14 @@ export function UploadPage() {
             </AlertDescription>
           </Alert>
         )}
-        <div>
-          <p className="text-sm text-muted-foreground">{t("codewordsLabel")}</p>
-          <p className="font-mono text-lg">{link.codewords.slice(0, 3).join(" · ")}</p>
-        </div>
+        {codewords && (
+          <div>
+            <p className="text-sm text-muted-foreground">{t("codewordsLabel")}</p>
+            <p className="font-mono text-lg" data-testid="codewords">
+              {codewords.join(" · ")}
+            </p>
+          </div>
+        )}
         <div>
           <textarea
             value={message}

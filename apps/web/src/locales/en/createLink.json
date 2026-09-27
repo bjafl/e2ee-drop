@@ -12,8 +12,6 @@
   "copyLink": "Copy link",
   "copied": "Copied!",
   "codewordsLabel": "Verification words — read these aloud to confirm the sender has the right link",
-  "showMoreWords": "Show all words",
-  "showFewerWords": "Show fewer words",
   "downloadPageHint": "Keep this browser: the file can only be decrypted here. Open your download page to wait for the sender's upload.",
   "goToDownloadPage": "Go to your download page",
   "errors": { "createFailed": "Could not create a link. Please try again." }

@@ -29,6 +29,7 @@ import { useLocalLinks } from "@/hooks/useLocalLinks";
 import { useFileEncryption, type DecryptedMetadata } from "@/hooks/useFileEncryption";
 import { downloadWithProgress } from "@/hooks/useStreamedDownload";
 import { useAuth } from "@/hooks/useAuth";
+import { useCodewords } from "@/hooks/useCodewords";
 import i18n from "@/i18n";
 import receiveEn from "@/locales/en/receive.json";
 import receiveNb from "@/locales/nb/receive.json";
@@ -146,6 +147,10 @@ function ReceivePageForLink() {
   // logic below falls back to the single-drop claimant view instead of
   // treating the 403 as "link not found" and permanently stranding the drop.
   const [ownedAccessDenied, setOwnedAccessDenied] = useState(false);
+  // Public half of the locally stored anonymous key for this slug, once
+  // unlocked (below) — the source of this browser's verification phrase in
+  // "anonymous" mode.
+  const [localPublicKey, setLocalPublicKey] = useState<string | null>(null);
 
   const stored = slug ? links[slug] : undefined;
   // A stored entry (PIN-protected or not — see useLocalLinks.ts's StoredLink)
@@ -175,7 +180,11 @@ function ReceivePageForLink() {
     if (!stored) return;
     if (!stored.pinProtected) {
       unlockLink(slug!)
-        .then((raw) => setKeyPair(nacl.box.keyPair.fromSecretKey(decodeBase64(raw))))
+        .then((raw) => {
+          const keyPair = nacl.box.keyPair.fromSecretKey(decodeBase64(raw));
+          setKeyPair(keyPair);
+          setLocalPublicKey(encodeBase64(keyPair.publicKey));
+        })
         .catch(() => {
           // I6 (final review): a corrupted/malformed local key (bad storage
           // format, tampering, etc.) must not crash the whole page over it —
@@ -206,7 +215,9 @@ function ReceivePageForLink() {
   const submitPin = async () => {
     try {
       const raw = await unlockLink(slug!, pinInput);
-      setKeyPair(nacl.box.keyPair.fromSecretKey(decodeBase64(raw)));
+      const keyPair = nacl.box.keyPair.fromSecretKey(decodeBase64(raw));
+      setKeyPair(keyPair);
+      setLocalPublicKey(encodeBase64(keyPair.publicKey));
       setPinPrompt(false);
       setPinError(false);
     } catch {
@@ -217,7 +228,7 @@ function ReceivePageForLink() {
   // Plain status fetch — this same GET also serves the sender's page, so it
   // has no side effect of its own. It runs regardless of mode: it's the only
   // source of the claim gate (recipientPublicKey === null) and of
-  // ownerNote/codewords, and every mode needs linkNotFound to come from
+  // ownerNote/linkId/codewordLocale, and every mode needs linkNotFound to come from
   // somewhere. Advancing deliveryStatus to receiver_opened is a separate,
   // dedicated action (a shared query param on this GET was spoofable — a
   // sender could pass ?role=receiver on their own request — so it was
@@ -304,7 +315,7 @@ function ReceivePageForLink() {
         }
         const data = (await res.json()) as LinkStatusResponse;
         if (cancelled) return;
-        // Keep ownerNote/codewords fresh from the same response the live
+        // Keep ownerNote (and the rest of the link) fresh from the same response the live
         // drop comes from, in addition to the one-off fetch above.
         setLink(data);
         // Fix 3 (docs/STATUS.md gap 3): a claimed sender-initiated link's
@@ -368,6 +379,39 @@ function ReceivePageForLink() {
       source.close();
     };
   }, [slug, mode]);
+
+  // Review finding F1: this page's verification phrase is derived locally
+  // from the private key THIS recipient actually holds — never from the
+  // status response's `codewords` field (server-derived from whatever key the
+  // DB holds, so a swapped key would produce matching words on both sides):
+  // - "anonymous": the public half of this browser's own stored key for this
+  //   slug (localPublicKey, set once it's unlocked above).
+  // - "owned" (both the owner's queue view and a request link's
+  //   account-claimant view, after GET /drops 403s): the public half of the
+  //   account key pair unwrapped at login (userKeyPair) — genuinely local
+  //   key material, not the server-reported user.publicKey. Both views only
+  //   render the phrase when !needsRelogin, i.e. exactly when userKeyPair is
+  //   present. In either "owned" case the account IS this link's recipient:
+  //   "owned" requires link.recipientPublicKey === user.publicKey, and the
+  //   queue view additionally requires GET /drops to have succeeded (true
+  //   ownerId only), so it is never a request link's initiator.
+  // If the server handed the sender a different key than the one held here,
+  // the sender's phrase (derived from that key) won't match this one.
+  const codewordPublicKey =
+    mode === "anonymous"
+      ? localPublicKey
+      : mode === "owned" && userKeyPair
+        ? encodeBase64(userKeyPair.publicKey)
+        : null;
+  const codewords = useCodewords(codewordPublicKey, link?.linkId, link?.codewordLocale);
+  const codewordsBlock = codewords && (
+    <div>
+      <p className="text-sm text-muted-foreground">{t("codewordsLabel")}</p>
+      <p className="font-mono text-lg" data-testid="codewords">
+        {codewords.join(" · ")}
+      </p>
+    </div>
+  );
 
   const handleDropDownloaded = useCallback((dropId: string) => {
     setDownloadedIds((prev) => new Set(prev).add(dropId));
@@ -436,6 +480,7 @@ function ReceivePageForLink() {
               </AlertDescription>
             </Alert>
           )}
+          {!needsRelogin && codewordsBlock}
           {!needsRelogin && queued.length === 0 && <p>{t("queueEmpty")}</p>}
           {!needsRelogin &&
             queued.map((drop) => (
@@ -495,12 +540,7 @@ function ReceivePageForLink() {
         )}
         {!needsRelogin && (
           <>
-            {link.codewords.length > 0 && (
-              <div>
-                <p className="text-sm text-muted-foreground">{t("codewordsLabel")}</p>
-                <p className="font-mono text-lg">{link.codewords.join(" · ")}</p>
-              </div>
-            )}
+            {codewordsBlock}
             {link.ownerNote && (
               <Alert>
                 <AlertDescription>

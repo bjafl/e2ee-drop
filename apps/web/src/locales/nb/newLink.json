@@ -13,5 +13,6 @@
   "retentionDaysLabel": "Slett mottatte filer etter (dager)",
   "createButton": "Opprett lenke",
   "success": "Lenke opprettet:",
+  "codewordsLabel": "Verifiseringsord for denne lenken — avsendere ser de samme ordene; bekreft dem med avsenderen utenom appen",
   "errors": { "createFailed": "Kunne ikke opprette lenken. Navnet kan allerede være i bruk." }
 }

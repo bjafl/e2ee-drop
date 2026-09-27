@@ -1,4 +1,5 @@
 // apps/api/src/env.ts
+import { CODEWORD_WORD_COUNT as CLIENT_CODEWORD_WORD_COUNT } from "@e2ee-drop/shared";
 import { required, requiredSecret, int, optionalInt, bool, httpUrl, isHttpsUrl } from "./envParsers";
 
 // Evaluated at module load: any missing or invalid value throws here and the
@@ -13,7 +14,7 @@ export const env = {
   DROP_RETENTION_DAYS_DEFAULT: int("DROP_RETENTION_DAYS_DEFAULT", 1),
   DROP_RETENTION_DAYS_MAX: int("DROP_RETENTION_DAYS_MAX", 7),
   AUDIT_RETENTION_DAYS: int("AUDIT_RETENTION_DAYS", 30),
-  // Number of words in a link's verification phrase (lib/codewords.ts). Each
+  // Number of words in a link's verification phrase (packages/shared/src/codewords.ts). Each
   // word is one byte of a SHA-256 hash indexed into a 256-word list, so N
   // words give 256^N possible phrases (4 words = ~4.3 billion). Floored at 4:
   // below that, the odds of two unrelated, simultaneously active links
@@ -21,7 +22,14 @@ export const env = {
   // count grows (see the design discussion this constant came from — at 4
   // words that stays comfortably small into the thousands of concurrently
   // active links; at 3 it's already ~3% at just 1,000).
-  CODEWORD_WORD_COUNT: int("CODEWORD_WORD_COUNT", 4, { min: 4 }),
+  //
+  // Only affects the server's own `codewords` response field, which no
+  // client comparison UI displays any more (review finding F1): every client
+  // derives and shows exactly @e2ee-drop/shared's CODEWORD_WORD_COUNT words
+  // itself, so sender and recipient always agree on the count. The default
+  // is that same shared constant; raising this only appends extra trailing
+  // words to the API field (the derivation is prefix-stable across counts).
+  CODEWORD_WORD_COUNT: int("CODEWORD_WORD_COUNT", CLIENT_CODEWORD_WORD_COUNT, { min: 4 }),
   // Internal endpoint for server-to-MinIO calls (bucket setup, deletes).
   MINIO_ENDPOINT: required("MINIO_ENDPOINT"),
   // Browser-reachable endpoint embedded in presigned upload/download URLs.

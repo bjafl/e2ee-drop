@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
+import nacl from "tweetnacl";
+import { decodeBase64, encodeBase64 } from "tweetnacl-util";
+import { CODEWORD_WORD_COUNT, deriveCodewords } from "@e2ee-drop/shared";
 
 const {
   decryptMetadataMock,
@@ -126,17 +129,25 @@ const UPLOADED_DROP = {
 
 const UPLOADING_DROP = { ...UPLOADED_DROP, fileUploadStatus: "uploading" };
 
+// Deliberately NOT what any key in these tests derives to: the page must
+// never display the server's `codewords` field (finding F1).
+const API_CODEWORDS = ["fox", "river", "lamp", "otter"];
+
 const CLAIMED_LINK_RESPONSE = {
+  linkId: "link-abc123",
+  codewordLocale: "en",
   slug: "abc123",
   mode: "one-time",
   recipientPublicKey: "YW5vbmtleQ==",
   drop: UPLOADED_DROP,
   isAnonymous: true,
-  codewords: ["fox", "river", "lamp", "otter"],
+  codewords: API_CODEWORDS,
   retentionDays: 7,
 };
 
 const UNCLAIMED_LINK_RESPONSE = {
+  linkId: "link-req123",
+  codewordLocale: "en",
   slug: "req123",
   mode: "permanent",
   recipientPublicKey: null,
@@ -178,6 +189,16 @@ function renderAt(slug: string) {
   );
 }
 
+// The words this page should show: derived locally from the given public
+// key (base64) for the given link — the same derivation the sender runs.
+function expectedWords(publicKeyBase64: string, linkId: string): Promise<string[]> {
+  return deriveCodewords(publicKeyBase64, linkId, "en", CODEWORD_WORD_COUNT);
+}
+
+// Mirrors the default unlockLinkMock value set in the top-level beforeEach.
+const LOCAL_SECRET_KEY = "c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0MTI=";
+const LOCAL_PUBLIC_KEY = encodeBase64(nacl.box.keyPair.fromSecretKey(decodeBase64(LOCAL_SECRET_KEY)).publicKey);
+
 function calledUrls(fetchMock: ReturnType<typeof vi.fn>): string[] {
   return fetchMock.mock.calls.map((call) => String(call[0]));
 }
@@ -188,7 +209,7 @@ beforeEach(() => {
   decryptArchiveMock.mockReset();
   setKeyPairMock.mockReset();
   downloadWithProgressMock.mockReset();
-  unlockLinkMock.mockReset().mockResolvedValue("c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0MTI=");
+  unlockLinkMock.mockReset().mockResolvedValue(LOCAL_SECRET_KEY);
   saveLinkMock.mockReset().mockResolvedValue(undefined);
   authState.user = null;
   localLinksState.links = {};
@@ -216,10 +237,40 @@ describe("ReceivePage — anonymous single-drop view", () => {
     );
   });
 
-  it("shows every verification codeword the server returned, not just the first few", async () => {
+  // Review finding F1: the anonymous recipient's phrase comes from the key
+  // this browser actually holds — not the API's `codewords`, and not the
+  // API's `recipientPublicKey` either (in this fixture the server reports a
+  // different key than the one stored locally, as a swapped DB row would).
+  it("derives all verification words locally from this browser's stored key, ignoring the API's codewords and key", async () => {
+    const expected = await expectedWords(LOCAL_PUBLIC_KEY, CLAIMED_LINK_RESPONSE.linkId);
+    const fromServerKey = await expectedWords(CLAIMED_LINK_RESPONSE.recipientPublicKey, CLAIMED_LINK_RESPONSE.linkId);
+    expect(expected).not.toEqual(API_CODEWORDS);
+    expect(expected).not.toEqual(fromServerKey);
+
     renderAt("abc123");
+
     await waitFor(() => {
-      expect(screen.getByText(/fox.*river.*lamp.*otter/i)).toBeInTheDocument();
+      expect(screen.getByTestId("codewords")).toHaveTextContent(expected.join(" · "));
+    });
+    expect(screen.getByTestId("codewords").textContent!.split(" · ")).toHaveLength(CODEWORD_WORD_COUNT);
+    expect(screen.queryByText(/fox · river/)).not.toBeInTheDocument();
+  });
+
+  it("shows no verification words until a PIN-protected local key is unlocked", async () => {
+    localLinksState.links = { abc123: { pinProtected: true } };
+    renderAt("abc123");
+
+    await waitFor(() => {
+      expect(screen.getByText(/pin/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("codewords")).not.toBeInTheDocument();
+
+    fireEvent.change(document.querySelector('input[type="password"]')!, { target: { value: "1234" } });
+    fireEvent.click(screen.getByRole("button", { name: /unlock/i }));
+
+    const expected = await expectedWords(LOCAL_PUBLIC_KEY, CLAIMED_LINK_RESPONSE.linkId);
+    await waitFor(() => {
+      expect(screen.getByTestId("codewords")).toHaveTextContent(expected.join(" · "));
     });
   });
 
@@ -333,7 +384,7 @@ describe("ReceivePage — anonymous single-drop view", () => {
     renderAt("abc123");
 
     await waitFor(() => {
-      expect(screen.getByText(/fox.*river.*lamp.*otter/i)).toBeInTheDocument();
+      expect(screen.getByTestId("codewords")).toBeInTheDocument();
     });
     // hasMessage is true on UPLOADED_DROP, but metadata hasn't resolved yet —
     // metadata decrypting successfully is the first proof the loaded key
@@ -405,8 +456,11 @@ describe("ReceivePage — anonymous single-drop view", () => {
     renderAt("abc123");
 
     await waitFor(() => {
-      expect(screen.getByText(/fox.*river.*lamp.*otter/i)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /download and decrypt/i })).toBeInTheDocument();
     });
+    // No usable local key means nothing trustworthy to derive a phrase from
+    // (finding F1) — show none rather than the server's words.
+    expect(screen.queryByTestId("codewords")).not.toBeInTheDocument();
     // The old pre-rewrite behavior this restores: leave the key pair unset
     // and let the page render normally instead of crashing / rejecting
     // unhandled.
@@ -683,6 +737,15 @@ describe("ReceivePage — claim flow", () => {
     expect(screen.queryByText(/no private key found/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/incoming files/i)).not.toBeInTheDocument();
     expect(setKeyPairMock).toHaveBeenCalledWith(OWNER_KEY_PAIR);
+    // Review finding F1: this account-claimant's phrase is derived from the
+    // account key pair unwrapped locally (OWNER_KEY_PAIR), not from the
+    // server-reported user.publicKey / recipientPublicKey (OWNER_PUBLIC_KEY,
+    // deliberately a different key in these fixtures) or the API's words.
+    const expected = await expectedWords(encodeBase64(OWNER_KEY_PAIR.publicKey), UNCLAIMED_LINK_RESPONSE.linkId);
+    expect(expected).not.toEqual(await expectedWords(OWNER_PUBLIC_KEY, UNCLAIMED_LINK_RESPONSE.linkId));
+    await waitFor(() => {
+      expect(screen.getByTestId("codewords")).toHaveTextContent(expected.join(" · "));
+    });
   });
   // docs/STATUS.md gap 3: a request link is `mode: "permanent"` and can
   // receive more than one file over its lifetime once claimed, but the old
@@ -829,12 +892,14 @@ describe("ReceivePage — owned link queue", () => {
         return Promise.resolve({
           ok: true,
           json: async () => ({
+            linkId: "link-ada",
+            codewordLocale: "en",
             slug: "ada",
             mode: "permanent",
             isAnonymous: false,
             recipientPublicKey: OWNER_PUBLIC_KEY,
             drop: null,
-            codewords: [],
+            codewords: API_CODEWORDS,
             retentionDays: 30,
           }),
         });
@@ -868,6 +933,26 @@ describe("ReceivePage — owned link queue", () => {
     expect(screen.getAllByText(/download and decrypt/i)).toHaveLength(2);
     expect(latestEventSource().url).toBe("/api/links/ada/events");
     expect(setKeyPairMock).toHaveBeenCalledWith(OWNER_KEY_PAIR);
+  });
+
+  // Review finding F1: new owner-facing surface. The queue view is reached
+  // only by a normal owned link's true owner, so the phrase is derived from
+  // the owner's own locally unwrapped key pair — not the server-reported
+  // user.publicKey (OWNER_PUBLIC_KEY, a different key here) or the API's words.
+  it("shows the owner the link's verification words, derived locally from their own key pair", async () => {
+    stubOwnedFetch([]);
+    const expected = await expectedWords(encodeBase64(OWNER_KEY_PAIR.publicKey), "link-ada");
+    expect(expected).not.toEqual(API_CODEWORDS);
+    expect(expected).not.toEqual(await expectedWords(OWNER_PUBLIC_KEY, "link-ada"));
+
+    renderAt("ada");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("codewords")).toHaveTextContent(expected.join(" · "));
+    });
+    expect(screen.getByText(/incoming files/i)).toBeInTheDocument();
+    expect(screen.getByTestId("codewords").textContent!.split(" · ")).toHaveLength(CODEWORD_WORD_COUNT);
+    expect(screen.queryByText(/fox · river/)).not.toBeInTheDocument();
   });
 
   it("shows the empty-queue message when nothing is queued", async () => {
@@ -974,12 +1059,14 @@ describe("ReceivePage — owned link, owner's decryption key missing after a rel
           return Promise.resolve({
             ok: true,
             json: async () => ({
+              linkId: "link-ada",
+              codewordLocale: "en",
               slug: "ada",
               mode: "permanent",
               isAnonymous: false,
               recipientPublicKey: OWNER_PUBLIC_KEY,
               drop: null,
-              codewords: [],
+              codewords: API_CODEWORDS,
               retentionDays: 30,
             }),
           });
@@ -987,6 +1074,17 @@ describe("ReceivePage — owned link, owner's decryption key missing after a rel
         return Promise.resolve({ ok: true, json: async () => ({}) });
       })
     );
+  });
+
+  // Without the locally unwrapped key there is nothing trustworthy to derive
+  // from — the server-reported user.publicKey is not used as a substitute here.
+  it("shows no verification words at all while the key pair is unavailable", async () => {
+    renderAt("ada");
+    await waitFor(() => {
+      expect(screen.getByText(/decryption key isn't available/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("codewords")).not.toBeInTheDocument();
+    expect(screen.queryByText(/fox · river/)).not.toBeInTheDocument();
   });
 
   it("shows a re-login prompt instead of the queue, and never attempts to decrypt anything", async () => {

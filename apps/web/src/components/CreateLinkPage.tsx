@@ -8,14 +8,13 @@ import type { CreateLinkResponse } from "@e2ee-drop/shared";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useLocalLinks } from "@/hooks/useLocalLinks";
+import { useCodewords } from "@/hooks/useCodewords";
 import i18n from "@/i18n";
 import createLinkEn from "@/locales/en/createLink.json";
 import createLinkNb from "@/locales/nb/createLink.json";
 
 i18n.addResourceBundle("en", "createLink", createLinkEn, true, false);
 i18n.addResourceBundle("nb", "createLink", createLinkNb, true, false);
-
-const CODEWORD_DEFAULT_COUNT = 3;
 
 // I7 (final review): mirrors apps/api/src/env.ts's DROP_RETENTION_DAYS_DEFAULT
 // (1) — no frontend-visible response exposes the operator-configured value
@@ -30,8 +29,12 @@ export function CreateLinkPage() {
   const [retentionDays, setRetentionDays] = useState<number | "">(DEFAULT_RETENTION_DAYS_PLACEHOLDER);
   const [pin, setPin] = useState("");
   const [slug, setSlug] = useState<string | null>(null);
-  const [codewords, setCodewords] = useState<string[]>([]);
-  const [showAllCodewords, setShowAllCodewords] = useState(false);
+  // Review finding F1: the phrase is derived locally from the public half of
+  // the key pair this page generated itself (the only copy of its private
+  // key goes into this browser's storage, never to the server), plus the
+  // new link's id and wordlist locale — never from the response's
+  // `codewords` field.
+  const [created, setCreated] = useState<{ publicKey: string; linkId: string; locale: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -65,7 +68,10 @@ export function CreateLinkPage() {
       // with the owner's PIN (design spec §3.4) before being written to storage.
       await saveLink(body.slug, encodeBase64(keyPair.secretKey), body.expiresAt, pin || undefined);
       setSlug(body.slug);
-      setCodewords(body.codewords ?? []);
+      // The server's codewordLocale is harmless to use (it only picks the
+      // wordlist; the hash comes from our own key) and keeps this phrase on
+      // the same wordlist the sender's page will use for this link.
+      setCreated({ publicKey: encodeBase64(keyPair.publicKey), linkId: body.linkId, locale: body.codewordLocale ?? locale });
     } catch {
       setError(t("errors.createFailed"));
     } finally {
@@ -74,7 +80,7 @@ export function CreateLinkPage() {
   };
 
   const link = slug ? `${window.location.origin}/send/${slug}` : null;
-  const visibleCodewords = showAllCodewords ? codewords : codewords.slice(0, CODEWORD_DEFAULT_COUNT);
+  const codewords = useCodewords(created?.publicKey, created?.linkId, created?.locale);
 
   const copyLink = async () => {
     if (!link) return;
@@ -135,15 +141,16 @@ export function CreateLinkPage() {
           <>
             <p className="break-all rounded bg-muted p-2 text-sm">{link}</p>
             <Button onClick={copyLink}>{copied ? t("copied") : t("copyLink")}</Button>
-            <div>
-              <p className="text-sm text-muted-foreground">{t("codewordsLabel")}</p>
-              <p className="font-mono text-lg">{visibleCodewords.join(" · ")}</p>
-              {codewords.length > CODEWORD_DEFAULT_COUNT && (
-                <button type="button" className="text-xs underline" onClick={() => setShowAllCodewords((v) => !v)}>
-                  {showAllCodewords ? t("showFewerWords") : t("showMoreWords")}
-                </button>
-              )}
-            </div>
+            {/* All CODEWORD_WORD_COUNT words, the same count the sender's
+                page shows (finding F1, Step 3) — no truncated preview. */}
+            {codewords && (
+              <div>
+                <p className="text-sm text-muted-foreground">{t("codewordsLabel")}</p>
+                <p className="font-mono text-lg" data-testid="codewords">
+                  {codewords.join(" · ")}
+                </p>
+              </div>
+            )}
             <div className="space-y-2 border-t pt-4">
               <p className="text-sm text-muted-foreground">{t("downloadPageHint")}</p>
               <Button asChild variant="secondary">

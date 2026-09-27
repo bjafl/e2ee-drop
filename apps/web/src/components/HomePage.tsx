@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import type { InboxCounterparty, InboxResponse, ListLinksResponse, LinkSummary } from "@e2ee-drop/shared";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/useAuth";
+import { accountPublicKey, useCodewords } from "@/hooks/useCodewords";
 import { useLocalLinks } from "@/hooks/useLocalLinks";
 import i18n from "@/i18n";
 import homeEn from "@/locales/en/home.json";
@@ -12,6 +13,32 @@ import homeNb from "@/locales/nb/home.json";
 
 i18n.addResourceBundle("en", "home", homeEn, true, false);
 i18n.addResourceBundle("nb", "home", homeNb, true, false);
+
+// Review finding F1: the owner's own view of a link's verification phrase,
+// derived locally from the account's own key (accountPublicKey prefers the
+// key pair unwrapped at login) — never from an API `codewords` field.
+//
+// GET /api/links lists EVERY link this account owns, including
+// sender-initiated request links (POST /api/links/request), whose recipient
+// key is null (unclaimed) or belongs to whoever claimed them — never to this
+// account. Deriving from the owner's key for such a row would display a
+// phrase for the wrong key while looking like a legitimate comparison. So the
+// phrase is rendered ONLY for rows the server positively reports as
+// `recipientIsOwner` (the owner's default link, or one from POST
+// /api/links/custom), and omitted for everything else. A lying server can at
+// most hide a phrase here or make it fail to match the sender's — it can't
+// fabricate a match, because the words themselves always come from this
+// account's own key.
+function OwnLinkCodewords({ link, publicKey }: { link: LinkSummary; publicKey: string | null }) {
+  const { t } = useTranslation("home");
+  const codewords = useCodewords(link.recipientIsOwner ? publicKey : null, link.linkId, link.codewordLocale);
+  if (!link.recipientIsOwner || !codewords) return null;
+  return (
+    <span className="ml-2 text-muted-foreground" data-testid={`codewords-${link.slug}`}>
+      {t("codewordsLabel")}: <span className="font-mono">{codewords.join(" · ")}</span>
+    </span>
+  );
+}
 
 export function HomePage() {
   const { t } = useTranslation("home");
@@ -97,6 +124,7 @@ export function HomePage() {
               <li key={link.slug} className="text-sm">
                 <span className="font-mono">{link.slug}</span>
                 {link.revokedAt && <span className="ml-2 text-muted-foreground">{t("revoked")}</span>}
+                <OwnLinkCodewords link={link} publicKey={accountPublicKey(user)} />
               </li>
             ))}
           </ul>

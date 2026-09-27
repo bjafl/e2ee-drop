@@ -78,8 +78,9 @@ export function registerLinkRoutes(server: FastifyInstance): void {
         linkId: link.id,
         slug: link.slug,
         codewords: link.recipientPublicKey
-          ? deriveCodewords(link.recipientPublicKey, link.id, resolveLocale(link.codewordLocale), env.CODEWORD_WORD_COUNT)
+          ? await deriveCodewords(link.recipientPublicKey, link.id, resolveLocale(link.codewordLocale), env.CODEWORD_WORD_COUNT)
           : [],
+        codewordLocale: resolveLocale(link.codewordLocale),
         expiresAt: link.expiresAt.getTime(),
       };
       return reply.send(body);
@@ -180,8 +181,9 @@ export function registerLinkRoutes(server: FastifyInstance): void {
         linkId: link.id,
         slug: link.slug,
         codewords: link.recipientPublicKey
-          ? deriveCodewords(link.recipientPublicKey, link.id, resolveLocale(link.codewordLocale), env.CODEWORD_WORD_COUNT)
+          ? await deriveCodewords(link.recipientPublicKey, link.id, resolveLocale(link.codewordLocale), env.CODEWORD_WORD_COUNT)
           : [],
+        codewordLocale: resolveLocale(link.codewordLocale),
         // Only one-time custom links have a real expiry; a permanent one's
         // expiresAt is null forever, so it's omitted rather than reported as
         // a fake epoch-0 "already expired" timestamp.
@@ -293,7 +295,16 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       where: { ownerId: request.user!.id },
       orderBy: { createdAt: "asc" },
     });
-    const body: ListLinksResponse = { links: links.map(toLinkSummary) };
+    // One lookup for the caller's own publicKey, so toLinkSummary can tell a
+    // link the owner receives on (recipientPublicKey === owner.publicKey)
+    // from a sender-initiated request link (see LinkSummary.recipientIsOwner).
+    const owner = await prisma.user.findUnique({
+      where: { id: request.user!.id },
+      select: { publicKey: true },
+    });
+    const body: ListLinksResponse = {
+      links: links.map((link) => toLinkSummary(link, owner?.publicKey ?? null)),
+    };
     return reply.send(body);
   });
 

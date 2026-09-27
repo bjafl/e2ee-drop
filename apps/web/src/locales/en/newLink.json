@@ -13,5 +13,6 @@
   "retentionDaysLabel": "Delete received files after (days)",
   "createButton": "Create link",
   "success": "Link created:",
+  "codewordsLabel": "Verification words for this link — senders see the same words; confirm them with a sender out-of-band",
   "errors": { "createFailed": "Could not create that link. The name might already be taken." }
 }

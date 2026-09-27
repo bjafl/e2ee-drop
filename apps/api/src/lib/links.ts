@@ -287,8 +287,15 @@ export async function recomputeDeliveryStatus(dropId: string, linkId: string): P
 // Reused nowhere else in this plan but kept as a named export for symmetry
 // with toDropSummary/toLinkStatusResponse, and to keep GET /api/links's
 // route handler thin.
-export function toLinkSummary(link: Link): LinkSummary {
+//
+// `ownerPublicKey` is the owning account's current publicKey (null if unknown):
+// `recipientIsOwner` is the same structural test isClaimedSenderInitiatedLink
+// uses, inverted — a normal owned link always carries the owner's own key
+// (createDefaultLinkForUser, POST /api/links/custom), while a sender-initiated
+// request link carries null (unclaimed) or its claimant's key.
+export function toLinkSummary(link: Link, ownerPublicKey: string | null): LinkSummary {
   return {
+    linkId: link.id,
     slug: link.slug,
     mode: link.mode as LinkSummary["mode"],
     visibility: link.visibility as LinkSummary["visibility"],
@@ -298,6 +305,8 @@ export function toLinkSummary(link: Link): LinkSummary {
     ...(link.revokedAt ? { revokedAt: link.revokedAt.getTime() } : {}),
     ...(link.lastSenderOpenedAt ? { lastSenderOpenedAt: link.lastSenderOpenedAt.getTime() } : {}),
     retentionDays: link.retentionDays,
+    codewordLocale: resolveLocale(link.codewordLocale),
+    recipientIsOwner: ownerPublicKey !== null && link.recipientPublicKey === ownerPublicKey,
   };
 }
 
@@ -387,6 +396,7 @@ export async function toLinkStatusResponse(
         ? (relevantDrops[0] ?? null)
         : null;
   const base: LinkStatusResponse = {
+    linkId: link.id,
     slug: link.slug,
     mode: link.mode as LinkStatusResponse["mode"],
     recipientPublicKey: link.recipientPublicKey,
@@ -394,8 +404,9 @@ export async function toLinkStatusResponse(
     ...(relevantDrops ? { drops: relevantDrops.map((drop) => toDropSummary(drop, link)) } : {}),
     isAnonymous: link.ownerId === null,
     codewords: link.recipientPublicKey
-      ? deriveCodewords(link.recipientPublicKey, link.id, resolveLocale(link.codewordLocale), env.CODEWORD_WORD_COUNT)
+      ? await deriveCodewords(link.recipientPublicKey, link.id, resolveLocale(link.codewordLocale), env.CODEWORD_WORD_COUNT)
       : [], // unclaimed link (design spec §4.2): no recipientPublicKey yet, nothing to derive from
+    codewordLocale: resolveLocale(link.codewordLocale),
     ownerNote: link.ownerNote ?? undefined,
     retentionDays: link.retentionDays,
     expiresAt: link.expiresAt?.getTime(),

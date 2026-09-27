@@ -3,6 +3,7 @@ import { render as rtlRender, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { MemoryRouter } from "react-router-dom";
+import { CODEWORD_WORD_COUNT, deriveCodewords } from "@e2ee-drop/shared";
 import { CreateLinkPage } from "./CreateLinkPage";
 
 function render(ui: ReactElement) {
@@ -23,7 +24,10 @@ describe("CreateLinkPage", () => {
         json: async () => ({
           linkId: "link1",
           slug: "abc123",
+          // Deliberately unrelated to the locally generated key: the page
+          // must never display this server-supplied field (finding F1).
           codewords: ["fox", "river", "lamp", "otter"],
+          codewordLocale: "en",
           expiresAt: SERVER_EXPIRES_AT,
         }),
       })
@@ -48,20 +52,24 @@ describe("CreateLinkPage", () => {
     });
   });
 
-  it("shows only the first few verification codewords until the user asks to see the rest", async () => {
+  // Review finding F1: the creator's phrase comes from the key pair this
+  // page generated locally, not from the response's `codewords` field.
+  it("derives all verification words locally from its own generated key, ignoring the API's codewords", async () => {
     const user = userEvent.setup();
     render(<CreateLinkPage />);
 
     await user.click(screen.getByRole("button", { name: /create/i }));
 
     await waitFor(() => {
-      expect(screen.getByText(/fox.*river.*lamp/i)).toBeInTheDocument();
+      expect(screen.getByTestId("codewords")).toBeInTheDocument();
     });
-    expect(screen.queryByText(/otter/i)).not.toBeInTheDocument();
+    const sent = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string);
+    const expected = await deriveCodewords(sent.recipientPublicKey, "link1", "en", CODEWORD_WORD_COUNT);
+    expect(expected).not.toEqual(["fox", "river", "lamp", "otter"]);
 
-    await user.click(screen.getByRole("button", { name: /show all words/i }));
-
-    expect(screen.getByText(/fox.*river.*lamp.*otter/i)).toBeInTheDocument();
+    expect(screen.getByTestId("codewords")).toHaveTextContent(expected.join(" · "));
+    expect(screen.getByTestId("codewords").textContent!.split(" · ")).toHaveLength(CODEWORD_WORD_COUNT);
+    expect(screen.queryByText(/fox · river · lamp/)).not.toBeInTheDocument();
   });
 
   it("links the recipient to their own download page for the new link", async () => {

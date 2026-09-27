@@ -1,4 +1,6 @@
 // packages/shared/src/api.ts
+import type { CodewordLocale } from "./wordlists";
+
 export type LinkMode = "permanent" | "one-time";
 export type LinkVisibility = "public" | "contacts-only";
 
@@ -21,7 +23,15 @@ export interface CreateLinkRequest {
 export interface CreateLinkResponse {
   linkId: string;
   slug: string;
+  // Server-derived, kept for backward compatibility only (review finding F1):
+  // clients must derive the phrase themselves via deriveCodewords (shared
+  // codewords.ts) from key material they hold, never display this field.
   codewords: string[];
+  // The wordlist this link's phrase uses (Link.codewordLocale). Not
+  // security-sensitive: it only picks which wordlist the locally computed
+  // hash bytes index into, so a wrong value can never make two different
+  // keys' phrases match — it just keeps both sides on the same wordlist.
+  codewordLocale: CodewordLocale;
   expiresAt?: number;
 }
 
@@ -68,6 +78,9 @@ export interface ListDropsResponse {
 }
 
 export interface LinkStatusResponse {
+  // Second input to deriveCodewords (shared codewords.ts), so clients can
+  // derive this link's phrase locally instead of trusting `codewords` below.
+  linkId: string;
   slug: string;
   mode: LinkMode;
   recipientPublicKey: string | null; // null => unclaimed, see design spec §4.2
@@ -82,7 +95,10 @@ export interface LinkStatusResponse {
   // for backward compatibility; other link shapes never set this field.
   drops?: DropSummary[];
   isAnonymous: boolean;
+  // Server-derived, kept for backward compatibility only — see
+  // CreateLinkResponse.codewords. Never display this for the comparison.
   codewords: string[];
+  codewordLocale: CodewordLocale; // see CreateLinkResponse.codewordLocale
   ownerNote?: string;
   retentionDays: number;
   expiresAt?: number; // epoch ms, mirrors CreateLinkResponse's field for an already-created link
@@ -95,6 +111,7 @@ export interface LinkStatusResponse {
 }
 
 export interface LinkSummary {
+  linkId: string; // second input to deriveCodewords, see LinkStatusResponse.linkId
   slug: string;
   mode: LinkMode;
   visibility: LinkVisibility;
@@ -104,6 +121,19 @@ export interface LinkSummary {
   revokedAt?: number; // epoch ms, omitted if not revoked
   lastSenderOpenedAt?: number; // epoch ms, omitted if never opened by a sender
   retentionDays: number;
+  codewordLocale: CodewordLocale; // see CreateLinkResponse.codewordLocale
+  // True iff this link's recipientPublicKey is the owner's own account
+  // publicKey — i.e. the owner IS the recipient (their default link, or one
+  // made via POST /api/links/custom). False for a sender-initiated request
+  // link (POST /api/links/request), unclaimed (no key yet) or claimed (the
+  // key belongs to whoever claimed it, never the owner). The dashboard shows
+  // the owner a locally derived phrase ONLY when this is true: deriving from
+  // the owner's own key for a request link would display a phrase for the
+  // wrong key. A server lying here can only hide the phrase (false) or make
+  // the owner's locally derived phrase fail to match the sender's (true) —
+  // it can never produce a false match, since the words themselves are
+  // always computed client-side from the owner's own key.
+  recipientIsOwner: boolean;
 }
 
 export interface ListLinksResponse {
