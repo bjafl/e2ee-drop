@@ -46,17 +46,20 @@ export function useCodewords(
 }
 
 // The logged-in account's own public key, for surfaces where the account IS
-// the recipient (its own normal links). Prefers the key derived from the
-// private key unwrapped locally at login/register (`user.keyPair`) — genuinely
-// local key material the server cannot substitute. Falls back to
-// `user.publicKey` only when this tab has no unlocked key pair (a session
-// restored from a cookie); that value comes from /api/auth/me, i.e. from the
-// server, which is weaker: an attacker who rewrote BOTH the account's stored
-// publicKey and the link's recipientPublicKey consistently would go unnoticed
-// on this fallback until the user next logs in (after which the local key is
-// used again and the phrases stop matching).
+// the recipient (its own normal links): the public half of the private key
+// unwrapped locally at login/register (`user.keyPair`) — genuinely local key
+// material the server cannot substitute.
+//
+// Deliberately NO fallback to `user.publicKey`: that value comes from the
+// server (/api/auth/me or the login response), and a session restored from a
+// cookie — every reload, new tab or later visit — always has
+// `user.keyPair === null`. Falling back would derive the owner's phrase from a
+// DB-supplied key in the common case, so an attacker who rewrote both
+// `users.publicKey` and a link's `recipientPublicKey` would get matching
+// (wrong) words on both the owner's and the sender's side — exactly what
+// codewords exist to catch. Callers show a re-login hint on null instead,
+// mirroring ReceivePage's `needsRelogin` gate.
 export function accountPublicKey(user: AuthUser | null | undefined): string | null {
-  if (!user) return null;
-  if (user.keyPair) return encodeBase64(user.keyPair.publicKey);
-  return user.publicKey || null;
+  if (!user?.keyPair) return null;
+  return encodeBase64(user.keyPair.publicKey);
 }

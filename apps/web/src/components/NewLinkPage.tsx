@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -33,10 +34,13 @@ export function NewLinkPage() {
   // recipient IS this account (recipientPublicKey = owner.publicKey,
   // server-side) — it never creates a sender-initiated request link — so the
   // phrase the sender will see is derived from this account's own public
-  // key. Derived here from the account's locally held key (accountPublicKey
-  // prefers the key pair unwrapped at login), never from the response's
-  // `codewords` field.
-  const codewords = useCodewords(accountPublicKey(user), created?.linkId, created?.codewordLocale);
+  // key. Derived here from the key pair unwrapped at login (accountPublicKey),
+  // never from the response's `codewords` field nor the server-reported
+  // user.publicKey. Without an unwrapped key pair in this tab (a restored
+  // session) there is nothing trustworthy to derive from, so a re-login hint
+  // is shown instead.
+  const ownPublicKey = accountPublicKey(user);
+  const codewords = useCodewords(ownPublicKey, created?.linkId, created?.codewordLocale);
 
   const submit = async () => {
     setError(null);
@@ -69,6 +73,14 @@ export function NewLinkPage() {
         {created && (
           <p>
             {t("success")} <code>{created.slug}</code>
+          </p>
+        )}
+        {created && !ownPublicKey && (
+          <p className="text-sm text-muted-foreground" data-testid="codewords-relogin">
+            {t("codewordsReloginRequired")}{" "}
+            <Link to="/login" state={{ returnTo: "/" }} className="underline">
+              {t("reloginLink")}
+            </Link>
           </p>
         )}
         {created && codewords && (

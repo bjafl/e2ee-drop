@@ -14,5 +14,7 @@
   "createButton": "Create link",
   "success": "Link created:",
   "codewordsLabel": "Verification words for this link — senders see the same words; confirm them with a sender out-of-band",
+  "codewordsReloginRequired": "Log in again to see this link's verification words — your key isn't unlocked in this tab.",
+  "reloginLink": "Log in again",
   "errors": { "createFailed": "Could not create that link. The name might already be taken." }
 }

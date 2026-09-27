@@ -14,5 +14,7 @@
   "createButton": "Opprett lenke",
   "success": "Lenke opprettet:",
   "codewordsLabel": "Verifiseringsord for denne lenken — avsendere ser de samme ordene; bekreft dem med avsenderen utenom appen",
+  "codewordsReloginRequired": "Logg inn på nytt for å se verifiseringsordene for denne lenken — nøkkelen din er ikke låst opp i denne fanen.",
+  "reloginLink": "Logg inn på nytt",
   "errors": { "createFailed": "Kunne ikke opprette lenken. Navnet kan allerede være i bruk." }
 }

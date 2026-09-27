@@ -248,6 +248,53 @@ describe("HomePage dashboard verification words", () => {
   });
 });
 
+// Review finding F1 (fix): a cookie-restored session — every reload, new tab
+// or later visit — has keyPair null. The dashboard must not fall back to the
+// server-reported user.publicKey; it shows a re-login hint and no phrase.
+describe("HomePage dashboard verification words without an unlocked key pair", () => {
+  const serverReportedKey = encodeBase64(nacl.box.keyPair().publicKey);
+  const baseLink = { mode: "permanent", visibility: "public", createdAt: 1, retentionDays: 7, codewordLocale: "en" };
+
+  function stubLinks(links: unknown[]) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url === "/api/inbox") {
+          return Promise.resolve({ ok: true, json: async () => ({ counterparties: [] }) });
+        }
+        return Promise.resolve({ ok: true, json: async () => ({ links }) });
+      })
+    );
+  }
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    authState.user = { id: "u1", username: "owner", emailVerified: true, publicKey: serverReportedKey, keyPair: null };
+  });
+
+  it("shows a re-login hint and no phrase derived from the server-reported publicKey", async () => {
+    stubLinks([{ ...baseLink, linkId: "default-id", slug: "owner", isDefault: true, recipientIsOwner: true }]);
+    const fromServerKey = await deriveCodewords(serverReportedKey, "default-id", "en", CODEWORD_WORD_COUNT);
+
+    renderHome();
+
+    await waitFor(() => expect(screen.getByTestId("codewords-relogin")).toBeInTheDocument());
+    expect(screen.getByRole("link", { name: /log in again/i })).toHaveAttribute("href", "/login");
+    expect(screen.getByText("owner")).toBeInTheDocument();
+    expect(screen.queryByTestId("codewords-owner")).not.toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(fromServerKey.join(" · ")))).not.toBeInTheDocument();
+  });
+
+  it("shows no re-login hint when there are only request links (nothing to show a phrase for anyway)", async () => {
+    stubLinks([{ ...baseLink, linkId: "request-id", slug: "req-claimed", isDefault: false, recipientIsOwner: false }]);
+
+    renderHome();
+
+    await waitFor(() => expect(screen.getByText("req-claimed")).toBeInTheDocument());
+    expect(screen.queryByTestId("codewords-relogin")).not.toBeInTheDocument();
+  });
+});
+
 describe("HomePage generic landing (unchanged)", () => {
   beforeEach(() => {
     window.localStorage.clear();
