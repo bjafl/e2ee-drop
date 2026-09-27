@@ -21,6 +21,12 @@ export interface AuthUser {
   emailVerified: boolean;
   publicKey: string;
   totpEnabled: boolean;
+  // Undefined immediately after register()/login(), which don't carry this
+  // field on their response bodies (see MeResponse vs. LoginResponse) —
+  // callers should treat undefined the same as the DB default (true), the
+  // way AccountPage does. Always defined once the initial /api/auth/me
+  // session restore below has settled.
+  allowContactRequests?: boolean;
   keyPair: nacl.BoxKeyPair | null;
 }
 
@@ -63,6 +69,12 @@ interface AuthContextValue {
   login: (email: string, password: string, totpCode?: string) => Promise<{ requiresTotp: boolean }>;
   logout: () => Promise<void>;
   register: (input: RegisterInput) => Promise<{ recoveryCode: string }>;
+  // Merges `partial` into the cached user in place, with no network call.
+  // For a caller that just received an authoritative new value from an API
+  // response (e.g. 2FA enable/disable, email verification confirm) and needs
+  // the cached user reflected immediately, instead of only after the next
+  // full reload or /api/auth/me re-fetch. A no-op while logged out.
+  patchUser: (partial: Partial<AuthUser>) => void;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -84,6 +96,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           emailVerified: data.emailVerified,
           publicKey: data.publicKey,
           totpEnabled: data.totpEnabled,
+          allowContactRequests: data.allowContactRequests,
           keyPair: null,
         });
       })
@@ -192,6 +205,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     []
   );
 
+  const patchUser = useCallback((partial: Partial<AuthUser>) => {
+    setUser((current) => (current ? { ...current, ...partial } : current));
+  }, []);
+
   const logout = useCallback(async () => {
     // Clear local state even if the request fails: the decrypted private key
     // in `user.keyPair` must not outlive a logout (or an account deletion).
@@ -202,7 +219,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  return <AuthContext.Provider value={{ user, loading, login, logout, register }}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={{ user, loading, login, logout, register, patchUser }}>
+      {children}
+    </AuthContext.Provider>
+  );
 }
 
 export function useAuth(): AuthContextValue {

@@ -200,6 +200,100 @@ describe("UploadPage", () => {
     });
   });
 
+  it("shows an enabled connect button that POSTs a contact request for an authenticated viewer when the owner allows contact requests", async () => {
+    // Spec §5: the connect action requires the *viewer* (not just the link
+    // owner) to be authenticated — an unlocked keyPair here means a genuine
+    // same-tab login, same convention the send-flow tests above use.
+    authState.user = { id: "u1", keyPair: { publicKey: new Uint8Array([1]), secretKey: new Uint8Array([2]) } };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ...LINK_RESPONSE,
+        recipientName: "Ada Lovelace",
+        recipientUsername: "ada",
+        recipientEmailVerified: true,
+        recipientTotpEnabled: true,
+        recipientAllowContactRequests: true,
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAt("ada");
+
+    const connectButton = await screen.findByRole("button", { name: /connect/i });
+    expect(connectButton).not.toBeDisabled();
+
+    fireEvent.click(connectButton);
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/contacts",
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: "ada" }),
+        })
+      );
+    });
+  });
+
+  it("disables the connect button when the owner does not allow contact requests", async () => {
+    authState.user = { id: "u1", keyPair: { publicKey: new Uint8Array([1]), secretKey: new Uint8Array([2]) } };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          ...LINK_RESPONSE,
+          recipientName: "Ada Lovelace",
+          recipientUsername: "ada",
+          recipientEmailVerified: true,
+          recipientTotpEnabled: true,
+          recipientAllowContactRequests: false,
+        }),
+      })
+    );
+
+    renderAt("ada");
+
+    const connectButton = await screen.findByRole("button", { name: /connect/i });
+    expect(connectButton).toBeDisabled();
+  });
+
+  it("disables the connect button (and does not POST on click) for an anonymous viewer, even when the owner allows contact requests", async () => {
+    // authState.user is left at its beforeEach default of null (anonymous viewer).
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ...LINK_RESPONSE,
+        recipientName: "Ada Lovelace",
+        recipientUsername: "ada",
+        recipientEmailVerified: true,
+        recipientTotpEnabled: true,
+        recipientAllowContactRequests: true,
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAt("ada");
+
+    const connectButton = await screen.findByRole("button", { name: /connect/i });
+    expect(connectButton).toBeDisabled();
+
+    fireEvent.click(connectButton);
+
+    expect(fetchMock).not.toHaveBeenCalledWith("/api/contacts", expect.anything());
+  });
+
+  it("does not show a connect button for an anonymous/unowned link", async () => {
+    renderAt("abc123");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("recipient-badge")).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("button", { name: /connect/i })).not.toBeInTheDocument();
+  });
+
   it("shows a waiting message instead of the form when the link is unclaimed", async () => {
     vi.stubGlobal(
       "fetch",

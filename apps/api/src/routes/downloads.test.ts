@@ -958,6 +958,11 @@ describe("sender-initiated link receive access (finding C1)", () => {
     claimantPublicKey = "claimant-pubkey"
   ) {
     const initiator = await registerAndGetCookie(server, initiatorUsername);
+    // isLinkInactive (wired into the claim handler by this fix) treats an
+    // unverified owner's links as inactive, so the claim below would 404
+    // without this — these tests are about receive-side access, not
+    // verification.
+    await prisma.user.update({ where: { username: initiatorUsername }, data: { emailVerified: true } });
     const requestRes = await server.inject({
       method: "POST",
       url: "/api/links/request",

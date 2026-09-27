@@ -534,6 +534,37 @@ describe("upload routes", () => {
     expect(drop?.fileUploadStatus).toBe("uploading");
   });
 
+  // Finding 2 (final review): upload-url and complete used to check only
+  // isLinkExpired, so a revoked link could still accept new uploads and
+  // complete in-progress ones even though GET /api/links/:slug already 404s
+  // it. Both now switch to isLinkInactive.
+  it("returns 404 from upload-url on a revoked link", async () => {
+    const server = buildServer();
+    const slug = await createLink(server);
+    await prisma.link.updateMany({ where: { slug }, data: { revokedAt: new Date() } });
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+      payload: uploadPayload(),
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(await prisma.drop.count({ where: { linkId: (await prisma.link.findUniqueOrThrow({ where: { slug } })).id } })).toBe(0);
+  });
+
+  it("returns 404 when completing a drop on a revoked link", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithUploadingDrop(server);
+    await prisma.link.updateMany({ where: { slug }, data: { revokedAt: new Date() } });
+
+    const res = await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/complete` });
+
+    expect(res.statusCode).toBe(404);
+    const drop = await prisma.drop.findUnique({ where: { id: dropId } });
+    expect(drop?.fileUploadStatus).toBe("uploading");
+  });
+
   it("abandon deletes a still-uploading drop and frees a one-time link's slot", async () => {
     const server = buildServer();
     const { slug, dropId } = await createLinkWithUploadingDrop(server);
@@ -610,6 +641,22 @@ describe("upload routes", () => {
     expect(deleteObjectSpy).not.toHaveBeenCalled();
   });
 
+  // Finding 2 (final review): unlike upload-url/complete, abandon deliberately
+  // stays on isLinkExpired — a sender must always be able to clean up/cancel
+  // their own stuck in-progress upload, even after the link was revoked out
+  // from under it.
+  it("still allows abandoning an in-progress upload on a revoked link", async () => {
+    const server = buildServer();
+    const { slug, dropId } = await createLinkWithUploadingDrop(server);
+    await prisma.link.updateMany({ where: { slug }, data: { revokedAt: new Date() } });
+
+    const res = await server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/abandon` });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ abandoned: true });
+    expect(await prisma.drop.findUnique({ where: { id: dropId } })).toBeNull();
+  });
+
   it("emits drop-created on upload-url and drop-updated(complete) on a successful complete only", async () => {
     const server = buildServer();
     const slug = await createLink(server);
@@ -647,6 +694,7 @@ describe("upload routes", () => {
   it("rejects an anonymous sender on a contacts-only link", async () => {
     const server = buildServer();
     const owner = await registerAndGetCookie(server, "coowner");
+    await prisma.user.update({ where: { username: "coowner" }, data: { emailVerified: true } });
     const link = await prisma.link.create({
       data: {
         ownerId: owner.userId, slug: "contacts-only-test", mode: "permanent",
@@ -660,12 +708,16 @@ describe("upload routes", () => {
       payload: uploadPayload(),
     });
 
-    expect(response.statusCode).toBe(403);
+    // Finding 3 (final review): a contacts-only link must be indistinguishable
+    // from a nonexistent one, same as GET /api/links/:slug — a 403 leaked its
+    // existence.
+    expect(response.statusCode).toBe(404);
   });
 
   it("rejects an authenticated but non-contact sender on a contacts-only link", async () => {
     const server = buildServer();
     const owner = await registerAndGetCookie(server, "coowner2");
+    await prisma.user.update({ where: { username: "coowner2" }, data: { emailVerified: true } });
     const stranger = await registerAndGetCookie(server, "stranger");
     const link = await prisma.link.create({
       data: {
@@ -681,12 +733,13 @@ describe("upload routes", () => {
       cookies: stranger.cookies,
     });
 
-    expect(response.statusCode).toBe(403);
+    expect(response.statusCode).toBe(404);
   });
 
   it("rejects a sender whose contact request is still pending (not yet accepted)", async () => {
     const server = buildServer();
     const owner = await registerAndGetCookie(server, "coowner2b");
+    await prisma.user.update({ where: { username: "coowner2b" }, data: { emailVerified: true } });
     const pendingSender = await registerAndGetCookie(server, "pendingsender");
     await prisma.contact.create({
       data: { userId: pendingSender.userId, contactUserId: owner.userId, status: "pending" },
@@ -705,12 +758,13 @@ describe("upload routes", () => {
       cookies: pendingSender.cookies,
     });
 
-    expect(response.statusCode).toBe(403);
+    expect(response.statusCode).toBe(404);
   });
 
   it("allows an accepted contact to upload to a contacts-only link", async () => {
     const server = buildServer();
     const owner = await registerAndGetCookie(server, "coowner3");
+    await prisma.user.update({ where: { username: "coowner3" }, data: { emailVerified: true } });
     const friend = await registerAndGetCookie(server, "friend");
     await prisma.contact.create({ data: { userId: owner.userId, contactUserId: friend.userId, status: "accepted" } });
     const link = await prisma.link.create({
@@ -736,6 +790,7 @@ describe("upload routes", () => {
   it("gives a stranger no drop id to hijack an accepted contact's in-progress upload on an owned link", async () => {
     const server = buildServer();
     const owner = await registerAndGetCookie(server, "hijackvictim");
+    await prisma.user.update({ where: { username: "hijackvictim" }, data: { emailVerified: true } });
     const friend = await registerAndGetCookie(server, "hijackfriend");
     await prisma.contact.create({ data: { userId: owner.userId, contactUserId: friend.userId, status: "accepted" } });
     const link = await prisma.link.create({
@@ -756,7 +811,7 @@ describe("upload routes", () => {
 
     // The stranger's only view of the link: it must not reveal the drop id.
     const status = await server.inject({ method: "GET", url: `/api/links/${link.slug}` });
-    expect(status.json().drop).toBeNull();
+    expect(status.statusCode).toBe(404);
     expect(status.body).not.toContain(dropId);
 
     // Without the id, a complete call can only name some other id, which the
@@ -778,6 +833,7 @@ describe("upload routes", () => {
   it("still allows an anonymous sender on a public permanent link", async () => {
     const server = buildServer();
     const owner = await registerAndGetCookie(server, "coowner4");
+    await prisma.user.update({ where: { username: "coowner4" }, data: { emailVerified: true } });
     const link = await prisma.link.create({
       data: { ownerId: owner.userId, slug: "public-permanent-test", mode: "permanent", recipientPublicKey: "coowner4-pubkey", retentionDays: 7 },
     });
@@ -841,6 +897,7 @@ describe("upload routes", () => {
     it("allows up to the limit, then 429s the same IP without reserving quota, while other senders to the same link are unaffected", async () => {
       const server = buildServer();
       const { userId } = await registerAndGetCookie(server, "inbox");
+      await prisma.user.update({ where: { username: "inbox" }, data: { emailVerified: true } });
       const upload = (ip: string) =>
         server.inject({
           method: "POST",

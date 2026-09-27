@@ -15,7 +15,7 @@ interface ContactSummary {
   id: string;
   userId: string;
   username: string;
-  status: "pending" | "accepted";
+  status: "pending" | "accepted" | "blocked";
   direction: "incoming" | "outgoing";
 }
 
@@ -23,6 +23,7 @@ export function ContactsPage() {
   const { t } = useTranslation("contacts");
   const [pending, setPending] = useState<ContactSummary[]>([]);
   const [accepted, setAccepted] = useState<ContactSummary[]>([]);
+  const [blocked, setBlocked] = useState<ContactSummary[]>([]);
   const [usernameInput, setUsernameInput] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -32,6 +33,10 @@ export function ContactsPage() {
     const data = await res.json();
     setPending(data.pending);
     setAccepted(data.accepted);
+    // `blocked` holds only rows the caller themselves blocked (see
+    // apps/api/src/lib/contacts.ts listContacts) — a row blocked against the
+    // caller by the other party never appears in this response at all.
+    setBlocked(data.blocked ?? []);
   }, []);
 
   useEffect(() => {
@@ -64,6 +69,16 @@ export function ContactsPage() {
   // which checks membership in the relationship, not a specific role).
   const reject = async (id: string) => {
     await fetch(`/api/contacts/${id}/reject`, { method: "POST" });
+    await reload();
+  };
+
+  const block = async (id: string) => {
+    await fetch(`/api/contacts/${id}/block`, { method: "POST" });
+    await reload();
+  };
+
+  const unblock = async (id: string) => {
+    await fetch(`/api/contacts/${id}/unblock`, { method: "POST" });
     await reload();
   };
 
@@ -117,8 +132,25 @@ export function ContactsPage() {
           {accepted.map((contact) => (
             <div key={contact.id} className="flex items-center justify-between py-1">
               <span>{contact.username}</span>
-              <Button asChild size="sm">
-                <Link to={`/send/${contact.username}`}>{t("sendFileButton")}</Link>
+              <div className="flex gap-2">
+                <Button asChild size="sm">
+                  <Link to={`/send/${contact.username}`}>{t("sendFileButton")}</Link>
+                </Button>
+                <Button size="sm" variant="destructive" onClick={() => block(contact.id)}>
+                  {t("blockButton")}
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div>
+          <h2 className="font-semibold">{t("blockedHeading")}</h2>
+          {blocked.map((contact) => (
+            <div key={contact.id} className="flex items-center justify-between py-1">
+              <span>{contact.username}</span>
+              <Button size="sm" variant="secondary" onClick={() => unblock(contact.id)}>
+                {t("unblockButton")}
               </Button>
             </div>
           ))}

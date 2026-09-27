@@ -8,6 +8,7 @@
   "emailUnverified": "E-post ikke verifisert",
   "totpEnabled": "Tofaktorautentisering aktivert",
   "totpDisabled": "Tofaktorautentisering ikke aktivert",
+  "connectButton": "Koble til",
   "codewordsLabel": "Verifiseringsord — be mottakeren bekrefte at disse stemmer",
   "messagePlaceholder": "Valgfri melding (ende-til-ende-kryptert sammen med filen)",
   "ownerNoteWarning": "Dette notatet er skrevet av lenkens eier og er ikke ende-til-ende-kryptert.",

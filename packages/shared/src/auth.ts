@@ -59,6 +59,7 @@ export interface MeResponse {
   passwordSalt: string;
   passwordWrappedPrivateKey: string;
   totpEnabled: boolean;
+  allowContactRequests: boolean;
 }
 
 export interface PasswordResetRequestRequest {
@@ -71,6 +72,16 @@ export interface PasswordResetRequestRequest {
 // UI can avoid claiming "check your email" when no email can ever be sent.
 export interface PasswordResetRequestResponse {
   requested: true;
+  emailDeliveryAvailable: boolean;
+}
+
+// Returned by both the registration side-effect (implicitly, via RegisterResponse
+// being unchanged) and by /api/auth/verify-email/resend. Mirrors
+// PasswordResetRequestResponse's emailDeliveryAvailable pattern: whether an email
+// could actually be sent depends only on server SMTP configuration, never on
+// anything about the specific account, so it's safe to expose unconditionally.
+export interface EmailVerificationResendResponse {
+  sent: true;
   emailDeliveryAvailable: boolean;
 }
 
@@ -106,6 +117,19 @@ export interface TotpSetupResponse {
   otpauthUrl: string;
 }
 
+// POST /api/auth/2fa/backup-codes/regenerate response, and also returned inline
+// (as the `backupCodes` field) by /api/auth/2fa/enable's own success response,
+// so enabling 2FA doesn't need a second round-trip to see the initial batch.
+// Plaintext codes exist only in this one response body, never again.
+export interface TotpBackupCodesResponse {
+  backupCodes: string[]; // e.g. ["a3f9k-7h2mq", ...] — exactly 10 entries
+}
+
 export interface TotpEnableRequest {
   code: string;
+}
+
+// Response to POST /api/auth/2fa/enable merges these fields with TotpBackupCodesResponse.
+export interface TotpEnableResponse extends TotpBackupCodesResponse {
+  enabled: true;
 }

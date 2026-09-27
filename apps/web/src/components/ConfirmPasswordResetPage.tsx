@@ -270,6 +270,8 @@ export function ConfirmPasswordResetPage() {
                   id="reset-totp"
                   autoComplete="one-time-code"
                   inputMode="numeric"
+                  autoCapitalize="off"
+                  spellCheck={false}
                   value={totpCode}
                   onChange={(e) => setTotpCode(e.target.value)}
                   className="w-full rounded border p-2"
@@ -312,6 +314,8 @@ export function ConfirmPasswordResetPage() {
                   id="fresh-reset-totp"
                   autoComplete="one-time-code"
                   inputMode="numeric"
+                  autoCapitalize="off"
+                  spellCheck={false}
                   value={totpCode}
                   onChange={(e) => setTotpCode(e.target.value)}
                   className="w-full rounded border p-2"

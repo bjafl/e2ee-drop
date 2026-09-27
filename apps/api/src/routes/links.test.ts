@@ -317,6 +317,7 @@ describe("link routes", () => {
   it("creates a custom named link for the authenticated owner", async () => {
     const server = buildServer();
     const owner = await registerAndGetCookie(server, "customownera");
+    await prisma.user.update({ where: { username: "customownera" }, data: { emailVerified: true } });
 
     const response = await server.inject({
       method: "POST",
@@ -338,6 +339,8 @@ describe("link routes", () => {
     const server = buildServer();
     const ownerA = await registerAndGetCookie(server, "customownerb");
     const ownerB = await registerAndGetCookie(server, "customownerc");
+    await prisma.user.update({ where: { username: "customownerb" }, data: { emailVerified: true } });
+    await prisma.user.update({ where: { username: "customownerc" }, data: { emailVerified: true } });
 
     const first = await server.inject({
       method: "POST",
@@ -472,6 +475,7 @@ describe("link routes", () => {
     it("accepts contacts-only and defaults an omitted visibility to public", async () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "visowner2");
+      await prisma.user.update({ where: { username: "visowner2" }, data: { emailVerified: true } });
 
       const contactsOnly = await server.inject({
         method: "POST",
@@ -528,6 +532,15 @@ describe("link routes", () => {
     });
   });
 
+  it("rejects POST /api/links/custom from an unverified account", async () => {
+    const server = buildServer();
+    const { cookies } = await registerAndGetCookie(server, "unverified-creator");
+    // emailVerified defaults to false — no update call, unlike the other tests in this file.
+    const res = await server.inject({ method: "POST", url: "/api/links/custom", cookies, payload: { slug: "should-fail", mode: "permanent" } });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toMatch(/verif/i);
+  });
+
   describe("GET /api/links/:slug never leaks an owned link's drop", () => {
     async function createOwnedLinkWithDrop(
       ownerId: string,
@@ -570,9 +583,14 @@ describe("link routes", () => {
       expect(body).not.toContain("LEAKED-MESSAGE-MARKER");
     }
 
-    it("returns drop: null to an anonymous stranger on a contacts-only owned link with an in-progress drop", async () => {
+    // Now that GET /:slug enforces contacts-only visibility (this plan's Task 4),
+    // an anonymous stranger gets a plain 404 for a contacts-only link rather than
+    // a 200 with drop: null — but the no-leak property must still hold on that
+    // 404 body.
+    it("404s a contacts-only owned link with an in-progress drop for an anonymous stranger, leaking nothing", async () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "leakvictim");
+      await prisma.user.update({ where: { username: "leakvictim" }, data: { emailVerified: true } });
       const { link, drop } = await createOwnedLinkWithDrop(
         owner.userId,
         "leak-contacts",
@@ -583,14 +601,14 @@ describe("link routes", () => {
 
       const response = await server.inject({ method: "GET", url: `/api/links/${link.slug}` });
 
-      expect(response.statusCode).toBe(200);
-      expect(response.json().drop).toBeNull();
+      expect(response.statusCode).toBe(404);
       expectNoLeak(response.body, drop);
     });
 
     it("returns drop: null on a public owned link with an uploaded drop, including to a logged-in non-owner", async () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "leakvictim2");
+      await prisma.user.update({ where: { username: "leakvictim2" }, data: { emailVerified: true } });
       const stranger = await registerAndGetCookie(server, "leakstranger");
       const { link, drop } = await createOwnedLinkWithDrop(
         owner.userId,
@@ -612,6 +630,7 @@ describe("link routes", () => {
     it("returns drop: null on a user's default link (slug = username)", async () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "leakvictim3");
+      await prisma.user.update({ where: { username: "leakvictim3" }, data: { emailVerified: true } });
       const link = await prisma.link.findFirstOrThrow({ where: { ownerId: owner.userId, isDefault: true } });
       const drop = await prisma.drop.create({
         data: {
@@ -639,6 +658,7 @@ describe("link routes", () => {
     it("returns drop: null on an owned link with no drops (unchanged)", async () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "leakvictim4");
+      await prisma.user.update({ where: { username: "leakvictim4" }, data: { emailVerified: true } });
       const link = await prisma.link.create({
         data: {
           ownerId: owner.userId,
@@ -751,6 +771,7 @@ describe("link routes", () => {
     it("advances deliveryStatus for a non-owner on a claimed sender-initiated link", async () => {
       const server = buildServer();
       const initiator = await registerAndGetCookie(server, "markopenedinitiator");
+      await prisma.user.update({ where: { username: "markopenedinitiator" }, data: { emailVerified: true } });
       const requestRes = await server.inject({
         method: "POST",
         url: "/api/links/request",
@@ -809,6 +830,7 @@ describe("link routes", () => {
     it("creates an unclaimed link owned by the authenticated user", async () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "requester");
+      await prisma.user.update({ where: { username: "requester" }, data: { emailVerified: true } });
 
       const res = await server.inject({
         method: "POST",
@@ -857,6 +879,7 @@ describe("link routes", () => {
     it("claims an unclaimed link", async () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "claimowner1");
+      await prisma.user.update({ where: { username: "claimowner1" }, data: { emailVerified: true } });
       const requestRes = await server.inject({
         method: "POST",
         url: "/api/links/request",
@@ -878,6 +901,7 @@ describe("link routes", () => {
     it("rejects claiming an already-claimed link", async () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "claimowner2");
+      await prisma.user.update({ where: { username: "claimowner2" }, data: { emailVerified: true } });
       const requestRes = await server.inject({
         method: "POST",
         url: "/api/links/request",
@@ -943,9 +967,38 @@ describe("link routes", () => {
       expect(res.statusCode).toBe(404);
     });
 
+    // Finding 2 (final review): the claim handler used to check only
+    // isLinkExpired, so a revoked link could still be claimed even though
+    // GET /api/links/:slug already 404s it.
+    it("404s a claim attempt on a revoked link", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "claimowner5");
+      await prisma.user.update({ where: { username: "claimowner5" }, data: { emailVerified: true } });
+      const requestRes = await server.inject({
+        method: "POST",
+        url: "/api/links/request",
+        payload: {},
+        cookies: owner.cookies,
+      });
+      const { slug } = requestRes.json();
+
+      const revoke = await server.inject({ method: "POST", url: `/api/links/${slug}/revoke`, cookies: owner.cookies });
+      expect(revoke.statusCode).toBe(200);
+
+      const res = await server.inject({
+        method: "POST",
+        url: `/api/links/${slug}/claim`,
+        payload: { recipientPublicKey: "x" },
+      });
+      expect(res.statusCode).toBe(404);
+      const link = await prisma.link.findUniqueOrThrow({ where: { slug } });
+      expect(link.recipientPublicKey).toBeNull();
+    });
+
     it("resolves true concurrency to exactly one winner", async () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "claimowner4");
+      await prisma.user.update({ where: { username: "claimowner4" }, data: { emailVerified: true } });
       const requestRes = await server.inject({
         method: "POST",
         url: "/api/links/request",
@@ -971,6 +1024,7 @@ describe("link routes", () => {
     it("emits a link-claimed SSE event once the claim CAS wins, and not on a losing claim", async () => {
       const server = buildServer();
       const owner = await registerAndGetCookie(server, "claimeventowner");
+      await prisma.user.update({ where: { username: "claimeventowner" }, data: { emailVerified: true } });
       const requestRes = await server.inject({
         method: "POST",
         url: "/api/links/request",
@@ -1007,6 +1061,7 @@ describe("link routes", () => {
   describe("finding C1: sender-initiated flow is reachable end-to-end via GET /api/links/:slug", () => {
     async function requestAndClaim(server: ReturnType<typeof buildServer>, username: string) {
       const initiator = await registerAndGetCookie(server, username);
+      await prisma.user.update({ where: { username }, data: { emailVerified: true } });
       const requestRes = await server.inject({
         method: "POST",
         url: "/api/links/request",
@@ -1062,6 +1117,356 @@ describe("link routes", () => {
       expect(body.drops.map((d: { id: string }) => d.id).sort()).toEqual([first.id, second.id].sort());
       // The legacy singular field is still present too, for any consumer still reading it.
       expect(body.drop).not.toBeNull();
+    });
+  });
+
+  describe("POST /api/links/:slug/revoke, /unrevoke, and PATCH /api/links/:slug", () => {
+    it("lets the owner revoke and unrevoke their own link", async () => {
+      const server = buildServer();
+      const { cookies } = await registerAndGetCookie(server, "revoker");
+      await prisma.user.update({ where: { username: "revoker" }, data: { emailVerified: true } });
+      const create = await server.inject({
+        method: "POST", url: "/api/links/custom", cookies,
+        payload: { slug: "revoke-me", mode: "permanent" },
+      });
+      expect(create.statusCode).toBe(200);
+
+      const revoke = await server.inject({ method: "POST", url: "/api/links/revoke-me/revoke", cookies });
+      expect(revoke.statusCode).toBe(200);
+      const link = await prisma.link.findUniqueOrThrow({ where: { slug: "revoke-me" } });
+      expect(link.revokedAt).not.toBeNull();
+
+      const unrevoke = await server.inject({ method: "POST", url: "/api/links/revoke-me/unrevoke", cookies });
+      expect(unrevoke.statusCode).toBe(200);
+      const relinked = await prisma.link.findUniqueOrThrow({ where: { slug: "revoke-me" } });
+      expect(relinked.revokedAt).toBeNull();
+    });
+
+    it("rejects revoke from a non-owner", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "owner1");
+      await prisma.user.update({ where: { username: "owner1" }, data: { emailVerified: true } });
+      await server.inject({ method: "POST", url: "/api/links/custom", cookies: owner.cookies, payload: { slug: "not-yours", mode: "permanent" } });
+
+      const stranger = await registerAndGetCookie(server, "stranger1");
+      const attempt = await server.inject({ method: "POST", url: "/api/links/not-yours/revoke", cookies: stranger.cookies });
+      expect(attempt.statusCode).toBe(403);
+    });
+
+    it("lets the owner change visibility via PATCH", async () => {
+      const server = buildServer();
+      const { cookies } = await registerAndGetCookie(server, "patcher");
+      await prisma.user.update({ where: { username: "patcher" }, data: { emailVerified: true } });
+      await server.inject({ method: "POST", url: "/api/links/custom", cookies, payload: { slug: "patch-me", mode: "permanent" } });
+
+      const patch = await server.inject({ method: "PATCH", url: "/api/links/patch-me", cookies, payload: { visibility: "contacts-only" } });
+      expect(patch.statusCode).toBe(200);
+      const link = await prisma.link.findUniqueOrThrow({ where: { slug: "patch-me" } });
+      expect(link.visibility).toBe("contacts-only");
+    });
+
+    it("rejects an unowned (anonymous) link revoke with 403, never a silent success", async () => {
+      const server = buildServer();
+      const anon = await server.inject({ method: "POST", url: "/api/links", payload: { recipientPublicKey: "anon-pk" } });
+      const slug = anon.json().slug as string;
+      const { cookies } = await registerAndGetCookie(server, "someuser");
+      const revoke = await server.inject({ method: "POST", url: `/api/links/${slug}/revoke`, cookies });
+      expect(revoke.statusCode).toBe(403);
+    });
+  });
+
+  describe("GET /api/links/:slug enforces contacts-only visibility and link inactivity", () => {
+    it("404s a contacts-only link for an anonymous requester", async () => {
+      const server = buildServer();
+      const { cookies } = await registerAndGetCookie(server, "co-owner");
+      await prisma.user.update({ where: { username: "co-owner" }, data: { emailVerified: true } });
+      await server.inject({
+        method: "POST",
+        url: "/api/links/custom",
+        cookies,
+        payload: { slug: "co-link", mode: "permanent", visibility: "contacts-only" },
+      });
+
+      const anonView = await server.inject({ method: "GET", url: "/api/links/co-link" });
+      expect(anonView.statusCode).toBe(404);
+    });
+
+    it("shows a contacts-only link to an accepted contact", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "co-owner2");
+      await prisma.user.update({ where: { username: "co-owner2" }, data: { emailVerified: true } });
+      await server.inject({
+        method: "POST",
+        url: "/api/links/custom",
+        cookies: owner.cookies,
+        payload: { slug: "co-link2", mode: "permanent", visibility: "contacts-only" },
+      });
+
+      const friend = await registerAndGetCookie(server, "co-friend");
+      const req = await server.inject({
+        method: "POST",
+        url: "/api/contacts",
+        cookies: friend.cookies,
+        payload: { username: "co-owner2" },
+      });
+      await server.inject({ method: "POST", url: `/api/contacts/${req.json().id}/accept`, cookies: owner.cookies });
+
+      const friendView = await server.inject({
+        method: "GET",
+        url: "/api/links/co-link2",
+        cookies: friend.cookies,
+      });
+      expect(friendView.statusCode).toBe(200);
+    });
+
+    it("404s a revoked link on GET", async () => {
+      const server = buildServer();
+      const { cookies } = await registerAndGetCookie(server, "revoke-view");
+      await prisma.user.update({ where: { username: "revoke-view" }, data: { emailVerified: true } });
+      await server.inject({
+        method: "POST",
+        url: "/api/links/custom",
+        cookies,
+        payload: { slug: "revoke-view-link", mode: "permanent" },
+      });
+      await server.inject({ method: "POST", url: "/api/links/revoke-view-link/revoke", cookies });
+
+      const view = await server.inject({ method: "GET", url: "/api/links/revoke-view-link" });
+      expect(view.statusCode).toBe(404);
+    });
+
+    // Scope addition to this plan (decided post-final-review): a block
+    // relationship must override visibility entirely, on BOTH public and
+    // contacts-only links, and must produce a 404 byte-identical to a
+    // genuinely nonexistent link — mirroring the masking discipline already
+    // used for the POST /api/contacts path (contacts.test.ts's block tests).
+    it("404s a PUBLIC link for a requester who blocked the owner", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "block-pub-owner");
+      await prisma.user.update({ where: { username: "block-pub-owner" }, data: { emailVerified: true } });
+      await server.inject({
+        method: "POST",
+        url: "/api/links/custom",
+        cookies: owner.cookies,
+        payload: { slug: "block-pub-link", mode: "permanent", visibility: "public" },
+      });
+
+      const blocker = await registerAndGetCookie(server, "block-pub-blocker");
+      const req = await server.inject({
+        method: "POST",
+        url: "/api/contacts",
+        cookies: blocker.cookies,
+        payload: { username: "block-pub-owner" },
+      });
+      const block = await server.inject({
+        method: "POST",
+        url: `/api/contacts/${req.json().id}/block`,
+        cookies: blocker.cookies,
+      });
+      expect(block.statusCode).toBe(200);
+
+      const view = await server.inject({
+        method: "GET",
+        url: "/api/links/block-pub-link",
+        cookies: blocker.cookies,
+      });
+      expect(view.statusCode).toBe(404);
+    });
+
+    it("404s a PUBLIC link for a requester the owner blocked (other direction)", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "block-pub-owner2");
+      await prisma.user.update({ where: { username: "block-pub-owner2" }, data: { emailVerified: true } });
+      await server.inject({
+        method: "POST",
+        url: "/api/links/custom",
+        cookies: owner.cookies,
+        payload: { slug: "block-pub-link2", mode: "permanent", visibility: "public" },
+      });
+
+      const blocked = await registerAndGetCookie(server, "block-pub-blocked2");
+      const req = await server.inject({
+        method: "POST",
+        url: "/api/contacts",
+        cookies: owner.cookies,
+        payload: { username: "block-pub-blocked2" },
+      });
+      const block = await server.inject({
+        method: "POST",
+        url: `/api/contacts/${req.json().id}/block`,
+        cookies: owner.cookies,
+      });
+      expect(block.statusCode).toBe(200);
+
+      const view = await server.inject({
+        method: "GET",
+        url: "/api/links/block-pub-link2",
+        cookies: blocked.cookies,
+      });
+      expect(view.statusCode).toBe(404);
+    });
+
+    it("404s a CONTACTS-ONLY link for a block, even between parties who were previously accepted contacts", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "block-co-owner");
+      await prisma.user.update({ where: { username: "block-co-owner" }, data: { emailVerified: true } });
+      await server.inject({
+        method: "POST",
+        url: "/api/links/custom",
+        cookies: owner.cookies,
+        payload: { slug: "block-co-link", mode: "permanent", visibility: "contacts-only" },
+      });
+
+      const friend = await registerAndGetCookie(server, "block-co-friend");
+      const req = await server.inject({
+        method: "POST",
+        url: "/api/contacts",
+        cookies: friend.cookies,
+        payload: { username: "block-co-owner" },
+      });
+      await server.inject({ method: "POST", url: `/api/contacts/${req.json().id}/accept`, cookies: owner.cookies });
+
+      // Confirm the contacts-only link is visible to the accepted contact
+      // BEFORE the block, so the later 404 is provably caused by the block
+      // check and not merely a duplicate of the existing non-contact 404.
+      const beforeBlock = await server.inject({
+        method: "GET",
+        url: "/api/links/block-co-link",
+        cookies: friend.cookies,
+      });
+      expect(beforeBlock.statusCode).toBe(200);
+
+      const block = await server.inject({
+        method: "POST",
+        url: `/api/contacts/${req.json().id}/block`,
+        cookies: owner.cookies,
+      });
+      expect(block.statusCode).toBe(200);
+
+      const afterBlock = await server.inject({
+        method: "GET",
+        url: "/api/links/block-co-link",
+        cookies: friend.cookies,
+      });
+      expect(afterBlock.statusCode).toBe(404);
+    });
+
+    it("GET/POST consistency: after a block, both the link GET and the contact POST look identical to a nonexistent target", async () => {
+      // Mirrors contacts.test.ts's "blocks an incoming pending request, and
+      // the blocked party sees the same error as a nonexistent user on
+      // retry" pattern, extended to also assert the link GET side, in one
+      // test that proves both paths are consistent WITH EACH OTHER, not
+      // just individually correct.
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "consist-owner");
+      await prisma.user.update({ where: { username: "consist-owner" }, data: { emailVerified: true } });
+      await server.inject({
+        method: "POST",
+        url: "/api/links/custom",
+        cookies: owner.cookies,
+        payload: { slug: "consist-link", mode: "permanent", visibility: "public" },
+      });
+
+      const blocked = await registerAndGetCookie(server, "consist-blocked");
+      const req = await server.inject({
+        method: "POST",
+        url: "/api/contacts",
+        cookies: blocked.cookies,
+        payload: { username: "consist-owner" },
+      });
+      const block = await server.inject({
+        method: "POST",
+        url: `/api/contacts/${req.json().id}/block`,
+        cookies: owner.cookies,
+      });
+      expect(block.statusCode).toBe(200);
+
+      // (a) GET on the blocked party's link vs. GET on a genuinely nonexistent slug.
+      const getBlocked = await server.inject({
+        method: "GET",
+        url: "/api/links/consist-link",
+        cookies: blocked.cookies,
+      });
+      const getNonexistent = await server.inject({
+        method: "GET",
+        url: "/api/links/does-not-exist-slug",
+        cookies: blocked.cookies,
+      });
+      expect(getBlocked.statusCode).toBe(getNonexistent.statusCode);
+      expect(getBlocked.json()).toEqual(getNonexistent.json());
+
+      // (b) POST /api/contacts to the blocked-against owner vs. POST to a
+      // genuinely nonexistent username. Fix A doesn't touch this path, but
+      // it's asserted here too so this single test proves consistency
+      // across both endpoints, not just within each one.
+      const postBlocked = await server.inject({
+        method: "POST",
+        url: "/api/contacts",
+        cookies: blocked.cookies,
+        payload: { username: "consist-owner" },
+      });
+      const postNonexistent = await server.inject({
+        method: "POST",
+        url: "/api/contacts",
+        cookies: blocked.cookies,
+        payload: { username: "does-not-exist-user" },
+      });
+      expect(postBlocked.statusCode).toBe(postNonexistent.statusCode);
+      expect(postBlocked.json()).toEqual(postNonexistent.json());
+    });
+
+    it("does not affect an anonymous (no session) requester viewing a public link, even if a block exists between the owner and some other user", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "anon-owner");
+      await prisma.user.update({ where: { username: "anon-owner" }, data: { emailVerified: true } });
+      await server.inject({
+        method: "POST",
+        url: "/api/links/custom",
+        cookies: owner.cookies,
+        payload: { slug: "anon-link", mode: "permanent", visibility: "public" },
+      });
+
+      const someone = await registerAndGetCookie(server, "anon-someone");
+      const req = await server.inject({
+        method: "POST",
+        url: "/api/contacts",
+        cookies: someone.cookies,
+        payload: { username: "anon-owner" },
+      });
+      await server.inject({ method: "POST", url: `/api/contacts/${req.json().id}/block`, cookies: owner.cookies });
+
+      // No cookies at all: an anonymous visitor with nothing to check a block
+      // against must see the public link normally.
+      const anonView = await server.inject({ method: "GET", url: "/api/links/anon-link" });
+      expect(anonView.statusCode).toBe(200);
+    });
+
+    it("never 404s the link owner's own view, even in the presence of a block against some other user", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "self-owner");
+      await prisma.user.update({ where: { username: "self-owner" }, data: { emailVerified: true } });
+      await server.inject({
+        method: "POST",
+        url: "/api/links/custom",
+        cookies: owner.cookies,
+        payload: { slug: "self-link", mode: "permanent", visibility: "contacts-only" },
+      });
+
+      const someone = await registerAndGetCookie(server, "self-someone");
+      const req = await server.inject({
+        method: "POST",
+        url: "/api/contacts",
+        cookies: someone.cookies,
+        payload: { username: "self-owner" },
+      });
+      await server.inject({ method: "POST", url: `/api/contacts/${req.json().id}/block`, cookies: owner.cookies });
+
+      const ownerView = await server.inject({
+        method: "GET",
+        url: "/api/links/self-link",
+        cookies: owner.cookies,
+      });
+      expect(ownerView.statusCode).toBe(200);
     });
   });
 });

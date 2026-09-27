@@ -44,7 +44,7 @@ function renderApp() {
   );
 }
 
-function stubFetch(logoutResult: "ok" | "network-error") {
+function stubFetch(logoutResult: "ok" | "network-error", meAllowContactRequests = true) {
   vi.stubGlobal(
     "fetch",
     vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -62,6 +62,7 @@ function stubFetch(logoutResult: "ok" | "network-error") {
             passwordSalt: "c2FsdA==",
             passwordWrappedPrivateKey: "d3JhcA==",
             totpEnabled: false,
+            allowContactRequests: meAllowContactRequests,
           }),
         };
       }
@@ -102,5 +103,20 @@ describe("AccountPage with the real AuthProvider", () => {
       expect(screen.getByText("home page")).toBeInTheDocument();
     });
     expect(visited).toEqual(["/account", "/"]);
+  });
+
+  // Finding 4 (final review): a `useState(user?.allowContactRequests ??
+  // true)` seed only reads its value once, at mount — on the very first
+  // render `user` is still null (loading=true), so the checkbox would lock
+  // in `true` and never update once this real GET /api/auth/me resolved
+  // with the real, false value. This exercises that exact sequence end to
+  // end (unlike AccountPage.test.tsx's mocked-useAuth suite, which can't
+  // simulate the async /me resolution).
+  it("renders the checkbox unchecked once /api/auth/me resolves with allowContactRequests: false", async () => {
+    stubFetch("ok", false);
+    renderApp();
+
+    const toggle = await screen.findByLabelText(/allow contact requests/i);
+    expect(toggle).not.toBeChecked();
   });
 });

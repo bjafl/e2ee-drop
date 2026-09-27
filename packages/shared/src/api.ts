@@ -91,6 +91,7 @@ export interface LinkStatusResponse {
   recipientEmail?: string; // present only when design spec §6.4's visibility rule allows it
   recipientEmailVerified?: boolean;
   recipientTotpEnabled?: boolean;
+  recipientAllowContactRequests?: boolean;
 }
 
 // Body for POST /api/links/:slug/upload-url. Replaces the old flat "message"/"metadata" shape —

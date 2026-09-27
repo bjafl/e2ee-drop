@@ -183,3 +183,90 @@ describe("DELETE /api/account", () => {
     expect(await prisma.user.findUnique({ where: { id: userId } })).not.toBeNull();
   });
 });
+
+describe("PATCH /api/account", () => {
+  let userId: string;
+
+  beforeEach(async () => {
+    await prisma.session.deleteMany();
+    await prisma.contact.deleteMany();
+    await prisma.drop.deleteMany();
+    await prisma.link.deleteMany();
+    await prisma.user.deleteMany();
+
+    const user = await createTestUser("patch-me@example.com", "patch-me");
+    userId = user.id;
+  });
+
+  it("defaults allowContactRequests to true for a newly created user", async () => {
+    expect((await prisma.user.findUnique({ where: { id: userId } }))!.allowContactRequests).toBe(true);
+  });
+
+  it("updates allowContactRequests to false and persists it", async () => {
+    const server = await buildTestServer(userId);
+    const response = await server.inject({
+      method: "PATCH",
+      url: "/api/account",
+      payload: { allowContactRequests: false },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ updated: true });
+    expect((await prisma.user.findUnique({ where: { id: userId } }))!.allowContactRequests).toBe(false);
+  });
+
+  it("updates allowContactRequests back to true and persists it", async () => {
+    await prisma.user.update({ where: { id: userId }, data: { allowContactRequests: false } });
+
+    const server = await buildTestServer(userId);
+    const response = await server.inject({
+      method: "PATCH",
+      url: "/api/account",
+      payload: { allowContactRequests: true },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ updated: true });
+    expect((await prisma.user.findUnique({ where: { id: userId } }))!.allowContactRequests).toBe(true);
+  });
+
+  it("is a no-op that leaves the row untouched when the body omits allowContactRequests", async () => {
+    const server = await buildTestServer(userId);
+    const response = await server.inject({
+      method: "PATCH",
+      url: "/api/account",
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ updated: false });
+    expect((await prisma.user.findUnique({ where: { id: userId } }))!.allowContactRequests).toBe(true);
+  });
+
+  it("rejects a non-boolean allowContactRequests with 400 via the route's JSON-schema body validation", async () => {
+    const server = await buildTestServer(userId);
+    const response = await server.inject({
+      method: "PATCH",
+      url: "/api/account",
+      payload: { allowContactRequests: "yes" },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect((await prisma.user.findUnique({ where: { id: userId } }))!.allowContactRequests).toBe(true);
+  });
+
+  it("only updates the authenticated user's own row, not another user's", async () => {
+    const otherUser = await createTestUser("patch-other@example.com", "patch-other");
+
+    const server = await buildTestServer(userId);
+    const response = await server.inject({
+      method: "PATCH",
+      url: "/api/account",
+      payload: { allowContactRequests: false },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect((await prisma.user.findUnique({ where: { id: userId } }))!.allowContactRequests).toBe(false);
+    expect((await prisma.user.findUnique({ where: { id: otherUser.id } }))!.allowContactRequests).toBe(true);
+  });
+});

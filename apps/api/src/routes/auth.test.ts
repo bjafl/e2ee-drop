@@ -7,6 +7,21 @@ import { TOTP, Secret } from "otpauth";
 import { loginRateLimiter } from "../lib/rateLimit";
 import { env } from "../env";
 
+// Registration sends a best-effort verification email (routes/auth.ts); mock
+// the mailer for the whole file so every register() call in every describe
+// block below exercises that real code path against a stub instead of
+// needing real SMTP config, and so isMailerConfigured() always reports true
+// regardless of the test env's SMTP_* vars. vi.mock's factory is hoisted
+// above any top-level `const`, so the mock fn itself must be created via
+// vi.hoisted() to avoid a "Cannot access before initialization" error.
+const { sendVerificationEmailMock } = vi.hoisted(() => ({
+  sendVerificationEmailMock: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("../lib/mailer", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/mailer")>();
+  return { ...actual, sendVerificationEmail: sendVerificationEmailMock, isMailerConfigured: () => true };
+});
+
 // The /api/auth/login rate limiter (lib/rateLimit.ts) is a module-level Map
 // shared across every test in this file (and every buildServer() call,
 // since it's imported once per process) — without this, attempts made by
@@ -16,6 +31,7 @@ import { env } from "../env";
 // overrides it.
 beforeEach(() => {
   loginRateLimiter.clear();
+  sendVerificationEmailMock.mockClear();
 });
 
 describe("POST /api/auth/register", () => {
@@ -265,6 +281,133 @@ describe("POST /api/auth/register", () => {
 });
 
 
+describe("POST /api/auth/register — email verification", () => {
+  beforeEach(async () => {
+    await prisma.session.deleteMany();
+    await prisma.drop.deleteMany();
+    await prisma.link.deleteMany();
+    await prisma.user.deleteMany();
+  });
+
+  it("sends a verification email and stores a hashed token on successful registration", async () => {
+    const server = buildServer();
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: {
+        email: "verify-me@example.com",
+        username: "verifyme",
+        name: "Verify Me",
+        authKey: "p",
+        passwordSalt: "s",
+        passwordWrappedPrivateKey: "w",
+        recoveryWrappedPrivateKey: "r",
+        publicKey: "k",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    // The send is fire-and-forget: the route kicks it off but does not await
+    // it on the response path (so a slow/blackholed SMTP host can't delay
+    // the response into a proxy timeout). sendVerificationEmailFor itself
+    // awaits a DB write before it ever calls the mock, so — unlike a truly
+    // synchronous call — the mock may still not have been invoked yet when
+    // inject() resolves. Poll briefly instead of asserting immediately.
+    await vi.waitFor(() => {
+      expect(sendVerificationEmailMock).toHaveBeenCalledTimes(1);
+    });
+    const [to, url] = sendVerificationEmailMock.mock.calls[0];
+    expect(to).toBe("verify-me@example.com");
+    expect(url).toContain("/verify-email/confirm?token=");
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { email: "verify-me@example.com" } });
+    expect(user.emailVerified).toBe(false);
+    // Likewise, the token row is written by an `await` inside
+    // sendVerificationEmailFor's own body, which — since the route no
+    // longer awaits that whole call — may still be in flight. Poll briefly
+    // for it instead of asserting immediately.
+    await vi.waitFor(async () => {
+      const tokenRow = await prisma.emailVerificationToken.findFirst({ where: { userId: user.id } });
+      expect(tokenRow).not.toBeNull();
+    });
+  });
+
+  it("still succeeds when the mailer send throws (best-effort)", async () => {
+    sendVerificationEmailMock.mockRejectedValueOnce(new Error("smtp down"));
+    const server = buildServer();
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: {
+        email: "resilient@example.com",
+        username: "resilient",
+        name: "Resilient",
+        authKey: "p",
+        passwordSalt: "s",
+        passwordWrappedPrivateKey: "w",
+        recoveryWrappedPrivateKey: "r",
+        publicKey: "k",
+      },
+    });
+    expect(response.statusCode).toBe(200);
+  });
+
+  it("logs (via request.log.warn) when the best-effort send fails, without blocking the response", async () => {
+    sendVerificationEmailMock.mockRejectedValueOnce(new Error("smtp down"));
+    const server = buildServer();
+
+    // request.log is a per-request pino child logger that generates its own
+    // independent level methods (warn/info/etc.) rather than inheriting them
+    // from server.log — pino's setLevel() assigns each level method as a
+    // fresh, own-property function on whichever instance it's called for, so
+    // spying on server.log.warn (proven by direct experiment) never observes
+    // a call made through some request's own request.log.warn. Instead, wrap
+    // the actual per-request instance in place via an onRequest hook, which
+    // runs early enough (before the route handler) to patch the exact
+    // request.log the handler and its later .catch() callback will both use.
+    const warnCalls: unknown[][] = [];
+    server.addHook("onRequest", (request, _reply, done) => {
+      const original = request.log.warn.bind(request.log);
+      request.log.warn = (...args: Parameters<typeof original>) => {
+        warnCalls.push(args);
+        return original(...args);
+      };
+      done();
+    });
+
+    const start = Date.now();
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: {
+        email: "logs-on-failure@example.com",
+        username: "logsonfailure",
+        name: "Logs On Failure",
+        authKey: "p",
+        passwordSalt: "s",
+        passwordWrappedPrivateKey: "w",
+        recoveryWrappedPrivateKey: "r",
+        publicKey: "k",
+      },
+    });
+    const elapsedMs = Date.now() - start;
+
+    expect(response.statusCode).toBe(200);
+    // The response must not wait on the (failing) mail send — it should
+    // return promptly rather than only after the send's own rejection.
+    expect(elapsedMs).toBeLessThan(500);
+
+    await vi.waitFor(() => {
+      expect(warnCalls).toHaveLength(1);
+    });
+    const [logArg, msgArg] = warnCalls[0];
+    expect(msgArg).toBe("verification email send failed");
+    expect(logArg).toMatchObject({ err: expect.anything() });
+    // Never logs the verification URL or token itself, only the error.
+    expect(JSON.stringify(warnCalls)).not.toContain("/verify-email/confirm?token=");
+  });
+});
+
 describe("POST /api/auth/register rate limiting (registerRateLimiter: 10 per 15 min, keyed by IP)", () => {
   beforeEach(async () => {
     await prisma.session.deleteMany();
@@ -392,6 +535,42 @@ describe("POST /api/auth/login, /api/auth/logout, GET /api/auth/me", () => {
       payload: { email: "carol@example.com", authKey: "correct horse battery staple", totpCode: code },
     });
     expect(replay.statusCode).toBe(401);
+  });
+
+  it("accepts a valid unused backup code at login in place of a TOTP code", async () => {
+    const server = buildServer();
+    const registerRes = await register(server);
+    const cookieValue = registerRes.cookies.find((c) => c.name === "e2ee_drop_session")!.value;
+
+    const setupRes = await server.inject({
+      method: "POST",
+      url: "/api/auth/2fa/setup",
+      cookies: { e2ee_drop_session: cookieValue },
+    });
+    const { secretBase32 } = setupRes.json();
+    const totp = new TOTP({ secret: Secret.fromBase32(secretBase32) });
+    const enableRes = await server.inject({
+      method: "POST",
+      url: "/api/auth/2fa/enable",
+      cookies: { e2ee_drop_session: cookieValue },
+      payload: { code: totp.generate() },
+    });
+    const [backupCode] = enableRes.json().backupCodes as string[];
+
+    const loginRes = await server.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { email: "carol@example.com", authKey: "correct horse battery staple", totpCode: backupCode },
+    });
+    expect(loginRes.statusCode).toBe(200);
+
+    // Reused — must now fail.
+    const secondLoginRes = await server.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { email: "carol@example.com", authKey: "correct horse battery staple", totpCode: backupCode },
+    });
+    expect(secondLoginRes.statusCode).toBe(401);
   });
 
   it("allows legitimate traffic well under the rate limit (regression guard against an overly strict window)", async () => {

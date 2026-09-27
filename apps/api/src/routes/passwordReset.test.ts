@@ -8,11 +8,18 @@ import { createDefaultLinkForUser } from "../lib/links";
 import { isMailerConfigured, sendPasswordResetEmail } from "../lib/mailer";
 import { env } from "../env";
 import { encryptTotpSecret, generateTotpSecret } from "../lib/totp";
+import { generateAndStoreBackupCodes } from "../lib/totpBackupCodes";
 import { TOTP, Secret } from "otpauth";
 
+// registerUser() (below) now exercises routes/auth.ts's own best-effort
+// verification-email side effect too, so sendVerificationEmail needs a stub
+// here as well — otherwise it's undefined and every registerUser() call
+// throws inside auth.ts's try/catch (silently swallowed there, but still
+// worth a real stub rather than relying on that catch).
 vi.mock("../lib/mailer", () => ({
   isMailerConfigured: vi.fn().mockReturnValue(false),
   sendPasswordResetEmail: vi.fn().mockResolvedValue(undefined),
+  sendVerificationEmail: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Pass-through spies, so individual tests can inject a failure mid-reset.
@@ -53,7 +60,24 @@ async function registerUser(server: ReturnType<typeof buildServer>) {
       publicKey: "b3JpZ2luYWwtcHVia2V5",
     },
   });
-  return response.json();
+  const body = response.json();
+  // routes/auth.ts's best-effort verification-email send is now
+  // fire-and-forget (not awaited on the response path — see that file's
+  // comment), so it can still be in flight when inject() resolves. Its
+  // token row is written unconditionally, before the isMailerConfigured()
+  // check that this file's tests below rely on the call count/order of
+  // (e.g. a mockReturnValueOnce meant for a later call in the same test) —
+  // wait for that row so the incidental call has fully settled before this
+  // helper returns, and callers aren't racing it.
+  await vi.waitFor(async () => {
+    const token = await prisma.emailVerificationToken.findFirst({ where: { userId: body.userId } });
+    expect(token).not.toBeNull();
+  });
+  // Extra margin: the token row is written just before the
+  // isMailerConfigured() check in the same async function, so give that
+  // continuation a macrotask tick to run before returning control.
+  await new Promise((resolve) => setImmediate(resolve));
+  return body;
 }
 
 async function issueResetToken(userId: string, token = "test-reset-token"): Promise<string> {
@@ -156,10 +180,16 @@ describe("password reset routes", () => {
   });
 
   it("emails a link to the token-consuming /reset-password/confirm page whose token verifies", async () => {
-    vi.mocked(isMailerConfigured).mockReturnValueOnce(true);
-    vi.mocked(sendPasswordResetEmail).mockClear();
     const server = buildServer();
     await registerUser(server);
+
+    // Registration itself now calls isMailerConfigured() as a best-effort
+    // side effect (routes/auth.ts sends a verification email) — the "once"
+    // override must be set AFTER registerUser() so it applies to the
+    // /password-reset/request call under test below, not to that incidental
+    // call inside registration.
+    vi.mocked(isMailerConfigured).mockReturnValueOnce(true);
+    vi.mocked(sendPasswordResetEmail).mockClear();
 
     await server.inject({
       method: "POST",
@@ -650,6 +680,71 @@ describe("password reset routes", () => {
           expect(response.statusCode).toBe(400);
           expect(response.json().requiresTotp).toBeUndefined();
         }
+      });
+
+      it(`${route.name}: accepts a backup code in place of a TOTP code`, async () => {
+        const server = buildServer();
+        const { userId } = await registerUser(server);
+        await enableTotp(userId);
+        const codes = await generateAndStoreBackupCodes(userId);
+        const token = await issueResetToken(userId);
+
+        const response = await server.inject({
+          method: "POST",
+          url: route.url,
+          payload: { ...route.payload, token, totpCode: codes[0] },
+        });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ reset: true });
+      });
+
+      it(`${route.name}: a backup code already consumed at login can't be reused for a reset`, async () => {
+        const server = buildServer();
+        const { userId } = await registerUser(server);
+        await enableTotp(userId);
+        const codes = await generateAndStoreBackupCodes(userId);
+
+        const login = await server.inject({
+          method: "POST",
+          url: "/api/auth/login",
+          payload: { email: "dana@example.com", authKey: "original password", totpCode: codes[0] },
+        });
+        expect(login.statusCode).toBe(200);
+
+        const token = await issueResetToken(userId);
+        const before = await snapshot(userId);
+        const replayed = await server.inject({
+          method: "POST",
+          url: route.url,
+          payload: { ...route.payload, token, totpCode: codes[0] },
+        });
+        expect(replayed.statusCode).toBe(401);
+        expect(replayed.json().requiresTotp).toBe(true);
+        expect(await snapshot(userId)).toEqual(before);
+      });
+
+      it(`${route.name}: rejects a well-formed but never-issued backup code exactly like a wrong TOTP code, and changes nothing`, async () => {
+        const server = buildServer();
+        const { userId } = await registerUser(server);
+        await enableTotp(userId);
+        await generateAndStoreBackupCodes(userId);
+        const token = await issueResetToken(userId);
+        const before = await snapshot(userId);
+
+        // "zzzzz-zzzzz" is well-formed — z IS part of the backup-code
+        // alphabet, only 0, 1, i, l, o are excluded — but was never issued to
+        // this user, so it's rejected purely for not matching any stored
+        // hash (the exhaustion/never-issued case), with the exact same
+        // outcome as a wrong TOTP code: no crash, no distinguishing message,
+        // no state change.
+        const response = await server.inject({
+          method: "POST",
+          url: route.url,
+          payload: { ...route.payload, token, totpCode: "zzzzz-zzzzz" },
+        });
+        expect(response.statusCode).toBe(401);
+        expect(response.json().requiresTotp).toBe(true);
+        expect(await snapshot(userId)).toEqual(before);
       });
     }
 

@@ -230,4 +230,240 @@ describe("contact routes", () => {
     });
     expect(response.statusCode).toBe(400);
   });
+
+  it("blocks an incoming pending request, and the blocked party sees the same error as a nonexistent user on retry", async () => {
+    const server = buildServer();
+    const alice = await registerAndGetCookie(server, "alice-block");
+    const bob = await registerAndGetCookie(server, "bob-block");
+
+    const req = await server.inject({ method: "POST", url: "/api/contacts", cookies: bob.cookies, payload: { username: "alice-block" } });
+    const block = await server.inject({ method: "POST", url: `/api/contacts/${req.json().id}/block`, cookies: alice.cookies });
+    expect(block.statusCode).toBe(200);
+
+    const retry = await server.inject({ method: "POST", url: "/api/contacts", cookies: bob.cookies, payload: { username: "alice-block" } });
+    const baseline = await server.inject({ method: "POST", url: "/api/contacts", cookies: bob.cookies, payload: { username: "does-not-exist" } });
+    expect(retry.statusCode).toBe(baseline.statusCode);
+    expect(retry.json()).toEqual(baseline.json());
+  });
+
+  it("hides a blocked row from the blocked party's own contact list", async () => {
+    const server = buildServer();
+    const alice = await registerAndGetCookie(server, "alice-block2");
+    const bob = await registerAndGetCookie(server, "bob-block2");
+    const req = await server.inject({ method: "POST", url: "/api/contacts", cookies: bob.cookies, payload: { username: "alice-block2" } });
+    await server.inject({ method: "POST", url: `/api/contacts/${req.json().id}/block`, cookies: alice.cookies });
+
+    const bobsList = await server.inject({ method: "GET", url: "/api/contacts", cookies: bob.cookies });
+    const all = [...bobsList.json().pending, ...bobsList.json().accepted];
+    expect(all.find((c: { username: string }) => c.username === "alice-block2")).toBeUndefined();
+
+    const alicesList = await server.inject({ method: "GET", url: "/api/contacts", cookies: alice.cookies });
+    expect(alicesList.statusCode).toBe(200);
+    // The blocker CAN still see the block, via its own `blocked` array.
+    expect(alicesList.json().blocked).toHaveLength(1);
+    expect(alicesList.json().blocked[0].username).toBe("bob-block2");
+    expect(alicesList.json().blocked[0].status).toBe("blocked");
+  });
+
+  it("resolves a same-direction concurrent double-submit to exactly one row (pre-existing TOCTOU, fixed here)", async () => {
+    // sendContactRequest's `findFirst` existing-relationship check and its
+    // `create` are not atomic — two requests racing between the check and the
+    // create could otherwise both see "no existing row" and both attempt to
+    // create one. Contact's `@@unique([userId, contactUserId])` constraint
+    // only spans this exact (userId, contactUserId) ordering, so this test
+    // (and the fix) covers the same-direction case: one caller submitting
+    // twice in quick succession (double-click, client retry after a timeout).
+    // It does NOT cover two different users requesting each other in opposite
+    // directions at the same moment — that's a different (userId,
+    // contactUserId) tuple each way, so this unique constraint can't catch
+    // it; the `findFirst` pre-check (both orderings) is the only guard there,
+    // and a sufficiently unlucky race could still produce two rows in that
+    // specific cross-direction case. Out of scope for this fix — flagging in
+    // case it matters later, not silently claiming full coverage.
+    const server = buildServer();
+    const alice = await registerAndGetCookie(server, "alice-race");
+    const bob = await registerAndGetCookie(server, "bob-race");
+
+    const [first, second] = await Promise.all([
+      server.inject({ method: "POST", url: "/api/contacts", cookies: alice.cookies, payload: { username: "bob-race" } }),
+      server.inject({ method: "POST", url: "/api/contacts", cookies: alice.cookies, payload: { username: "bob-race" } }),
+    ]);
+    const statuses = [first.statusCode, second.statusCode].sort();
+    expect(statuses).toEqual([200, 400]); // one succeeds, one gets the normal "already exists" error — never a 500
+    const rows = await prisma.contact.findMany({ where: { userId: alice.userId, contactUserId: bob.userId } });
+    expect(rows.length).toBe(1);
+  });
+
+  it("blocks from an already-accepted contact, and only the blocker can unblock", async () => {
+    const server = buildServer();
+    const alice = await registerAndGetCookie(server, "alice-block3");
+    const bob = await registerAndGetCookie(server, "bob-block3");
+    const req = await server.inject({ method: "POST", url: "/api/contacts", cookies: bob.cookies, payload: { username: "alice-block3" } });
+    await server.inject({ method: "POST", url: `/api/contacts/${req.json().id}/accept`, cookies: alice.cookies });
+
+    const block = await server.inject({ method: "POST", url: `/api/contacts/${req.json().id}/block`, cookies: alice.cookies });
+    expect(block.statusCode).toBe(200);
+
+    const bobUnblockAttempt = await server.inject({ method: "POST", url: `/api/contacts/${req.json().id}/unblock`, cookies: bob.cookies });
+    expect(bobUnblockAttempt.statusCode).toBe(403);
+
+    const aliceUnblock = await server.inject({ method: "POST", url: `/api/contacts/${req.json().id}/unblock`, cookies: alice.cookies });
+    expect(aliceUnblock.statusCode).toBe(200);
+
+    const afterUnblock = await prisma.contact.findUnique({ where: { id: req.json().id } });
+    expect(afterUnblock).toBeNull();
+  });
+
+  it("does not let the blocked party seize the block and escape it via re-block + unblock", async () => {
+    // Regression test for a fix found in review: blockContact only checked
+    // relationship membership, not who currently holds blockedByUserId. That
+    // let the blocked party call /block on the same row to overwrite
+    // blockedByUserId to themselves, then call /unblock (now "succeeding")
+    // to delete the row and send a fresh request — fully escaping the
+    // original block.
+    const server = buildServer();
+    const alice = await registerAndGetCookie(server, "alice-block4");
+    const bob = await registerAndGetCookie(server, "bob-block4");
+    const req = await server.inject({ method: "POST", url: "/api/contacts", cookies: bob.cookies, payload: { username: "alice-block4" } });
+    const contactId = req.json().id;
+
+    const block = await server.inject({ method: "POST", url: `/api/contacts/${contactId}/block`, cookies: alice.cookies });
+    expect(block.statusCode).toBe(200);
+
+    // Bob (the blocked party) tries to seize the block by re-blocking the row himself.
+    const bobBlockAttempt = await server.inject({ method: "POST", url: `/api/contacts/${contactId}/block`, cookies: bob.cookies });
+    expect(bobBlockAttempt.statusCode).toBe(403);
+
+    // The row must still be blocked by alice, unaffected by bob's attempt.
+    const stillBlocked = await prisma.contact.findUnique({ where: { id: contactId } });
+    expect(stillBlocked?.status).toBe("blocked");
+    expect(stillBlocked?.blockedByUserId).toBe(alice.userId);
+
+    // Bob still can't unblock — he was never recorded as the blocker.
+    const bobUnblockAttempt = await server.inject({ method: "POST", url: `/api/contacts/${contactId}/unblock`, cookies: bob.cookies });
+    expect(bobUnblockAttempt.statusCode).toBe(403);
+
+    // Re-blocking by alice herself (the party who already holds the block) is a harmless no-op.
+    const aliceReblock = await server.inject({ method: "POST", url: `/api/contacts/${contactId}/block`, cookies: alice.cookies });
+    expect(aliceReblock.statusCode).toBe(200);
+  });
+
+  it("does not let the blocked party escape the block via /reject", async () => {
+    // Regression test for a fix found in review: rejectContactRequest only
+    // checked relationship membership, not row.status. That let a blocked
+    // party call /reject on the blocked row (deleting it), then send a fresh
+    // contact request — fully escaping the original block.
+    const server = buildServer();
+    const alice = await registerAndGetCookie(server, "alice-block5");
+    const bob = await registerAndGetCookie(server, "bob-block5");
+    const req = await server.inject({ method: "POST", url: "/api/contacts", cookies: bob.cookies, payload: { username: "alice-block5" } });
+    const contactId = req.json().id;
+
+    const block = await server.inject({ method: "POST", url: `/api/contacts/${contactId}/block`, cookies: alice.cookies });
+    expect(block.statusCode).toBe(200);
+
+    // Bob (the blocked party) tries to escape the block by rejecting (deleting) the row.
+    const bobRejectAttempt = await server.inject({ method: "POST", url: `/api/contacts/${contactId}/reject`, cookies: bob.cookies });
+    expect(bobRejectAttempt.statusCode).toBe(403);
+
+    // The row must still exist, still blocked by alice, unaffected by bob's attempt.
+    const stillBlocked = await prisma.contact.findUnique({ where: { id: contactId } });
+    expect(stillBlocked?.status).toBe("blocked");
+    expect(stillBlocked?.blockedByUserId).toBe(alice.userId);
+  });
+
+  it("does not let the blocked party escape the block via /accept", async () => {
+    // Regression test for a fix found in review: acceptContactRequest only
+    // checked that the caller is the request's recipient, not row.status. If
+    // alice sent bob a request and then blocked him, the row becomes
+    // status: "blocked", blockedByUserId: alice, but row.contactUserId is
+    // still bob — so bob (still "the recipient") could call /accept to flip
+    // status to "accepted" while blockedByUserId stayed stale at alice,
+    // turning the block into contacts-only link access for bob.
+    const server = buildServer();
+    const alice = await registerAndGetCookie(server, "alice-block6");
+    const bob = await registerAndGetCookie(server, "bob-block6");
+    const req = await server.inject({ method: "POST", url: "/api/contacts", cookies: alice.cookies, payload: { username: "bob-block6" } });
+    const contactId = req.json().id;
+
+    const block = await server.inject({ method: "POST", url: `/api/contacts/${contactId}/block`, cookies: alice.cookies });
+    expect(block.statusCode).toBe(200);
+
+    // Bob (the blocked party, and the request's original recipient) tries to accept his way out.
+    const bobAcceptAttempt = await server.inject({ method: "POST", url: `/api/contacts/${contactId}/accept`, cookies: bob.cookies });
+    expect(bobAcceptAttempt.statusCode).toBe(404);
+
+    // The row must be unchanged: still blocked, still pointing at alice as the blocker.
+    const stillBlocked = await prisma.contact.findUnique({ where: { id: contactId } });
+    expect(stillBlocked?.status).toBe("blocked");
+    expect(stillBlocked?.blockedByUserId).toBe(alice.userId);
+  });
+
+  it("masks a target who has turned off allowContactRequests as a nonexistent user, byte-identical to a genuine 404", async () => {
+    // Scope addition to this plan (decided post-final-review): sendContactRequest
+    // must check the target's allowContactRequests flag server-side, using the
+    // exact same masking discipline as the existing blocked-target case above.
+    const server = buildServer();
+    const alice = await registerAndGetCookie(server, "alice-noreq");
+    await registerAndGetCookie(server, "bob-noreq");
+    await prisma.user.update({ where: { username: "bob-noreq" }, data: { allowContactRequests: false } });
+
+    const attempt = await server.inject({
+      method: "POST",
+      url: "/api/contacts",
+      cookies: alice.cookies,
+      payload: { username: "bob-noreq" },
+    });
+    const baseline = await server.inject({
+      method: "POST",
+      url: "/api/contacts",
+      cookies: alice.cookies,
+      payload: { username: "does-not-exist-noreq" },
+    });
+    expect(attempt.statusCode).toBe(baseline.statusCode);
+    expect(attempt.json()).toEqual(baseline.json());
+  });
+
+  it("does not mask allowContactRequests as 'User not found' for an existing (accepted) contact — only genuinely new requests are gated", async () => {
+    // Regression test for a fix found in review: the allowContactRequests
+    // check originally ran unconditionally, before the existing-relationship
+    // lookup. That meant an already-accepted contact who later toggled the
+    // setting off would flip a repeat request's response from "A contact
+    // relationship already exists" to "User not found" — a new,
+    // distinguishable signal that the target specifically toggled the
+    // setting, leaking information to a caller who already knows the target
+    // exists and is their contact. The check must only apply when there is
+    // no existing relationship at all.
+    const server = buildServer();
+    const alice = await registerAndGetCookie(server, "alice-noreq2");
+    const bob = await registerAndGetCookie(server, "bob-noreq2");
+
+    const req = await server.inject({
+      method: "POST",
+      url: "/api/contacts",
+      cookies: alice.cookies,
+      payload: { username: "bob-noreq2" },
+    });
+    expect(req.statusCode).toBe(200);
+    const accept = await server.inject({
+      method: "POST",
+      url: `/api/contacts/${req.json().id}/accept`,
+      cookies: bob.cookies,
+    });
+    expect(accept.statusCode).toBe(200);
+
+    // Bob turns off contact requests after already being an accepted contact.
+    await prisma.user.update({ where: { username: "bob-noreq2" }, data: { allowContactRequests: false } });
+
+    // Alice retries (stray double-click / client retry) — must still see the
+    // normal "already exists" response, not the masked "User not found".
+    const retry = await server.inject({
+      method: "POST",
+      url: "/api/contacts",
+      cookies: alice.cookies,
+      payload: { username: "bob-noreq2" },
+    });
+    expect(retry.statusCode).toBe(400);
+    expect(retry.json()).toEqual({ error: "A contact relationship already exists" });
+  });
 });
