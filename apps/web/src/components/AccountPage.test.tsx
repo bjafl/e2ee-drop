@@ -15,6 +15,7 @@ const authState: {
     publicKey?: string;
     totpEnabled?: boolean;
     keyPair?: null;
+    allowContactRequests?: boolean;
   } | null;
   loading: boolean;
 } = { user: null, loading: false };
@@ -93,6 +94,22 @@ describe("AccountPage", () => {
     expect(screen.queryByText("login page")).not.toBeInTheDocument();
   });
 
+  // Finding 4 (final review): a `useState(user?.allowContactRequests ??
+  // true)` seed only reads its value once, at mount, and so could freeze on
+  // the default `true` and never self-correct once the real, `false` value
+  // arrived. The full async-resolution sequence (loading -> /me resolves)
+  // is exercised end to end in AccountPage.integration.test.tsx, which uses
+  // the real AuthProvider; this mocked-useAuth harness can only mount
+  // directly with the final value already set, which still covers the
+  // regression (the checkbox must never default to checked).
+  it("renders the checkbox unchecked when allowContactRequests is false on mount", () => {
+    authState.user = { id: "u1", username: "alice", email: "alice@example.com", allowContactRequests: false };
+
+    renderAt("/account");
+
+    expect(screen.getByLabelText(/allow contact requests/i)).not.toBeChecked();
+  });
+
   it("shows the user and mounts the delete-account dialog when logged in", () => {
     authState.user = { id: "u1", username: "alice", email: "alice@example.com" };
 
@@ -114,6 +131,42 @@ describe("AccountPage", () => {
 
     await waitFor(() => {
       expect(logout).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("toggles allowContactRequests and PATCHes the change to the server", async () => {
+    authState.user = { id: "u1", username: "alice", email: "alice@example.com", allowContactRequests: true };
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ updated: true }) });
+
+    renderAt("/account");
+    const toggle = screen.getByLabelText(/allow contact requests/i);
+    expect(toggle).toBeChecked();
+
+    await userEvent.click(toggle);
+
+    expect(toggle).not.toBeChecked();
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/account",
+        expect.objectContaining({
+          method: "PATCH",
+          body: JSON.stringify({ allowContactRequests: false }),
+        })
+      );
+    });
+  });
+
+  it("rolls the toggle back if the PATCH request fails", async () => {
+    authState.user = { id: "u1", username: "alice", email: "alice@example.com", allowContactRequests: true };
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, json: async () => ({ error: "nope" }) });
+
+    renderAt("/account");
+    const toggle = screen.getByLabelText(/allow contact requests/i);
+
+    await userEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(toggle).toBeChecked();
     });
   });
 });

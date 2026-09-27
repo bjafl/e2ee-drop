@@ -8,6 +8,7 @@
   "emailUnverified": "Email not verified",
   "totpEnabled": "Two-factor authentication enabled",
   "totpDisabled": "Two-factor authentication not enabled",
+  "connectButton": "Connect",
   "codewordsLabel": "Verification words — ask the recipient to confirm these match",
   "messagePlaceholder": "Optional message (end-to-end encrypted along with the file)",
   "ownerNoteWarning": "This note was written by the link's owner and is not end-to-end encrypted.",

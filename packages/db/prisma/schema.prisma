@@ -27,6 +27,10 @@ model User {
   // 20260925044121_storage_bytes_bigint.
   storageQuotaBytes         BigInt
   storageUsedBytes          BigInt    @default(0)
+  // Controls whether the "connect" button on this user's public profile
+  // link is enabled for other logged-in visitors (see UploadPage badge,
+  // spec 2026-09-26-e2ee-send-receive-flow-design.md §6.4).
+  allowContactRequests      Boolean   @default(true)
   createdAt                 DateTime  @default(now())
 
   showEmailOnPublicProfile Boolean @default(false)
@@ -56,6 +60,10 @@ model Contact {
   userId        String
   contactUserId String
   status        String   @default("pending")
+  // Set only when status === "blocked": which of the two parties blocked
+  // the other, independent of who originally sent the request. Only this
+  // user may unblock (see lib/contacts.ts).
+  blockedByUserId String?
   createdAt     DateTime @default(now())
 
   @@unique([userId, contactUserId])

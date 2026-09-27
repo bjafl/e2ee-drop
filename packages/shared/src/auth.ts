@@ -59,6 +59,7 @@ export interface MeResponse {
   passwordSalt: string;
   passwordWrappedPrivateKey: string;
   totpEnabled: boolean;
+  allowContactRequests: boolean;
 }
 
 export interface PasswordResetRequestRequest {

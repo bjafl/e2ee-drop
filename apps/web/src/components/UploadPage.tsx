@@ -256,6 +256,24 @@ export function UploadPage() {
               <p>{link.recipientEmailVerified ? t("emailVerified") : t("emailUnverified")}</p>
               {link.recipientEmail && <p>{link.recipientEmail}</p>}
               <p>{link.recipientTotpEnabled ? t("totpEnabled") : t("totpDisabled")}</p>
+              <Button
+                size="sm"
+                // Spec §5: the connect action requires the *viewer* (not just the
+                // link's owner) to be authenticated — an anonymous sender must see
+                // the same disabled treatment as when the owner disallows requests,
+                // never a button that fires an unauthenticated POST the backend
+                // would 401 on.
+                disabled={!link.recipientAllowContactRequests || !user}
+                onClick={() =>
+                  fetch("/api/contacts", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ username: link.recipientUsername }),
+                  })
+                }
+              >
+                {t("connectButton")}
+              </Button>
             </>
           )}
         </div>

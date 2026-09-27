@@ -21,6 +21,12 @@ export interface AuthUser {
   emailVerified: boolean;
   publicKey: string;
   totpEnabled: boolean;
+  // Undefined immediately after register()/login(), which don't carry this
+  // field on their response bodies (see MeResponse vs. LoginResponse) —
+  // callers should treat undefined the same as the DB default (true), the
+  // way AccountPage does. Always defined once the initial /api/auth/me
+  // session restore below has settled.
+  allowContactRequests?: boolean;
   keyPair: nacl.BoxKeyPair | null;
 }
 
@@ -90,6 +96,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           emailVerified: data.emailVerified,
           publicKey: data.publicKey,
           totpEnabled: data.totpEnabled,
+          allowContactRequests: data.allowContactRequests,
           keyPair: null,
         });
       })

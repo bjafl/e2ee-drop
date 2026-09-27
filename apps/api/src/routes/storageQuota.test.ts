@@ -62,6 +62,11 @@ async function createOwner(quota: number, used = 0) {
       publicKey: "pk",
       storageQuotaBytes: quota,
       storageUsedBytes: used,
+      // isLinkInactive (lib/links.ts, wired into upload-url/complete by this
+      // fix) treats an unverified owner's links as inactive. These tests are
+      // about quota accounting, not verification, so every owner here must
+      // be verified or every owned-link upload in this file would 404.
+      emailVerified: true,
     },
   });
 }
@@ -257,6 +262,7 @@ describe("storage quota", () => {
           publicKey: "pk",
           storageQuotaBytes: big,
           storageUsedBytes: big - BigInt(CHARGE),
+          emailVerified: true,
         },
       });
       await createOwnedLink(owner.id, "bigquota-link");

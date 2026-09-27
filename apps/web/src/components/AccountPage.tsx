@@ -1,5 +1,5 @@
 // apps/web/src/components/AccountPage.tsx
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import QRCode from "react-qr-code";
@@ -34,6 +34,27 @@ export function AccountPage() {
   const [flow, setFlow] = useState<TwoFactorFlow>({ step: "idle" });
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // Finding 4 (final review): a plain `useState(user?.allowContactRequests ??
+  // true)` only reads its seed once, at mount. On a hard refresh of /account,
+  // `user` is still null on that first render (loading=true), so the
+  // checkbox locked in `true` and never updated once /me resolved with the
+  // real (possibly false) value — same problem right after login()/
+  // register(), where the field is undefined until the next /me fetch
+  // (Task 8's disclosed gap).
+  //
+  // Fix: the displayed value is always DERIVED from user.allowContactRequests
+  // (never frozen), with a local override only while an optimistic toggle
+  // (below) is in flight. The override is cleared whenever
+  // user.allowContactRequests itself changes, so it can never mask a real,
+  // later value from /me.
+  const [pendingOverride, setPendingOverride] = useState<boolean | null>(null);
+  useEffect(() => {
+    setPendingOverride(null);
+  }, [user?.allowContactRequests]);
+  // Defaults to true, matching the DB column's default (see
+  // packages/db/prisma/schema.prisma) — undefined here just means the
+  // initial /api/auth/me restore hasn't populated it yet (see AuthUser).
+  const allowContactRequests = pendingOverride ?? user?.allowContactRequests ?? true;
 
   // Checked before the logged-out guard: logout() below sets user to null,
   // and without this the re-render would hit `!user` and land on /login.
@@ -121,6 +142,25 @@ export function AccountPage() {
     if (!res.ok) return setError("invalid code");
     const { backupCodes } = await res.json();
     setFlow({ step: "backup-codes", codes: backupCodes });
+  };
+
+  // Optimistic: flips immediately, then persists. On failure the toggle is
+  // rolled back rather than left showing a state the server never saved —
+  // matching DeleteAccountDialog's approach of trusting the request unless
+  // it's known to have failed.
+  const toggleAllowContactRequests = async () => {
+    const next = !allowContactRequests;
+    setPendingOverride(next);
+    try {
+      const response = await fetch("/api/account", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ allowContactRequests: next }),
+      });
+      if (!response.ok) setPendingOverride(!next);
+    } catch {
+      setPendingOverride(!next);
+    }
   };
 
   return (
@@ -228,6 +268,18 @@ export function AccountPage() {
           )}
         </div>
 
+        <div>
+          <h2 className="mb-2 font-semibold">{t("privacy")}</h2>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={allowContactRequests}
+              onChange={toggleAllowContactRequests}
+              aria-label={t("allowContactRequestsLabel")}
+            />
+            {t("allowContactRequestsLabel")}
+          </label>
+        </div>
         <div>
           <h2 className="mb-2 font-semibold">{t("dangerZone")}</h2>
           <DeleteAccountDialog onDeleted={handleDeleted} />

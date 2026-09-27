@@ -403,6 +403,7 @@ export function registerAuthRoutes(server: FastifyInstance): void {
       passwordSalt: user.passwordSalt,
       passwordWrappedPrivateKey: user.passwordWrappedPrivateKey,
       totpEnabled: user.totpEnabled,
+      allowContactRequests: user.allowContactRequests,
     };
     return reply.send(body);
   });

@@ -2,6 +2,8 @@
   "title": "Kontoen din",
   "signedInAs": "Logget inn som {{username}}",
   "email": "E-post: {{email}}",
+  "privacy": "Personvern",
+  "allowContactRequestsLabel": "Tillat kontaktforespørsler",
   "dangerZone": "Faresone",
   "twoFactor": {
     "heading": "Tofaktorautentisering",

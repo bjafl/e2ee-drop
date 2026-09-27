@@ -1,5 +1,5 @@
 // apps/api/src/routes/links.ts
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import type {
   CreateLinkRequest,
   CreateLinkResponse,
@@ -16,10 +16,12 @@ import {
   generateAnonymousSlug,
   getLinkBySlug,
   isLinkExpired,
+  isLinkInactive,
   isSenderInitiatedReceiveCapability,
   toDropSummary,
   toLinkStatusResponse,
 } from "../lib/links";
+import { hasAcceptedContact, hasBlockRelationship } from "../lib/contacts";
 import { deleteObject } from "../lib/storage";
 import { resolveLocale, deriveCodewords } from "../lib/codewords";
 import { resolveRetentionDays } from "../lib/retention";
@@ -124,6 +126,10 @@ export function registerLinkRoutes(server: FastifyInstance): void {
 
       const owner = await prisma.user.findUnique({ where: { id: request.user!.id } });
       if (!owner) return reply.status(404).send({ error: "User not found" });
+
+      if (!owner.emailVerified) {
+        return reply.status(403).send({ error: "Verify your email address before creating a link" });
+      }
 
       // No pre-check findUnique({ where: { slug } }) here: Link.slug is a
       // plain @unique column (schema.prisma), not a per-owner composite key,
@@ -235,7 +241,7 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       if (!recipientPublicKey) return reply.status(400).send({ error: "Missing recipientPublicKey" });
 
       const link = await getLinkBySlug(request.params.slug);
-      if (!link || isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+      if (!link || (await isLinkInactive(link))) return reply.status(404).send({ error: "Link not found" });
 
       const { count } = await prisma.link.updateMany({
         where: { id: link.id, recipientPublicKey: null },
@@ -254,11 +260,29 @@ export function registerLinkRoutes(server: FastifyInstance): void {
   server.get<{ Params: { slug: string } }>("/api/links/:slug", async (request, reply) => {
     const link = await getLinkBySlug(request.params.slug);
     if (!link) return reply.status(404).send({ error: "Link not found" });
-    // Expired links are treated as gone but deliberately NOT deleted here: the
-    // cleanup job is the only place that deletes expired links, because it deletes
-    // each drop's storage object before the row. Deleting the row lazily here would
-    // lose the s3Key and orphan the object in storage forever.
-    if (isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+    // Expired/revoked/unverified-owner links are treated as gone but deliberately
+    // NOT deleted here: the cleanup job is the only place that deletes expired
+    // links, because it deletes each drop's storage object before the row.
+    // Deleting the row lazily here would lose the s3Key and orphan the object in
+    // storage forever.
+    if (await isLinkInactive(link)) return reply.status(404).send({ error: "Link not found" });
+    const requesterId = request.user?.id;
+    const isOwner = requesterId !== undefined && requesterId === link.ownerId;
+    // A block relationship overrides visibility entirely — a blocked party
+    // must see the same "not found" as a genuinely nonexistent link,
+    // regardless of whether the link is public or contacts-only. This must
+    // run before/independent of the contacts-only check below, since it
+    // also applies to public links.
+    if (!isOwner && requesterId !== undefined && link.ownerId !== null) {
+      if (await hasBlockRelationship(link.ownerId, requesterId)) {
+        return reply.status(404).send({ error: "Link not found" });
+      }
+    }
+    if (link.visibility === "contacts-only") {
+      const isContact =
+        !isOwner && requesterId !== undefined && link.ownerId !== null && (await hasAcceptedContact(link.ownerId, requesterId));
+      if (!isOwner && !isContact) return reply.status(404).send({ error: "Link not found" });
+    }
     return reply.send(await toLinkStatusResponse(link, request.user?.id));
   });
 
@@ -343,4 +367,62 @@ export function registerLinkRoutes(server: FastifyInstance): void {
     await deleteLinkIfExists(link.id);
     return reply.send({ deleted: true });
   });
+
+  async function requireOwnedLink(slug: string, userId: string, reply: FastifyReply) {
+    const link = await getLinkBySlug(slug);
+    if (!link) {
+      reply.status(404).send({ error: "Link not found" });
+      return null;
+    }
+    if (link.ownerId !== userId) {
+      reply.status(403).send({ error: "Forbidden" });
+      return null;
+    }
+    return link;
+  }
+
+  server.post<{ Params: { slug: string } }>(
+    "/api/links/:slug/revoke",
+    { preHandler: server.requireAuth },
+    async (request, reply) => {
+      const link = await requireOwnedLink(request.params.slug, request.user!.id, reply);
+      if (!link) return;
+      await prisma.link.update({ where: { id: link.id }, data: { revokedAt: new Date() } });
+      // NOTE (see plan self-review / spec §3.1): shredding this link's still-
+      // sealed/delivery_failed drops on revoke is spec 2's job (owner-cancel
+      // mechanism) and is intentionally NOT done here — spec 2's plan should
+      // add that call once its shred function exists. Revoke here only makes
+      // the link stop being servable; it does not touch existing drops.
+      return reply.send({ revoked: true });
+    }
+  );
+
+  server.post<{ Params: { slug: string } }>(
+    "/api/links/:slug/unrevoke",
+    { preHandler: server.requireAuth },
+    async (request, reply) => {
+      const link = await requireOwnedLink(request.params.slug, request.user!.id, reply);
+      if (!link) return;
+      await prisma.link.update({ where: { id: link.id }, data: { revokedAt: null } });
+      return reply.send({ revoked: false });
+    }
+  );
+
+  server.patch<{ Params: { slug: string }; Body: { visibility?: string } }>(
+    "/api/links/:slug",
+    {
+      preHandler: server.requireAuth,
+      schema: { body: { type: "object", properties: { visibility: { type: "string" } } } },
+    },
+    async (request, reply) => {
+      const link = await requireOwnedLink(request.params.slug, request.user!.id, reply);
+      if (!link) return;
+      const { visibility } = request.body;
+      if (visibility !== "public" && visibility !== "contacts-only") {
+        return reply.status(400).send({ error: "Invalid visibility" });
+      }
+      await prisma.link.update({ where: { id: link.id }, data: { visibility } });
+      return reply.send({ visibility });
+    }
+  );
 }
