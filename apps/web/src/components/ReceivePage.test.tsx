@@ -640,6 +640,37 @@ describe("ReceivePage — claim flow", () => {
     expect(calledUrls(fetchMock)).toContain("/api/links/req123/claim");
   });
 
+  // Task 9 / review finding F9: the server-side claim below has no unclaim
+  // route, so it must never fire once this browser can't actually persist the
+  // resulting private key — otherwise the user ends up with a permanently
+  // claimed link whose key exists only in this tab's memory. Awaiting
+  // saveLink can't itself observe that failure (its real localStorage write
+  // happens later, decoupled, inside useLocalLinks' own useEffect — see that
+  // hook's source and the mocked saveLink here, which always resolves), so
+  // the guard is a direct storage probe run before the claim POST.
+  it("Task 9: warns instead of claiming when localStorage is unavailable (private browsing/quota), and never claims", async () => {
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("QuotaExceededError");
+    });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => UNCLAIMED_LINK_RESPONSE });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAt("req123");
+    await waitFor(() => {
+      expect(screen.getByText(/claim anonymously/i)).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText(/^claim anonymously$/i));
+
+    await waitFor(() => {
+      expect(screen.getByText(/save the decryption key/i)).toBeInTheDocument();
+    });
+    expect(saveLinkMock).not.toHaveBeenCalled();
+    expect(calledUrls(fetchMock)).not.toContain("/api/links/req123/claim");
+
+    setItemSpy.mockRestore();
+  });
+
   it("shows an error and does not save a local key when the claim request fails", async () => {
     vi.stubGlobal(
       "fetch",

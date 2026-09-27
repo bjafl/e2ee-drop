@@ -26,6 +26,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useLocalLinks } from "@/hooks/useLocalLinks";
+import { isLocalStorageWritable } from "@/lib/storageProbe";
 import { useFileEncryption, type DecryptedMetadata } from "@/hooks/useFileEncryption";
 import { downloadWithProgress } from "@/hooks/useStreamedDownload";
 import { useAuth } from "@/hooks/useAuth";
@@ -135,9 +136,19 @@ function ReceivePageForLink() {
   // just what removes it from the list *within this session*, before the
   // next snapshot/SSE event would otherwise do the same.
   const [downloadedIds, setDownloadedIds] = useState<Set<string>>(new Set());
-  const [autoSave, setAutoSave] = useState(
-    () => window.localStorage.getItem(AUTO_SAVE_STORAGE_KEY) !== "false"
-  );
+  const [autoSave, setAutoSave] = useState(() => {
+    // Task 9 / F9 (step 2): not routed through useLocalLinks.ts, so it needs
+    // its own try/catch — same discipline as that hook's own storage
+    // reads/writes. A throw here (private browsing, blocked storage) would
+    // otherwise happen during render with no error boundary in place,
+    // blank-screening the whole page. Falls back to the same default as an
+    // absent key (auto-save on) when storage can't be read at all.
+    try {
+      return window.localStorage.getItem(AUTO_SAVE_STORAGE_KEY) !== "false";
+    } catch {
+      return true;
+    }
+  });
   // C1 (final review): a sender-initiated request link's real claimant is
   // never `link.ownerId` (that's always the initiator who created the
   // request link — see design spec §4.1/§4.2), even after they claim it with
@@ -583,7 +594,17 @@ function ReceivePageForLink() {
                     autoSave={autoSave}
                     onAutoSaveChange={(value) => {
                       setAutoSave(value);
-                      window.localStorage.setItem(AUTO_SAVE_STORAGE_KEY, String(value));
+                      // Task 9 / F9 (step 2): same rationale as the useState
+                      // initializer above — this write isn't routed through
+                      // useLocalLinks.ts either, so it needs its own
+                      // try/catch. The toggle still works for this tab
+                      // (setAutoSave above already updated it); only the
+                      // cross-reload persistence is lost on failure.
+                      try {
+                        window.localStorage.setItem(AUTO_SAVE_STORAGE_KEY, String(value));
+                      } catch {
+                        // localStorage unavailable — the preference just won't survive a reload.
+                      }
                     }}
                     t={t}
                   />
@@ -618,6 +639,19 @@ function ClaimView({
 
   const claimAnonymously = async () => {
     setError(null);
+    // Task 9 / F9 (step 1, strategy a): the claim below is irreversible
+    // (there's no unclaim route) and its whole point is a private key that
+    // only survives via saveLink -> useLocalLinks' localStorage write.
+    // Awaiting saveLink can't itself surface a storage failure — its actual
+    // localStorage.setItem happens later, decoupled, inside useLocalLinks'
+    // own useEffect (wrapped in a try/catch with no re-throw) — so probe
+    // storage directly first and refuse to claim rather than leave the user
+    // with a permanently claimed link whose key exists only in this tab's
+    // memory.
+    if (!isLocalStorageWritable()) {
+      setError(t("errors.storageUnavailable"));
+      return;
+    }
     const keyPair = nacl.box.keyPair();
     const res = await fetch(`/api/links/${slug}/claim`, {
       method: "POST",

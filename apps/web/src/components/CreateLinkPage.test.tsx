@@ -120,6 +120,32 @@ describe("CreateLinkPage", () => {
     });
   });
 
+  // Task 9 / review finding F9: awaiting saveLink can't itself observe a
+  // localStorage failure — its actual write happens later, decoupled, inside
+  // useLocalLinks' own useEffect (see that hook's source). So the guard has
+  // to be a direct storage probe run before the irreversible POST /api/links
+  // call, not something inferrable from saveLink's resolved/rejected promise.
+  it("Task 9: warns instead of creating a link when localStorage is unavailable (private browsing/quota)", async () => {
+    const user = userEvent.setup();
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("QuotaExceededError");
+    });
+
+    render(<CreateLinkPage />);
+    await user.click(screen.getByRole("button", { name: /create/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(/save the decryption key/i);
+    });
+    // The irreversible server call must never fire once storage has already
+    // failed to probe as writable — otherwise the key would exist only in
+    // this tab's memory with no way to recover it later.
+    expect(window.fetch).not.toHaveBeenCalled();
+    expect(screen.queryByText(/abc123/)).not.toBeInTheDocument();
+
+    setItemSpy.mockRestore();
+  });
+
   it("PIN-protects the stored key when the user sets a PIN", async () => {
     const user = userEvent.setup();
     render(<CreateLinkPage />);

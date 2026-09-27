@@ -14,5 +14,8 @@
   "codewordsLabel": "Verifiseringsord — les disse høyt for å bekrefte at avsenderen har riktig lenke",
   "downloadPageHint": "Bruk denne nettleseren: filen kan bare dekrypteres her. Åpne nedlastingssiden din for å vente på at avsenderen laster opp.",
   "goToDownloadPage": "Gå til nedlastingssiden din",
-  "errors": { "createFailed": "Kunne ikke opprette lenke. Prøv igjen." }
+  "errors": {
+    "createFailed": "Kunne ikke opprette lenke. Prøv igjen.",
+    "storageUnavailable": "Denne nettleseren kan ikke lagre dekrypteringsnøkkelen (privat modus, eller lagring er blokkert/full). Å opprette en lenke her ville latt nøkkelen bare ligge i denne fanens minne. Aktiver lagring eller bruk en annen nettleser, og prøv igjen."
+  }
 }

@@ -8,6 +8,7 @@ import type { CreateLinkResponse } from "@e2ee-drop/shared";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useLocalLinks } from "@/hooks/useLocalLinks";
+import { isLocalStorageWritable } from "@/lib/storageProbe";
 import { useCodewords } from "@/hooks/useCodewords";
 import i18n from "@/i18n";
 import createLinkEn from "@/locales/en/createLink.json";
@@ -40,8 +41,21 @@ export function CreateLinkPage() {
   const [creating, setCreating] = useState(false);
 
   const create = async () => {
-    setCreating(true);
     setError(null);
+    // Task 9 / F9 (step 1, strategy a): the create call below persists its
+    // private key the same way ReceivePage.tsx's anonymous claim does — via
+    // saveLink -> useLocalLinks' localStorage write, whose actual
+    // localStorage.setItem happens later, decoupled, inside that hook's own
+    // useEffect (try/catch, no re-throw). Awaiting saveLink can't surface a
+    // storage failure, so probe storage directly first, same as ClaimView.
+    // Milder consequence than the claim flow (an unused link just expires
+    // server-side), but still worth refusing rather than silently leaving the
+    // key in memory only.
+    if (!isLocalStorageWritable()) {
+      setError(t("errors.storageUnavailable"));
+      return;
+    }
+    setCreating(true);
     try {
       const keyPair = nacl.box.keyPair();
       const locale = i18next.language?.startsWith("nb") ? "nb" : "en";
