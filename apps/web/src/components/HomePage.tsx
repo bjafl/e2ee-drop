@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import type { ListLinksResponse, LinkSummary } from "@e2ee-drop/shared";
+import type { InboxCounterparty, InboxResponse, ListLinksResponse, LinkSummary } from "@e2ee-drop/shared";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/useAuth";
 import { useLocalLinks } from "@/hooks/useLocalLinks";
@@ -43,6 +43,29 @@ export function HomePage() {
     };
   }, [isDashboard]);
 
+  // Spec §5's "pending receipts" dashboard section (drops on the caller's own links not yet
+  // delivered). Reuses GET /api/inbox (Task 5) rather than re-deriving the same aggregation
+  // client-side — filtering its "incoming" counterparties is exactly that data.
+  const [myInboxCounterparties, setMyInboxCounterparties] = useState<InboxCounterparty[] | null>(null);
+
+  useEffect(() => {
+    if (!isDashboard) return;
+    let cancelled = false;
+    fetch("/api/inbox")
+      .then((res) => (res.ok ? (res.json() as Promise<InboxResponse>) : Promise.reject()))
+      .then((data) => {
+        if (!cancelled) setMyInboxCounterparties(data.counterparties);
+      })
+      .catch(() => {
+        if (!cancelled) setMyInboxCounterparties([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isDashboard]);
+
+  const pendingReceipts = myInboxCounterparties?.filter((c) => c.direction === "incoming") ?? null;
+
   const anonymousSection = localLinks.length > 0 && (
     <div data-testid="anonymous-links-section" className="mt-10 text-left">
       <h2 className="text-sm font-semibold">{t("yourLinks")}</h2>
@@ -74,6 +97,21 @@ export function HomePage() {
               <li key={link.slug} className="text-sm">
                 <span className="font-mono">{link.slug}</span>
                 {link.revokedAt && <span className="ml-2 text-muted-foreground">{t("revoked")}</span>}
+              </li>
+            ))}
+          </ul>
+        </section>
+        <section data-testid="dashboard-pending-receipts" className="mt-8 border-t pt-6">
+          <h2 className="text-sm font-semibold">{t("pendingReceiptsHeading")}</h2>
+          {pendingReceipts === null && <p className="text-sm text-muted-foreground">{t("loading")}</p>}
+          {pendingReceipts?.length === 0 && <p className="text-sm text-muted-foreground">{t("noPendingReceipts")}</p>}
+          <ul className="mt-2 space-y-1">
+            {pendingReceipts?.map((c) => (
+              <li key={c.key} className="text-sm">
+                <Link to="/inbox" className="underline">
+                  {c.displayName}
+                </Link>{" "}
+                <span className="text-muted-foreground">({c.drops.length})</span>
               </li>
             ))}
           </ul>

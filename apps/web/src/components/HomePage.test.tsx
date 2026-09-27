@@ -96,13 +96,18 @@ describe("HomePage dashboard branch", () => {
     };
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          links: [
-            { slug: "verifieduser", mode: "permanent", visibility: "public", isDefault: true, createdAt: 1, retentionDays: 7 },
-          ],
-        }),
+      vi.fn((url: string) => {
+        if (url === "/api/inbox") {
+          return Promise.resolve({ ok: true, json: async () => ({ counterparties: [] }) });
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            links: [
+              { slug: "verifieduser", mode: "permanent", visibility: "public", isDefault: true, createdAt: 1, retentionDays: 7 },
+            ],
+          }),
+        });
       })
     );
   });
@@ -119,6 +124,55 @@ describe("HomePage dashboard branch", () => {
 
     await waitFor(() => expect(screen.getByTestId("dashboard-active-links")).toBeInTheDocument());
     expect(screen.getByTestId("anonymous-links-section")).toBeInTheDocument();
+  });
+
+  it("shows the pending-receipts section with an incoming counterparty from GET /api/inbox", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url === "/api/inbox") {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              counterparties: [
+                {
+                  key: "incoming:account:2",
+                  kind: "account",
+                  displayName: "waitingsender",
+                  direction: "incoming",
+                  drops: [
+                    { id: "d1", linkSlug: "s", deliveryStatus: "sent", messageEnvelopeStatus: "sealed", fileEnvelopeStatus: "sealed", hasMessage: false, createdAt: 1 },
+                  ],
+                },
+              ],
+            }),
+          });
+        }
+        return Promise.resolve({ ok: true, json: async () => ({ links: [] }) });
+      })
+    );
+
+    renderHome();
+
+    await waitFor(() => expect(screen.getByTestId("dashboard-pending-receipts")).toBeInTheDocument());
+    expect(screen.getByText("waitingsender")).toBeInTheDocument();
+  });
+
+  it("shows the empty-state message when the inbox has no incoming counterparties", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url === "/api/inbox") {
+          return Promise.resolve({ ok: true, json: async () => ({ counterparties: [] }) });
+        }
+        return Promise.resolve({ ok: true, json: async () => ({ links: [] }) });
+      })
+    );
+
+    renderHome();
+
+    await waitFor(() => expect(screen.getByTestId("dashboard-pending-receipts")).toBeInTheDocument());
+    expect(screen.getByText("You have no pending receipts.")).toBeInTheDocument();
   });
 });
 
