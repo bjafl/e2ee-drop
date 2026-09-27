@@ -127,6 +127,11 @@ model Link {
 
   ownerNote String?
 
+  // Lightweight, non-blocking: updated on every send-side GET, never gated by a CAS (every visit
+  // just overwrites it). Does not create any Drop and never interacts with the one-time-link
+  // single-drop invariant. See design spec §2 for why this is separate from Drop.deliveryStatus.
+  lastSenderOpenedAt DateTime?
+
   // Replaces the old @@unique([ownerId, slug]) index's role in serving
   // owner-scoped queries (e.g. cascadeDeleteUserLinks' findMany by ownerId).
   @@index([ownerId])

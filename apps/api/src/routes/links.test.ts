@@ -11,6 +11,7 @@ vi.mock("../lib/storage", async (importOriginal) => ({
 
 import { buildServer } from "../server";
 import { env } from "../env";
+import { chargedBytes } from "../lib/quota";
 import { subscribeToLink, type DropEvent } from "../lib/dropEvents";
 
 // The brief this suite was drafted from used a placeholder `x-test-user-id`
@@ -272,6 +273,128 @@ describe("link routes", () => {
     expect(response.statusCode).toBe(403);
     expect(await prisma.link.findUnique({ where: { id: link.id } })).not.toBeNull();
     expect(deleteObjectMock).not.toHaveBeenCalled();
+  });
+
+  // Task 11: DELETE /api/links/:slug now also succeeds for the authenticated
+  // owner of an owned link, instead of unconditionally rejecting every owned
+  // link (the test above covers the still-rejected unauthenticated case).
+  describe("DELETE /api/links/:slug for an authenticated owner", () => {
+    async function createOwnedDrop(linkId: string, key: string, fileEnvelopeStatus: "sealed" | "delivered" = "sealed") {
+      return prisma.drop.create({
+        data: {
+          linkId,
+          senderPublicKey: "c2VuZGVy",
+          s3Key: `${linkId}/${key}`,
+          archiveNonce: "bm9uY2U=",
+          contentMD5: "bWQ1",
+          encryptedMetadata: "bWV0YWRhdGE=",
+          metadataNonce: "bWV0YS1ub25jZQ==",
+          fileSize: 1024,
+          fileUploadStatus: "complete",
+          fileEnvelopeStatus,
+        },
+      });
+    }
+
+    it("allows the authenticated owner to delete their own link", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "deleteowner1");
+      const link = await prisma.link.create({
+        data: { ownerId: owner.userId, slug: "owner-delete-me", mode: "permanent", recipientPublicKey: owner.publicKey, retentionDays: 7 },
+      });
+
+      const res = await server.inject({
+        method: "DELETE",
+        url: `/api/links/${link.slug}`,
+        cookies: owner.cookies,
+      });
+
+      expect(res.statusCode).toBe(200);
+    });
+
+    it("deletes each still-present drop's storage object, releases only still-charged quota, then deletes the Link row", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "deleteowner2");
+      const link = await prisma.link.create({
+        data: { ownerId: owner.userId, slug: "owner-scrub-drops", mode: "permanent", recipientPublicKey: owner.publicKey, retentionDays: 7 },
+      });
+      const sealed = await createOwnedDrop(link.id, "sealed-drop", "sealed");
+      const delivered = await createOwnedDrop(link.id, "delivered-drop", "delivered");
+      // Quota fixture: both drops were charged at /complete, but the delivered drop's
+      // charge was already released when its complete-download CAS won (lib/quota.ts
+      // header invariant). So only the still-sealed drop is charged right now — and the
+      // delete must release exactly that, never the delivered drop's charge a second time.
+      await prisma.user.update({
+        where: { id: owner.userId },
+        data: { storageUsedBytes: chargedBytes(sealed.fileSize) },
+      });
+
+      const res = await server.inject({
+        method: "DELETE",
+        url: `/api/links/${link.slug}`,
+        cookies: owner.cookies,
+      });
+
+      expect(res.statusCode).toBe(200);
+      // The already-terminal (delivered) drop's object is already gone, so its
+      // storage object is never touched here; only the still-sealed drop's object
+      // is deleted.
+      expect(deleteObjectMock).toHaveBeenCalledWith(sealed.s3Key);
+      expect(deleteObjectMock).not.toHaveBeenCalledWith(delivered.s3Key);
+      const found = await prisma.link.findUnique({ where: { slug: link.slug } });
+      expect(found).toBeNull();
+      expect(await prisma.drop.count({ where: { linkId: link.id } })).toBe(0);
+      const after = await prisma.user.findUniqueOrThrow({ where: { id: owner.userId } });
+      expect(after.storageUsedBytes).toBe(0n);
+    });
+
+    it("refuses to let the owner delete their own default link (403)", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "deleteowner4");
+      const defaultLink = await prisma.link.findFirstOrThrow({ where: { ownerId: owner.userId, isDefault: true } });
+      await createOwnedDrop(defaultLink.id, "default-drop", "sealed");
+
+      const res = await server.inject({
+        method: "DELETE",
+        url: `/api/links/${defaultLink.slug}`,
+        cookies: owner.cookies,
+      });
+
+      expect(res.statusCode).toBe(403);
+      expect(await prisma.link.findUnique({ where: { id: defaultLink.id } })).not.toBeNull();
+      expect(await prisma.drop.count({ where: { linkId: defaultLink.id } })).toBe(1);
+      expect(deleteObjectMock).not.toHaveBeenCalled();
+    });
+
+    it("still rejects a non-owner for an owned link", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "deleteowner3");
+      const intruder = await registerAndGetCookie(server, "deleteintruder");
+      const link = await prisma.link.create({
+        data: { ownerId: owner.userId, slug: "owner-not-yours", mode: "permanent", recipientPublicKey: owner.publicKey, retentionDays: 7 },
+      });
+
+      const res = await server.inject({
+        method: "DELETE",
+        url: `/api/links/${link.slug}`,
+        cookies: intruder.cookies,
+      });
+
+      expect(res.statusCode).toBe(403);
+      expect(await prisma.link.findUnique({ where: { id: link.id } })).not.toBeNull();
+      expect(deleteObjectMock).not.toHaveBeenCalled();
+    });
+
+    it("anonymous-link deletion is unchanged", async () => {
+      const server = buildServer();
+      const { link: anonymousLink, drop } = await createLinkWithDrop("owner-delete-anon-unchanged", new Date(Date.now() + 60_000));
+
+      const res = await server.inject({ method: "DELETE", url: `/api/links/${anonymousLink.slug}` });
+
+      expect(res.statusCode).toBe(200);
+      expect(deleteObjectMock).toHaveBeenCalledWith(drop.s3Key);
+      expect(await prisma.link.findUnique({ where: { id: anonymousLink.id } })).toBeNull();
+    });
   });
 
   it("includes recipient name and email-verified status for an owned link, and omits them for an anonymous one", async () => {
@@ -824,6 +947,72 @@ describe("link routes", () => {
       // that hidden from them), so check the underlying row directly.
       const drop = await prisma.drop.findFirstOrThrow({ where: { linkId: link.id } });
       expect(drop.deliveryStatus).toBe("sent");
+    });
+  });
+
+  describe("POST /api/links/:slug/mark-sender-opened", () => {
+    it("updates Link.lastSenderOpenedAt", async () => {
+      const server = buildServer();
+      const { link } = await createLinkWithDrop("mark-sender-opened-basic", new Date(Date.now() + 60_000));
+      const before = await prisma.link.findUniqueOrThrow({ where: { slug: link.slug } });
+      expect(before.lastSenderOpenedAt).toBeNull();
+
+      const response = await server.inject({
+        method: "POST",
+        url: `/api/links/${link.slug}/mark-sender-opened`,
+      });
+      expect(response.statusCode).toBe(200);
+
+      const after = await prisma.link.findUniqueOrThrow({ where: { slug: link.slug } });
+      expect(after.lastSenderOpenedAt).not.toBeNull();
+    });
+
+    it("does not create any Drop or touch deliveryStatus", async () => {
+      const server = buildServer();
+      const { link } = await createLinkWithDrop(
+        "mark-sender-opened-no-side-effect",
+        new Date(Date.now() + 60_000)
+      );
+      const before = await prisma.drop.count({ where: { linkId: link.id } });
+
+      await server.inject({ method: "POST", url: `/api/links/${link.slug}/mark-sender-opened` });
+
+      const after = await prisma.drop.count({ where: { linkId: link.id } });
+      expect(after).toBe(before);
+      const drop = await prisma.drop.findFirstOrThrow({ where: { linkId: link.id } });
+      expect(drop.deliveryStatus).toBe("sent");
+    });
+
+    it("a second visit overwrites the earlier timestamp, not just the first", async () => {
+      const server = buildServer();
+      const { link } = await createLinkWithDrop("mark-sender-opened-overwrite", new Date(Date.now() + 60_000));
+
+      await server.inject({ method: "POST", url: `/api/links/${link.slug}/mark-sender-opened` });
+      const first = (await prisma.link.findUniqueOrThrow({ where: { slug: link.slug } })).lastSenderOpenedAt;
+      await new Promise((r) => setTimeout(r, 5));
+      await server.inject({ method: "POST", url: `/api/links/${link.slug}/mark-sender-opened` });
+      const second = (await prisma.link.findUniqueOrThrow({ where: { slug: link.slug } })).lastSenderOpenedAt;
+
+      expect(second!.getTime()).toBeGreaterThan(first!.getTime());
+    });
+
+    it("plain GET never touches lastSenderOpenedAt on its own", async () => {
+      const server = buildServer();
+      const { link } = await createLinkWithDrop("mark-sender-opened-get-noop", new Date(Date.now() + 60_000));
+
+      await server.inject({ method: "GET", url: `/api/links/${link.slug}` });
+
+      const after = await prisma.link.findUniqueOrThrow({ where: { slug: link.slug } });
+      expect(after.lastSenderOpenedAt).toBeNull();
+    });
+
+    it("returns 404 for an unknown slug", async () => {
+      const server = buildServer();
+      const response = await server.inject({
+        method: "POST",
+        url: "/api/links/does-not-exist/mark-sender-opened",
+      });
+      expect(response.statusCode).toBe(404);
     });
   });
 

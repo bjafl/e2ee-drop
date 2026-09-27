@@ -23,6 +23,7 @@ import {
 } from "../lib/links";
 import { hasAcceptedContact, hasBlockRelationship } from "../lib/contacts";
 import { deleteObject } from "../lib/storage";
+import { deleteLinkReleasingQuota } from "../lib/quota";
 import { resolveLocale, deriveCodewords } from "../lib/codewords";
 import { resolveRetentionDays } from "../lib/retention";
 import { emitDropEvent } from "../lib/dropEvents";
@@ -354,6 +355,24 @@ export function registerLinkRoutes(server: FastifyInstance): void {
     }
   );
 
+  // Send-side signal (spec 1 plan 3 Task 11 / Task 5 of the delivery-lifecycle-
+  // retention plan). Symmetric counterpart to mark-receiver-opened above, but
+  // deliberately simpler: unconditional overwrite of Link.lastSenderOpenedAt
+  // on every call, no CAS and no deliveryStatus check. This is pure
+  // informational telemetry ("when did the sender last look at this link's
+  // page") with no downstream effect on the burn/envelope state machine, so
+  // every visit is meaningful, not just the first. No auth required, no body.
+  server.post<{ Params: { slug: string } }>(
+    "/api/links/:slug/mark-sender-opened",
+    async (request, reply) => {
+      const link = await getLinkBySlug(request.params.slug);
+      if (!link) return reply.status(404).send({ error: "Link not found" });
+      if (isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+      await prisma.link.updateMany({ where: { id: link.id }, data: { lastSenderOpenedAt: new Date() } });
+      return reply.send({ acknowledged: true });
+    }
+  );
+
   server.delete<{ Params: { slug: string } }>("/api/links/:slug", async (request, reply) => {
     const link = await getLinkBySlug(request.params.slug);
     if (!link) return reply.status(404).send({ error: "Link not found" });
@@ -372,7 +391,29 @@ export function registerLinkRoutes(server: FastifyInstance): void {
     // rationale and for the creator "manage token" design to adopt if this
     // route ever needs to be restricted to the link's creator.
     if (link.ownerId !== null) {
-      return reply.status(403).send({ error: "Owned links cannot be deleted through this endpoint" });
+      if (link.ownerId !== request.user?.id) {
+        return reply.status(403).send({ error: "Forbidden" });
+      }
+      // Spec §5: a user's default link is non-deletable.
+      if (link.isDefault) {
+        return reply.status(403).send({ error: "The default link cannot be deleted" });
+      }
+      // Owner-initiated delete of their own link. The Link row (and, by cascade, every
+      // Drop row) is hard-deleted in this same request, so scrubbing first would add
+      // nothing but a race window. Storage objects first (same order as the anonymous
+      // branch below), skipping drops whose object is already gone (file envelope
+      // terminal). Then deleteLinkReleasingQuota: it row-locks the owner and the Link
+      // (blocking a concurrent drop insert or /complete from racing the delete) and
+      // releases quota from its atomic DELETE ... RETURNING — only for drops still
+      // charged, i.e. whose file side was not already delivered/shredded (their charge
+      // was released when that terminal transition happened).
+      for (const drop of link.drops) {
+        if (drop.fileEnvelopeStatus !== "delivered" && drop.fileEnvelopeStatus !== "shredded") {
+          await deleteObject(drop.s3Key);
+        }
+      }
+      await deleteLinkReleasingQuota(link);
+      return reply.send({ deleted: true });
     }
     // Same order as runCleanup (jobs/cleanup.ts): storage objects first, then the
     // row. If a storage delete throws, the row (and thus the s3Key) survives, so the

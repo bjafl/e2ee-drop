@@ -166,6 +166,20 @@ describe("UploadPage", () => {
     expect(screen.queryByText(/otter/)).not.toBeInTheDocument();
   });
 
+  it("fires a fire-and-forget mark-sender-opened POST alongside the plain GET on mount", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => LINK_RESPONSE });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAt("abc123");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("recipient-badge")).toBeInTheDocument();
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/links/abc123");
+    expect(fetchMock).toHaveBeenCalledWith("/api/links/abc123/mark-sender-opened", { method: "POST" });
+  });
+
   it("shows the anonymous-recipient indicator for an ownerless link", async () => {
     renderAt("abc123");
 
@@ -342,6 +356,7 @@ describe("UploadPage", () => {
     const fetchMock = vi.fn();
     fetchMock
       .mockResolvedValueOnce({ ok: true, json: async () => LINK_RESPONSE }) // GET link
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ acknowledged: true }) }) // mark-sender-opened
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({ dropId: "drop1", uploadUrl: "https://example.com/upload" }),
@@ -402,6 +417,7 @@ describe("UploadPage", () => {
     const fetchMock = vi.fn();
     fetchMock
       .mockResolvedValueOnce({ ok: true, json: async () => LINK_RESPONSE }) // GET link
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ acknowledged: true }) }) // mark-sender-opened
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({ dropId: "drop1", uploadUrl: "https://example.com/upload" }),
@@ -484,6 +500,7 @@ describe("UploadPage", () => {
     const fetchMock = vi.fn();
     fetchMock
       .mockResolvedValueOnce({ ok: true, json: async () => LINK_RESPONSE }) // GET link
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ acknowledged: true }) }) // mark-sender-opened
       .mockResolvedValueOnce({ ok: false, json: async () => ({}) }) // upload-url fails (attempt 1)
       .mockResolvedValueOnce({
         ok: true,
@@ -523,6 +540,7 @@ describe("UploadPage", () => {
     const fetchMock = vi.fn();
     fetchMock
       .mockResolvedValueOnce({ ok: true, json: async () => LINK_RESPONSE }) // GET link
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ acknowledged: true }) }) // mark-sender-opened
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({ dropId: "drop1", uploadUrl: "https://example.com/upload" }),
@@ -561,6 +579,7 @@ describe("UploadPage", () => {
     const fetchMock = vi.fn();
     fetchMock
       .mockResolvedValueOnce({ ok: true, json: async () => LINK_RESPONSE }) // GET link
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ acknowledged: true }) }) // mark-sender-opened
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({ dropId: "drop1", uploadUrl: "https://example.com/upload" }),
@@ -579,9 +598,16 @@ describe("UploadPage", () => {
     // react-dropzone doesn't set the DOM `disabled` attribute on its hidden
     // input when `disabled: true` — it detaches the input's onChange handler
     // instead — so we assert the in-flight state via the encrypting progress
-    // indicator rather than an input `disabled` check.
+    // indicator rather than an input `disabled` check. The "encrypting"
+    // indicator renders as soon as isUploading flips true, which is
+    // synchronous and can land before doSend's async file.arrayBuffer() step
+    // actually calls encryptForSend — so also wait for that call directly
+    // before making assertions that depend on it having already happened.
     await waitFor(() => {
       expect(screen.getByText(/encrypting/i)).toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(encryptForSendMock).toHaveBeenCalledTimes(1);
     });
 
     // Re-selecting while the first upload is still in flight must be a

@@ -85,6 +85,11 @@ export function UploadPage() {
       .catch(() => {
         if (!cancelled) setError(t("errors.linkNotFound"));
       });
+    // Fire-and-forget send-side "opened" telemetry signal (Task 5 of the
+    // delivery-lifecycle-retention plan) — deliberately uncoupled from the GET
+    // above: it must not gate or block rendering of the link status, so its
+    // result (success or failure) is intentionally never inspected here.
+    fetch(`/api/links/${slug}/mark-sender-opened`, { method: "POST" }).catch(() => {});
     return () => {
       cancelled = true;
     };

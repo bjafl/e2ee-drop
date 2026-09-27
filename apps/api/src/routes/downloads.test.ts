@@ -15,6 +15,7 @@ vi.mock("../lib/storage", async (importOriginal) => ({
 
 import { buildServer } from "../server";
 import { prisma } from "@e2ee-drop/db";
+import { chargedBytes } from "../lib/quota";
 
 // Creates an anonymous link with a single drop against the current schema
 // (mirrors the reveal-message suite's createLinkWithMessage below). Calling
@@ -450,6 +451,24 @@ describe("complete-download route", () => {
     expect(drop?.fileEnvelopeStatus).toBe("delivered");
   });
 
+  it("complete-download's deliveryStatus derivation survives a concurrent reveal-message", async () => {
+    const server = buildServer();
+    // Drop has a message, fileEnvelopeStatus "sealed", messageEnvelopeStatus "sealed".
+    const { slug, dropId } = await createLinkWithDrop(server, {
+      message: { encryptedMessage: "c2VjcmV0", messageNonce: "bm9uY2U=" },
+    });
+    // Fire both calls "concurrently" (Promise.all) against the test server.
+    await Promise.all([
+      server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/reveal-message` }),
+      server.inject({ method: "POST", url: `/api/links/${slug}/drops/${dropId}/complete-download` }),
+    ]);
+    const status = await server.inject({ method: "GET", url: `/api/links/${slug}` });
+    // Whichever order the two calls actually completed in, both envelopes end up delivered,
+    // and the derived overall status must reflect that — not get stuck at partial_delivery from
+    // one call's stale read of the other's not-yet-committed state.
+    expect(status.json().drop.deliveryStatus).toBe("delivered");
+  });
+
   it("returns 404 for a nonexistent drop and never calls deleteObject", async () => {
     const server = buildServer();
     const { slug } = await createLinkWithDrop(server);
@@ -555,6 +574,32 @@ describe("owned-link complete-download route", () => {
     expect((await prisma.drop.findUnique({ where: { id: second.id } }))?.fileEnvelopeStatus).toBe("sealed");
     expect(deleteObjectMock).toHaveBeenCalledTimes(1);
     expect(deleteObjectMock).toHaveBeenCalledWith(first.s3Key);
+  });
+
+  // Finding C1: complete-download used to never release the owner's quota at all, so every
+  // successfully delivered drop kept counting against the owner's storage forever.
+  it("releases exactly chargedBytes(fileSize) of the owner's quota when its CAS wins, and nothing on a repeat call", async () => {
+    const server = buildServer();
+    const { owner, link, first, second } = await ownedLinkWithQueue(server, "cdquota");
+    // Both queued drops are "complete", i.e. charged at /complete.
+    await prisma.user.update({
+      where: { id: owner.userId },
+      data: { storageUsedBytes: chargedBytes(first.fileSize) + chargedBytes(second.fileSize) },
+    });
+    const url = `/api/links/${link.slug}/drops/${first.id}/complete-download`;
+
+    const response = await server.inject({ method: "POST", url, cookies: owner.cookies });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ completed: true });
+    const afterFirst = await prisma.user.findUniqueOrThrow({ where: { id: owner.userId } });
+    expect(afterFirst.storageUsedBytes).toBe(chargedBytes(second.fileSize)); // decreased by exactly one drop's charge
+
+    const repeat = await server.inject({ method: "POST", url, cookies: owner.cookies });
+
+    expect(repeat.json()).toEqual({ completed: false });
+    const afterRepeat = await prisma.user.findUniqueOrThrow({ where: { id: owner.userId } });
+    expect(afterRepeat.storageUsedBytes).toBe(chargedBytes(second.fileSize)); // not released twice
   });
 });
 
@@ -871,6 +916,43 @@ describe("reveal-message route", () => {
     });
     expect(res.statusCode).toBe(404);
   });
+
+  it("reveal-message also advances deliveryStatus toward partial_delivery/delivered", async () => {
+    const server = buildServer();
+    const createRes = await server.inject({
+      method: "POST",
+      url: "/api/links",
+      payload: { recipientPublicKey: "cmVjaXBpZW50" },
+    });
+    const { slug } = createRes.json();
+
+    // Drop has a message and an already-"delivered" fileEnvelopeStatus (file downloaded first)
+    const link = (await prisma.link.findUnique({ where: { slug } }))!;
+    const drop = await prisma.drop.create({
+      data: {
+        linkId: link.id,
+        senderPublicKey: "c2VuZGVy",
+        s3Key: `${link.id}/with-message`,
+        archiveNonce: "YXJjaGl2ZQ==",
+        contentMD5: "bWQ1",
+        encryptedMetadata: "bWV0YWRhdGE=",
+        metadataNonce: "bWV0YW5vbmNl",
+        fileSize: 1024,
+        fileUploadStatus: "complete",
+        encryptedMessage: "c2VjcmV0",
+        messageNonce: "bm9uY2U=",
+        fileEnvelopeStatus: "delivered",
+      },
+    });
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/${drop.id}/reveal-message`,
+    });
+    expect(res.statusCode).toBe(200);
+    const status = await server.inject({ method: "GET", url: `/api/links/${slug}` });
+    expect(status.json().drop.deliveryStatus).toBe("delivered");
+  });
 });
 
 // Finding I5: reveal-message previously had no ownership check at all — a
@@ -933,6 +1015,105 @@ describe("owned-link reveal-message route", () => {
 
     expect(res.statusCode).toBe(200);
     expect((await prisma.drop.findUnique({ where: { id: drop.id } }))?.encryptedMessage).toBeNull();
+  });
+});
+
+describe("owner-cancel route", () => {
+  beforeEach(async () => {
+    deleteObjectMock.mockReset();
+    deleteObjectMock.mockResolvedValue(undefined);
+    await prisma.contact.deleteMany();
+    await prisma.session.deleteMany();
+    await prisma.drop.deleteMany();
+    await prisma.link.deleteMany();
+    await prisma.user.deleteMany();
+  });
+
+  it("owner-cancel scrubs a sealed drop's content", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "cancelowner1");
+    const link = (await prisma.link.findUnique({ where: { slug: "cancelowner1" } }))!;
+    const drop = await createQueuedDrop(link.id, "sealed", "complete");
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/drops/${drop.id}/owner-cancel`,
+      cookies: owner.cookies,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ cancelled: true });
+    expect(deleteObjectMock).toHaveBeenCalledWith(drop.s3Key);
+    const after = await prisma.drop.findUniqueOrThrow({ where: { id: drop.id } });
+    expect(after.fileEnvelopeStatus).toBe("shredded");
+  });
+
+  it("rejects a non-owner", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "cancelowner2");
+    const link = (await prisma.link.findUnique({ where: { slug: "cancelowner2" } }))!;
+    const drop = await createQueuedDrop(link.id, "sealed", "complete");
+    const intruder = await registerAndGetCookie(server, "cancelintruder2");
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/drops/${drop.id}/owner-cancel`,
+      cookies: intruder.cookies,
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(deleteObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op, not an error, on an already-delivered drop", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "cancelowner3");
+    const link = (await prisma.link.findUnique({ where: { slug: "cancelowner3" } }))!;
+    const drop = await prisma.drop.create({
+      data: {
+        linkId: link.id,
+        senderPublicKey: "c2VuZGVy",
+        s3Key: `${link.id}/delivered`,
+        archiveNonce: "YXJjaGl2ZQ==",
+        contentMD5: "bWQ1",
+        encryptedMetadata: "bWV0YWRhdGE=",
+        metadataNonce: "bWV0YW5vbmNl",
+        fileSize: 1024,
+        fileUploadStatus: "complete",
+        fileEnvelopeStatus: "delivered",
+        messageEnvelopeStatus: "delivered",
+        encryptedMessage: "c2VjcmV0",
+        messageNonce: "bm9uY2U=",
+      },
+    });
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/drops/${drop.id}/owner-cancel`,
+      cookies: owner.cookies,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ cancelled: false });
+    expect(deleteObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("delegates to abandon semantics for a still-uploading drop", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "cancelowner4");
+    const link = (await prisma.link.findUnique({ where: { slug: "cancelowner4" } }))!;
+    const drop = await createQueuedDrop(link.id, "uploading", "uploading");
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/drops/${drop.id}/owner-cancel`,
+      cookies: owner.cookies,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ cancelled: true });
+    const after = await prisma.drop.findUnique({ where: { id: drop.id } });
+    expect(after).toBeNull(); // abandoned (row removed), not scrubbed-in-place
   });
 });
 

@@ -2,8 +2,9 @@
 import type { FastifyInstance } from "fastify";
 import { prisma } from "@e2ee-drop/db";
 import type { DownloadUrlResponse, RevealMessageResponse } from "@e2ee-drop/shared";
-import { canReceive, getLinkBySlug, isLinkExpired } from "../lib/links";
+import { abandonDrop, canReceive, getLinkBySlug, isLinkExpired, recomputeDeliveryStatus } from "../lib/links";
 import { getSignedDownloadUrl, deleteObject } from "../lib/storage";
+import { scrubDropContent, lockOwnerQuota, releaseCharged, QUOTA_TX_OPTIONS } from "../lib/quota";
 
 // fileEnvelopeStatus values that mean "this drop's file bytes are gone/spoken
 // for" — a compare-and-swap gate never lets a write clobber either of these.
@@ -127,6 +128,25 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
         return reply.send({ completed: false });
       }
 
+      // Quota is charged against the file's storage bytes, and those bytes are now gone:
+      // release the owner's charge for this drop. Safe as a separate step after the CAS
+      // (not in one transaction with it) because the CAS above can be won by at most one
+      // caller, ever, for this drop — across complete-download and scrubDropContent alike —
+      // so count === 1 is an exclusive, one-time ticket to perform this release.
+      // `drop` is the pre-CAS snapshot: its fileEnvelopeStatus is still non-terminal, which
+      // is exactly what releaseCharged's filter needs to see to treat this as unreleased.
+      if (link.ownerId) {
+        const ownerId = link.ownerId;
+        await prisma.$transaction(async (tx) => {
+          const owner = await lockOwnerQuota(tx, ownerId);
+          if (owner) {
+            await releaseCharged(tx, ownerId, [
+              { fileSize: drop.fileSize, fileUploadStatus: drop.fileUploadStatus, fileEnvelopeStatus: drop.fileEnvelopeStatus },
+            ]);
+          }
+        }, QUOTA_TX_OPTIONS);
+      }
+
       // Derive the overall deliveryStatus fresh from current DB state — NOT
       // from `drop`, the snapshot fetched before this call's own CAS above —
       // after each envelope CAS win (reveal-message below does the mirror
@@ -135,24 +155,7 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
       // envelope (message here) was resolved by a different, already-
       // committed request — the entirely normal "download file, then reveal
       // message" and "reveal message, then download file" sequences.
-      await prisma.drop.updateMany({
-        where: {
-          id: dropId,
-          linkId: link.id,
-          fileEnvelopeStatus: "delivered",
-          OR: [{ messageEnvelopeStatus: "delivered" }, { encryptedMessage: null }],
-        },
-        data: { deliveryStatus: "delivered" },
-      });
-      await prisma.drop.updateMany({
-        where: {
-          id: dropId,
-          linkId: link.id,
-          deliveryStatus: { notIn: ["delivered"] },
-          OR: [{ fileEnvelopeStatus: "delivered" }, { messageEnvelopeStatus: "delivered" }],
-        },
-        data: { deliveryStatus: "partial_delivery" },
-      });
+      await recomputeDeliveryStatus(dropId, link.id);
 
       return reply.send({ completed: true });
     }
@@ -242,27 +245,37 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
       // I4): derive fresh from current DB state, not a pre-CAS snapshot, so
       // "reveal message, then download file" and "download file, then reveal
       // message" both converge on "delivered" regardless of order.
-      await prisma.drop.updateMany({
-        where: {
-          id: dropId,
-          linkId: link.id,
-          messageEnvelopeStatus: "delivered",
-          fileEnvelopeStatus: "delivered",
-        },
-        data: { deliveryStatus: "delivered" },
-      });
-      await prisma.drop.updateMany({
-        where: {
-          id: dropId,
-          linkId: link.id,
-          deliveryStatus: { notIn: ["delivered"] },
-          OR: [{ fileEnvelopeStatus: "delivered" }, { messageEnvelopeStatus: "delivered" }],
-        },
-        data: { deliveryStatus: "partial_delivery" },
-      });
+      await recomputeDeliveryStatus(dropId, link.id);
 
       const body: RevealMessageResponse = { encryptedMessage, messageNonce: messageNonce! };
       return reply.send(body);
+    }
+  );
+
+  // Owner-triggered immediate scrub/abandon of one of their own link's drops, without waiting
+  // for any timer (retention sweep, upload-window expiry, etc.). Gated on true ownership
+  // (request.user.id === link.ownerId), not canReceive — this is a management operation, same
+  // trust model as delete-link/edit-ownerNote, not a receive-side action.
+  server.post<{ Params: { slug: string; dropId: string } }>(
+    "/api/links/:slug/drops/:dropId/owner-cancel",
+    { preHandler: server.requireAuth },
+    async (request, reply) => {
+      const link = await getLinkBySlug(request.params.slug);
+      if (!link) return reply.status(404).send({ error: "Link not found" });
+      if (link.ownerId !== request.user!.id) return reply.status(403).send({ error: "Forbidden" });
+      const { dropId } = request.params;
+      const drop = link.drops.find((candidate) => candidate.id === dropId);
+      if (!drop) return reply.status(404).send({ error: "Drop not found" });
+
+      if (drop.fileUploadStatus !== "complete") {
+        // Nothing sealed yet — same outcome as the sender abandoning their own upload.
+        const abandoned = await abandonDrop(dropId, link.id);
+        return reply.send({ cancelled: abandoned });
+      }
+
+      const result = await scrubDropContent(dropId);
+      if (result) await deleteObject(result.s3Key);
+      return reply.send({ cancelled: result !== null });
     }
   );
 }

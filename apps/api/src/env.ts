@@ -12,6 +12,7 @@ export const env = {
   LINK_EXPIRY_HOURS: int("LINK_EXPIRY_HOURS", 24, { min: 1 }),
   DROP_RETENTION_DAYS_DEFAULT: int("DROP_RETENTION_DAYS_DEFAULT", 1),
   DROP_RETENTION_DAYS_MAX: int("DROP_RETENTION_DAYS_MAX", 7),
+  AUDIT_RETENTION_DAYS: int("AUDIT_RETENTION_DAYS", 30),
   // Number of words in a link's verification phrase (lib/codewords.ts). Each
   // word is one byte of a SHA-256 hash indexed into a 256-word list, so N
   // words give 256^N possible phrases (4 words = ~4.3 billion). Floored at 4:

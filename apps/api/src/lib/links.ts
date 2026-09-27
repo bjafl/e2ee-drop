@@ -4,6 +4,7 @@ import { prisma, Prisma, type Link, type Drop } from "@e2ee-drop/db";
 import type { FileUploadStatus, DropSummary, LinkStatusResponse } from "@e2ee-drop/shared";
 import { env } from "../env";
 import { resolveLocale, deriveCodewords } from "./codewords";
+import { deleteObject } from "./storage";
 
 // Also used by routes/links.ts's sender-initiated POST /api/links/request (Task 12), which
 // needs the same anonymous-slug shape but isn't creating a one-time link.
@@ -94,6 +95,27 @@ export async function transitionFileUploadStatus(
   return count === 1;
 }
 
+// Deletes a drop outright IF it is still "uploading" for this link — never a drop that has
+// completed or that never existed. Used both by the sender-facing /abandon route (uploads.ts,
+// unauthenticated — drop ids aren't secret) and by the owner-facing owner-cancel route
+// (downloads.ts) for a drop that's still mid-upload, where there's no sealed content yet to
+// scrub. Returns whether it actually abandoned something.
+export async function abandonDrop(dropId: string, linkId: string): Promise<boolean> {
+  const candidate = await prisma.drop.findFirst({
+    where: { id: dropId, linkId, fileUploadStatus: "uploading" },
+    select: { s3Key: true },
+  });
+  if (!candidate) return false;
+
+  const { count } = await prisma.drop.deleteMany({
+    where: { id: dropId, linkId, fileUploadStatus: "uploading" },
+  });
+  if (count === 1) {
+    await deleteObject(candidate.s3Key);
+  }
+  return count === 1;
+}
+
 // Distinguishes a claimed sender-initiated link (POST /api/links/request,
 // followed by a winning POST /api/links/:slug/claim) from a normal owned
 // link (the default link from registration, or POST /api/links/custom) —
@@ -166,6 +188,65 @@ export async function isSenderInitiatedReceiveCapability(
   const isOwner = userId != null && userId === link.ownerId;
   if (isOwner) return false;
   return isClaimedSenderInitiatedLink(link);
+}
+
+const DELIVERY_STATUS_RANK: Record<string, number> = {
+  sender_opened: 0,
+  sent: 1,
+  receiver_opened: 2,
+  partial_delivery: 3,
+  delivered: 4,
+};
+
+// Re-derives Drop.deliveryStatus from both envelope statuses and writes it if — and only if — the
+// derived value is strictly ahead of the row's CURRENT value at write time. Always re-reads the
+// row itself rather than trusting a caller's snapshot: this is what makes it safe to call from two
+// endpoints (reveal-message, complete-download) that can race each other on the same drop.
+export async function recomputeDeliveryStatus(dropId: string, linkId: string): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const drop = await prisma.drop.findFirst({
+      where: { id: dropId, linkId },
+      select: {
+        deliveryStatus: true,
+        encryptedMessage: true,
+        messageEnvelopeStatus: true,
+        fileEnvelopeStatus: true,
+      },
+    });
+    if (!drop) return;
+
+    // `messageEnvelopeStatus` can also reach a terminal "shredded" state (spec 1's Task 6/7/8
+    // cleanup scrub, once merged) when a message existed but was scrubbed WITHOUT ever being
+    // delivered. Checking only `=== "delivered"` here would misclassify that case as "no message
+    // ever existed", letting deliveryStatus reach "delivered" from file-delivery alone even though
+    // the message was lost unretrieved — it must cap at "partial_delivery" instead (see the
+    // messageDone check below). Checking `!== "sealed"` still correctly treats a genuinely
+    // message-less drop (whose messageEnvelopeStatus stays at its schema default "sealed" forever)
+    // as having no message, while treating both "delivered" and "shredded" as "a message existed
+    // and is now resolved one way or the other".
+    const hasMessage = drop.encryptedMessage !== null || drop.messageEnvelopeStatus !== "sealed";
+    const messageDone = !hasMessage || drop.messageEnvelopeStatus === "delivered";
+    const fileDone = drop.fileEnvelopeStatus === "delivered";
+
+    let derived: string;
+    if (messageDone && fileDone) derived = "delivered";
+    else if (messageDone !== fileDone && (messageDone || fileDone)) derived = "partial_delivery";
+    else derived = drop.deliveryStatus; // neither done yet — no change
+
+    if (DELIVERY_STATUS_RANK[derived] <= DELIVERY_STATUS_RANK[drop.deliveryStatus]) return;
+
+    // CAS on the value just read. A miss means a concurrent call changed deliveryStatus between
+    // our read and this write — re-read live state and re-derive (loop) rather than silently
+    // giving up, so a legitimate advance is never lost to a race. Bounded to 5 attempts: more
+    // than enough for realistic concurrency (at most two endpoints — reveal-message,
+    // complete-download — ever call this for the same drop).
+    const { count } = await prisma.drop.updateMany({
+      where: { id: dropId, linkId, deliveryStatus: drop.deliveryStatus },
+      data: { deliveryStatus: derived },
+    });
+    if (count === 1) return; // won
+    // else: lost the race — loop and retry against fresh state.
+  }
 }
 
 export function toDropSummary(drop: Drop, link: { retentionDays: number }): DropSummary {

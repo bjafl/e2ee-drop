@@ -19,7 +19,14 @@ vi.mock("./codewords", async (importOriginal) => {
   };
 });
 
-import { canReceive, deleteLinkIfExists, toDropSummary, toLinkStatusResponse, isLinkInactive } from "./links";
+import {
+  canReceive,
+  deleteLinkIfExists,
+  isLinkInactive,
+  recomputeDeliveryStatus,
+  toDropSummary,
+  toLinkStatusResponse,
+} from "./links";
 
 async function makeOwner(overrides: Partial<Parameters<typeof prisma.user.create>[0]["data"]> = {}) {
   return prisma.user.create({
@@ -54,6 +61,7 @@ function makeLink(overrides: Partial<Link> = {}): Link {
     expiresAt: null,
     revokedAt: null,
     ownerNote: null,
+    lastSenderOpenedAt: null,
     ...overrides,
   };
 }
@@ -500,5 +508,129 @@ describe("canReceive", () => {
 
     expect(await canReceive(link, owner.id)).toBe(true);
     expect(await canReceive(link, "stranger-id")).toBe(false);
+  });
+});
+
+describe("recomputeDeliveryStatus", () => {
+  // Inserts a real Link + Drop (recomputeDeliveryStatus always re-reads the row fresh from the
+  // DB, so an in-memory makeDrop() object won't do). Mirrors the required-field shape other
+  // lib tests in this file/accountDeletion.test.ts already insert with; only the fields the CAS
+  // derivation actually reads are overridable per test.
+  async function createDrop(overrides: Partial<Drop> = {}) {
+    const link = await prisma.link.create({
+      data: { slug: `recompute-${Math.random().toString(36).slice(2)}`, mode: "one-time", recipientPublicKey: "x", retentionDays: 7 },
+    });
+    const drop = await prisma.drop.create({
+      data: {
+        linkId: link.id,
+        senderPublicKey: "sender-pk",
+        s3Key: `${link.id}/drop1`,
+        archiveNonce: "archive-nonce",
+        contentMD5: "hash",
+        encryptedMetadata: "meta-cipher",
+        metadataNonce: "meta-nonce",
+        fileSize: 1024,
+        fileUploadStatus: "complete",
+        deliveryStatus: "sent",
+        messageEnvelopeStatus: "sealed",
+        fileEnvelopeStatus: "sealed",
+        ...overrides,
+      },
+    });
+    return { link, drop };
+  }
+
+  beforeEach(async () => {
+    await prisma.drop.deleteMany();
+    await prisma.link.deleteMany();
+  });
+
+  it("reaches delivered from fileEnvelopeStatus alone when there is no message", async () => {
+    const { link, drop } = await createDrop({
+      encryptedMessage: null,
+      fileEnvelopeStatus: "delivered",
+      deliveryStatus: "sent",
+    });
+
+    await recomputeDeliveryStatus(drop.id, link.id);
+
+    const updated = await prisma.drop.findUniqueOrThrow({ where: { id: drop.id } });
+    expect(updated.deliveryStatus).toBe("delivered");
+  });
+
+  it("goes to partial_delivery when exactly one envelope is delivered and a message exists", async () => {
+    const { link, drop } = await createDrop({
+      encryptedMessage: "cipher-message",
+      messageEnvelopeStatus: "sealed",
+      fileEnvelopeStatus: "delivered",
+      deliveryStatus: "receiver_opened",
+    });
+
+    await recomputeDeliveryStatus(drop.id, link.id);
+
+    const updated = await prisma.drop.findUniqueOrThrow({ where: { id: drop.id } });
+    expect(updated.deliveryStatus).toBe("partial_delivery");
+  });
+
+  it("reaches delivered only once both envelopes are delivered", async () => {
+    const { link, drop } = await createDrop({
+      encryptedMessage: "cipher-message",
+      messageEnvelopeStatus: "delivered",
+      fileEnvelopeStatus: "delivered",
+      deliveryStatus: "sent",
+    });
+
+    await recomputeDeliveryStatus(drop.id, link.id);
+
+    const updated = await prisma.drop.findUniqueOrThrow({ where: { id: drop.id } });
+    expect(updated.deliveryStatus).toBe("delivered");
+  });
+
+  it("never regresses an already-delivered status", async () => {
+    // fileEnvelopeStatus flipped back to "shredded" by a test setup that shouldn't happen in
+    // practice — still must not regress deliveryStatus off of "delivered".
+    const { link, drop } = await createDrop({
+      encryptedMessage: null,
+      messageEnvelopeStatus: "sealed",
+      fileEnvelopeStatus: "shredded",
+      deliveryStatus: "delivered",
+    });
+
+    await recomputeDeliveryStatus(drop.id, link.id);
+
+    const updated = await prisma.drop.findUniqueOrThrow({ where: { id: drop.id } });
+    expect(updated.deliveryStatus).toBe("delivered");
+  });
+
+  it("does nothing when neither envelope is delivered yet", async () => {
+    const { link, drop } = await createDrop({
+      encryptedMessage: "cipher-message",
+      messageEnvelopeStatus: "sealed",
+      fileEnvelopeStatus: "sealed",
+      deliveryStatus: "receiver_opened",
+    });
+
+    await recomputeDeliveryStatus(drop.id, link.id);
+
+    const updated = await prisma.drop.findUniqueOrThrow({ where: { id: drop.id } });
+    expect(updated.deliveryStatus).toBe("receiver_opened");
+  });
+
+  it("caps at partial_delivery (not delivered) when the message was shredded without ever being delivered", async () => {
+    // Drop with a message that's been shredded (scrubbed, never revealed): messageEnvelopeStatus:
+    // "shredded", encryptedMessage: null (already scrubbed), fileEnvelopeStatus just set to
+    // "delivered" (the file side succeeded), deliveryStatus starting below "partial_delivery"
+    // (e.g. "sent" or "receiver_opened").
+    const { link, drop } = await createDrop({
+      encryptedMessage: null,
+      messageEnvelopeStatus: "shredded",
+      fileEnvelopeStatus: "delivered",
+      deliveryStatus: "receiver_opened",
+    });
+
+    await recomputeDeliveryStatus(drop.id, link.id);
+
+    const updated = await prisma.drop.findUniqueOrThrow({ where: { id: drop.id } });
+    expect(updated.deliveryStatus).toBe("partial_delivery");
   });
 });
