@@ -684,6 +684,102 @@ describe("ReceivePage — claim flow", () => {
     expect(screen.queryByText(/incoming files/i)).not.toBeInTheDocument();
     expect(setKeyPairMock).toHaveBeenCalledWith(OWNER_KEY_PAIR);
   });
+  // docs/STATUS.md gap 3: a request link is `mode: "permanent"` and can
+  // receive more than one file over its lifetime once claimed, but the old
+  // single-`drop` rendering only ever showed the server's (arbitrary)
+  // `link.drops[0]`. GET /api/links/:slug now also returns a plural `drops`
+  // array for this exact case (Fix 3 backend change) — the claimant view
+  // must render every entry in it via the same DropDetail/list-style
+  // rendering the owned queue view already uses, not just the first.
+  it("gap 3: shows every file sent to a claimed request link, not just the first", async () => {
+    authState.user = LOGGED_IN_USER;
+    let claimed = false;
+    const dropA = { ...UPLOADED_DROP, id: "d1", encryptedMetadata: "bWV0YTE=" };
+    const dropB = { ...UPLOADED_DROP, id: "d2", encryptedMetadata: "bWV0YTI=" };
+    decryptMetadataMock.mockImplementation(async (metadata: string) =>
+      metadata === "bWV0YTE="
+        ? { files: [{ name: "first.pdf", size: 1 }], mimeType: "x" }
+        : { files: [{ name: "second.pdf", size: 2 }], mimeType: "x" }
+    );
+    const fetchMock = vi.fn((url: string) => {
+      const u = url.toString();
+      if (u.includes("/claim")) {
+        claimed = true;
+        return Promise.resolve({ ok: true, json: async () => ({ claimed: true }) });
+      }
+      if (u.includes("/mark-receiver-opened")) return Promise.resolve({ ok: true, json: async () => ({}) });
+      // Same C1 backend behavior as the existing account-claim tests above:
+      // the owner-gated /drops route 403s for the claimant.
+      if (u.endsWith("/drops")) return Promise.resolve({ ok: false, status: 403, json: async () => ({ error: "Forbidden" }) });
+      return Promise.resolve({
+        ok: true,
+        json: async () =>
+          claimed
+            ? { ...UNCLAIMED_LINK_RESPONSE, recipientPublicKey: OWNER_PUBLIC_KEY, drop: dropA, drops: [dropA, dropB] }
+            : UNCLAIMED_LINK_RESPONSE,
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAt("req123");
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /claim with my account/i })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: /claim with my account/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/first\.pdf/)).toBeInTheDocument();
+      expect(screen.getByText(/second\.pdf/)).toBeInTheDocument();
+    });
+    expect(screen.getAllByText(/download and decrypt/i)).toHaveLength(2);
+  });
+
+  it("gap 3: each file in a claimed request link's multi-file view downloads independently", async () => {
+    authState.user = LOGGED_IN_USER;
+    let claimed = false;
+    const dropA = { ...UPLOADED_DROP, id: "d1" };
+    const dropB = { ...UPLOADED_DROP, id: "d2" };
+    const fetchMock = vi.fn((url: string) => {
+      const u = url.toString();
+      if (u.includes("/claim")) {
+        claimed = true;
+        return Promise.resolve({ ok: true, json: async () => ({ claimed: true }) });
+      }
+      if (u.includes("/mark-receiver-opened")) return Promise.resolve({ ok: true, json: async () => ({}) });
+      if (u.endsWith("/drops")) return Promise.resolve({ ok: false, status: 403, json: async () => ({ error: "Forbidden" }) });
+      if (u.includes("/download-url")) return Promise.resolve({ ok: true, json: async () => DOWNLOAD_URL_RESPONSE });
+      if (u.includes("/complete-download")) return Promise.resolve({ ok: true, json: async () => ({ completed: true }) });
+      return Promise.resolve({
+        ok: true,
+        json: async () =>
+          claimed
+            ? { ...UNCLAIMED_LINK_RESPONSE, recipientPublicKey: OWNER_PUBLIC_KEY, drop: dropA, drops: [dropA, dropB] }
+            : UNCLAIMED_LINK_RESPONSE,
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    downloadWithProgressMock.mockResolvedValue({ bytes: new Uint8Array([1]), integrityOk: true });
+    decryptArchiveMock.mockResolvedValue(new Uint8Array([1]));
+
+    renderAt("req123");
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /claim with my account/i })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: /claim with my account/i }));
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/download and decrypt/i)).toHaveLength(2);
+    });
+
+    fireEvent.click(screen.getAllByText(/download and decrypt/i)[1]);
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/download and decrypt/i)).toHaveLength(1);
+    });
+    const urls = calledUrls(fetchMock);
+    expect(urls).toContain("/api/links/req123/download-url?dropId=d2");
+    expect(urls).toContain("/api/links/req123/drops/d2/complete-download");
+  });
 });
 
 describe("ReceivePage — logged-in user on a link they do not own", () => {

@@ -1044,5 +1044,24 @@ describe("link routes", () => {
       expect(res.statusCode).toBe(200);
       expect(res.json().drop).toBeNull();
     });
+
+    // docs/STATUS.md gap 3: a request link is `mode: "permanent"`, so the
+    // initiator can send more than one file to the same already-claimed
+    // link — the claimant must see all of them, not just an arbitrary first
+    // one (`link.drops[0]`, which the underlying query doesn't even order).
+    it("exposes every outstanding drop (plural `drops`) to the claimant when the initiator sends more than one file", async () => {
+      const server = buildServer();
+      const { slug, link } = await requestAndClaim(server, "e2einitiator3");
+      const first = await createSentDrop(link.id);
+      const second = await createSentDrop(link.id);
+
+      const res = await server.inject({ method: "GET", url: `/api/links/${slug}` });
+
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.drops.map((d: { id: string }) => d.id).sort()).toEqual([first.id, second.id].sort());
+      // The legacy singular field is still present too, for any consumer still reading it.
+      expect(body.drop).not.toBeNull();
+    });
   });
 });

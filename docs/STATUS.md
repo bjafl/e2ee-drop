@@ -7,33 +7,37 @@ polish. Nothing here blocked merging plan 3 to `main`.
 
 ## Backend gaps carried over from plan 2, exposed by plan 3's frontend work
 
-These require touching `apps/api`, which was out of scope for plan 3.
+These required touching `apps/api`, which was out of scope for plan 3. **All three are now
+fixed** (see the `worktree-status-gaps-fixes` branch / receive-flow-fix-report.md for the
+implementation and test details); the write-ups below are kept as a record of what was wrong.
 
-1. **`GET /api/links/:slug/events` (SSE) is still owner-only-gated, never updated to plan
-   2's `canReceive` model.** A claimant of a sender-initiated request link gets 403'd on
-   this route. The frontend (`ReceivePage.tsx`) degrades gracefully — it falls back to
-   polling `GET /api/links/:slug` every 12s when the SSE connection closes (fixed as part
-   of plan 3's final-review fix wave, finding I2) — so the feature works, just without
-   live push updates for this one case. **Fix:** apply the same `canReceive`/
-   `isSenderInitiatedReceiveCapability` authorization used elsewhere in `routes/events.ts`.
+1. ~~**`GET /api/links/:slug/events` (SSE) is still owner-only-gated, never updated to plan
+   2's `canReceive` model.**~~ **FIXED.** A claimant of a sender-initiated request link got
+   403'd on this route. The frontend (`ReceivePage.tsx`) degraded gracefully — it fell back to
+   polling `GET /api/links/:slug` every 12s when the SSE connection closed (fixed as part
+   of plan 3's final-review fix wave, finding I2) — so the feature worked, just without
+   live push updates for this one case. `routes/events.ts` now allows the connection when the
+   caller is the true owner (unchanged) OR `canReceive` says they may receive, which also
+   covers a claimed request link's non-owner claimant.
 
-2. **A sender-initiated request link's "recipient" badge on `/send/:slug` shows the
-   *sender's own* identity, not the real recipient's.** `toLinkStatusResponse`
-   (`apps/api/src/lib/links.ts`) derives `recipientName`/`recipientUsername`/
+2. ~~**A sender-initiated request link's "recipient" badge on `/send/:slug` shows the
+   *sender's own* identity, not the real recipient's.**~~ **FIXED.** `toLinkStatusResponse`
+   (`apps/api/src/lib/links.ts`) derived `recipientName`/`recipientUsername`/
    `recipientEmailVerified`/`recipientTotpEnabled` from `link.ownerId`, which for a
-   request link is the initiator (sender), not whoever claims it. This is a real trust-
-   signal bug (spec §6.4 exists specifically to get this right) — a sender could see what
-   looks like a verified, 2FA-enabled recipient when the real recipient may be anonymous.
-   **Fix:** don't populate `recipient*` fields for a request link at all (or populate them
-   from the actual claimant once claimed, if that's ever tracked).
+   request link is the initiator (sender), not whoever claims it — a real trust-signal bug
+   (spec §6.4 exists specifically to get this right). `toLinkStatusResponse` now returns the
+   base response (no `recipient*` fields at all) whenever `isClaimedSenderInitiatedLink`
+   is true, exactly like the existing unverified-owner case.
 
-3. **A sender-initiated request link accepts multiple files/drops (it's `mode:
-   "permanent"`), but the claimant only ever sees the first one (`link.drops[0]`).**
-   `toLinkStatusResponse`'s single-drop field and the claimant's single-drop frontend view
-   both only ever surface one drop; a second send from the same initiator to the same
-   claimed link is silently invisible. **Fix:** either make request links one-time (matching
-   what the UI implies), or give the claimant a queue view (same `DropDetail`-based
-   component pattern plan 3 already built for owned links) instead of a single-drop view.
+3. ~~**A sender-initiated request link accepts multiple files/drops (it's `mode:
+   "permanent"`), but the claimant only ever sees the first one (`link.drops[0]`).**~~
+   **FIXED.** `toLinkStatusResponse`'s single-drop field and the claimant's single-drop
+   frontend view both only ever surfaced one drop; a second send from the same initiator to
+   the same claimed link was silently invisible. `LinkStatusResponse` now also carries an
+   optional plural `drops` field (every outstanding drop, oldest first) populated only for a
+   claimed sender-initiated link's claimant; `ReceivePage.tsx`'s claimant view renders it via
+   the same `DropDetail`/list-style component the owned queue view already used, reusing the
+   same SSE merge logic. The singular `drop` field is unchanged for every other link shape.
 
 ## Infrastructure gap — real E2E verification against `docker compose up` was never possible
 

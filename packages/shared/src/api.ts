@@ -72,6 +72,15 @@ export interface LinkStatusResponse {
   mode: LinkMode;
   recipientPublicKey: string | null; // null => unclaimed, see design spec §4.2
   drop: DropSummary | null;
+  // Every currently-outstanding (not yet delivered/shredded) drop for this
+  // link, oldest first — populated ONLY for a claimed sender-initiated
+  // (request) link's non-owner claimant (docs/STATUS.md gap 3): that link is
+  // `mode: "permanent"` and can receive more than one file over its
+  // lifetime, unlike a one-time anonymous link (at most one drop ever) or a
+  // normal owned link's recipient (who reads their queue from the
+  // owner-gated GET .../drops instead). `drop` above still mirrors `drops[0]`
+  // for backward compatibility; other link shapes never set this field.
+  drops?: DropSummary[];
   isAnonymous: boolean;
   codewords: string[];
   ownerNote?: string;

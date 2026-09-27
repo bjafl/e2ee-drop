@@ -329,6 +329,74 @@ describe("toLinkStatusResponse", () => {
       expect(response.recipientEmailVerified).toBe(true);
     });
   });
+
+  // docs/STATUS.md gap 3: a claimed sender-initiated link is `mode:
+  // "permanent"` and can receive more than one drop over its lifetime, but
+  // this function's singular `drop` field only ever surfaced `link.drops[0]`
+  // (an arbitrary element — the underlying query has no ordering guarantee),
+  // so a second file sent to an already-claimed link was invisible to the
+  // claimant. `drops` (plural) must list every outstanding one.
+  describe("gap 3: a claimed sender-initiated link's claimant sees every outstanding drop", () => {
+    it("lists every non-terminal drop, oldest first, for a non-owner caller on a claimed sender-initiated link", async () => {
+      const owner = await makeOwner({ username: "multidropinitiator", email: "multidropinitiator@example.com" });
+      const older = makeDrop({ id: "drop-older", createdAt: new Date("2026-01-01T00:00:00.000Z") });
+      const newer = makeDrop({ id: "drop-newer", createdAt: new Date("2026-01-02T00:00:00.000Z") });
+      const link = {
+        ...makeLink({ ownerId: owner.id, recipientPublicKey: "claimant-key" }),
+        // Deliberately inserted out of chronological order, matching the
+        // underlying query's lack of an ordering guarantee.
+        drops: [newer, older],
+      };
+
+      const response = await toLinkStatusResponse(link, undefined);
+
+      expect(response.drops?.map((d) => d.id)).toEqual(["drop-older", "drop-newer"]);
+      // The legacy singular field stays populated too, for any consumer still
+      // reading it — mirroring drops[0].
+      expect(response.drop?.id).toBe("drop-older");
+    });
+
+    it("excludes already-delivered/shredded drops from the drops list", async () => {
+      const owner = await makeOwner({ username: "multidropinitiator2", email: "multidropinitiator2@example.com" });
+      const outstanding = makeDrop({ id: "drop-outstanding", fileEnvelopeStatus: "sealed" });
+      const delivered = makeDrop({ id: "drop-delivered", fileEnvelopeStatus: "delivered" });
+      const shredded = makeDrop({ id: "drop-shredded", fileEnvelopeStatus: "shredded" });
+      const link = {
+        ...makeLink({ ownerId: owner.id, recipientPublicKey: "claimant-key" }),
+        drops: [delivered, outstanding, shredded],
+      };
+
+      const response = await toLinkStatusResponse(link, undefined);
+
+      expect(response.drops?.map((d) => d.id)).toEqual(["drop-outstanding"]);
+    });
+
+    it("never sets drops for the initiator/owner's own view of a claimed sender-initiated link", async () => {
+      const owner = await makeOwner({ username: "multidropinitiator3", email: "multidropinitiator3@example.com" });
+      const drop = makeDrop({ id: "drop1" });
+      const link = {
+        ...makeLink({ ownerId: owner.id, recipientPublicKey: "claimant-key" }),
+        drops: [drop],
+      };
+
+      const response = await toLinkStatusResponse(link, owner.id);
+
+      expect(response.drops).toBeUndefined();
+    });
+
+    it("never sets drops for a NORMAL owned link or a plain anonymous link (no regression)", async () => {
+      const owner = await makeOwner({ username: "multidropnormalowner", email: "multidropnormalowner@example.com" });
+      const drop = makeDrop({ id: "drop1" });
+      const ownedLink = {
+        ...makeLink({ ownerId: owner.id, recipientPublicKey: owner.publicKey }),
+        drops: [drop],
+      };
+      const anonymousLink = { ...makeLink({ ownerId: null, recipientPublicKey: "anon-key" }), drops: [drop] };
+
+      expect((await toLinkStatusResponse(ownedLink, owner.id)).drops).toBeUndefined();
+      expect((await toLinkStatusResponse(anonymousLink, undefined)).drops).toBeUndefined();
+    });
+  });
 });
 
 describe("canReceive", () => {

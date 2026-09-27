@@ -210,15 +210,38 @@ export async function toLinkStatusResponse(
   // any other non-owner slug holder, but never to the initiator/owner
   // themselves (they use GET .../drops for their own, sender-side view, same
   // as any other owned link's owner).
+  const senderInitiatedClaimant = await isSenderInitiatedReceiveCapability(link, userId);
+
+  // docs/STATUS.md gap 3: a claimed sender-initiated link is `mode:
+  // "permanent"` (design spec: request links have no fixed expiry) and so can
+  // receive more than one drop over its lifetime — unlike a one-time
+  // anonymous link (at most one drop ever). The singular `activeDrop`/`drop`
+  // below only ever surfaced an arbitrary `link.drops[0]` (the underlying
+  // `include: { drops: true }` query has no ordering guarantee), silently
+  // hiding a second file sent to an already-claimed link from its claimant.
+  // `relevantDrops` lists every one still outstanding, oldest first — the
+  // same filter/sort routes/links.ts's owner-only GET .../drops queue already
+  // uses for its own view, kept consistent here. Only the claimant of a
+  // claimed sender-initiated link gets this plural view; every other link
+  // shape (anonymous, or a normal owned link — read via the owner-gated
+  // GET .../drops instead) keeps exactly today's singular-only behavior.
+  const relevantDrops = senderInitiatedClaimant
+    ? [...link.drops]
+        .filter((drop) => drop.fileEnvelopeStatus !== "delivered" && drop.fileEnvelopeStatus !== "shredded")
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+    : null;
   const activeDrop =
-    link.ownerId === null || (await isSenderInitiatedReceiveCapability(link, userId))
+    link.ownerId === null
       ? (link.drops[0] ?? null)
-      : null;
+      : relevantDrops
+        ? (relevantDrops[0] ?? null)
+        : null;
   const base: LinkStatusResponse = {
     slug: link.slug,
     mode: link.mode as LinkStatusResponse["mode"],
     recipientPublicKey: link.recipientPublicKey,
     drop: activeDrop ? toDropSummary(activeDrop, link) : null,
+    ...(relevantDrops ? { drops: relevantDrops.map((drop) => toDropSummary(drop, link)) } : {}),
     isAnonymous: link.ownerId === null,
     codewords: link.recipientPublicKey
       ? deriveCodewords(link.recipientPublicKey, link.id, resolveLocale(link.codewordLocale), env.CODEWORD_WORD_COUNT)

@@ -307,10 +307,22 @@ function ReceivePageForLink() {
         // Keep ownerNote/codewords fresh from the same response the live
         // drop comes from, in addition to the one-off fetch above.
         setLink(data);
-        // Narrowed into a local const: TS doesn't carry the `if (data.drop)`
-        // narrowing into the setDrops callback closure below.
-        const drop = data.drop;
-        if (drop) setDrops((prev) => mergeDrops(prev, [drop]));
+        // Fix 3 (docs/STATUS.md gap 3): a claimed sender-initiated link's
+        // claimant gets a plural `drops` array here (every currently-
+        // outstanding file, not just an arbitrary first one) — merge all of
+        // them the same way the owned queue merges its own GET /drops
+        // response. Every other link shape (anonymous, or an "owned" link
+        // whose /drops call above succeeded, handled in the branch before
+        // this one) never has `data.drops`, so this falls back to exactly
+        // today's singular-only merge.
+        if (data.drops) {
+          setDrops((prev) => mergeDrops(prev, data.drops!));
+        } else if (data.drop) {
+          // Narrowed into a local const: TS doesn't carry the `if (data.drop)`
+          // narrowing into the setDrops callback closure below.
+          const drop = data.drop;
+          setDrops((prev) => mergeDrops(prev, [drop]));
+        }
       } catch {
         // Transient network failure — don't strand the recipient on a hard
         // error; the SSE stream (and its re-open snapshot) will catch up.
@@ -393,18 +405,21 @@ function ReceivePageForLink() {
 
   if (mode === "none") return <p>{t("errors.noLocalKey")}</p>;
 
+  // Same server-side rule as GET /drops (which already excludes
+  // delivered/shredded drops on the next reload) — plus anything this tab
+  // has just finished downloading itself, before the next snapshot/SSE
+  // event catches up. Shared by the owned queue view below and the
+  // claimed-request-link multi-file claimant view (Fix 3) — both are the
+  // same "list of outstanding drops" shape, just fed by different endpoints.
+  const queued = drops.filter(
+    (drop) =>
+      drop.fileEnvelopeStatus !== "delivered" &&
+      drop.fileEnvelopeStatus !== "shredded" &&
+      !downloadedIds.has(drop.id)
+  );
+
   if (mode === "owned" && !ownedAccessDenied) {
     const needsRelogin = !userKeyPair;
-    // Same server-side rule as GET /drops (which already excludes
-    // delivered/shredded drops on the next reload) — plus anything this tab
-    // has just finished downloading itself, before the next snapshot/SSE
-    // event catches up.
-    const queued = drops.filter(
-      (drop) =>
-        drop.fileEnvelopeStatus !== "delivered" &&
-        drop.fileEnvelopeStatus !== "shredded" &&
-        !downloadedIds.has(drop.id)
-    );
     return (
       <Card className="mx-auto mt-12 max-w-md">
         <CardHeader>
@@ -443,14 +458,24 @@ function ReceivePageForLink() {
     );
   }
 
-  // Single-drop claimant view: either a locally-held anonymous key (mode
-  // "anonymous"), or an "owned" link whose GET /drops came back 403 (a
-  // request link's real claimant, using their account key pair instead — see
-  // the C1 comment on `ownedAccessDenied` above). Only the latter can ever
-  // need a relogin gate here: an "anonymous" local key is always usable the
-  // moment it's loaded, so `needsRelogin` is trivially false for it.
+  // Single-drop / multi-drop claimant view: either a locally-held anonymous
+  // key (mode "anonymous"), or an "owned" link whose GET /drops came back 403
+  // (a request link's real claimant, using their account key pair instead —
+  // see the C1 comment on `ownedAccessDenied` above). Only the latter can
+  // ever need a relogin gate here: an "anonymous" local key is always usable
+  // the moment it's loaded, so `needsRelogin` is trivially false for it.
+  //
+  // Fix 3 (docs/STATUS.md gap 3): `link.drops` (plural) is present ONLY for a
+  // claimed sender-initiated link's claimant — GET /api/links/:slug never
+  // sets it for a plain anonymous one-time link (at most one drop ever) or a
+  // normal owned link's recipient (who reads GET .../drops instead). When
+  // present, render the same list-of-DropDetail style the owned queue view
+  // uses above (reusing `queued`, the same filtered/downloaded-aware list,
+  // and the same SSE-driven mergeDrops/newerOf update path — see the
+  // snapshot effect above) instead of the legacy single-drop rendering.
   const needsRelogin = mode === "owned" && !userKeyPair;
-  const drop: DropSummary | null = drops[0] ?? link.drop ?? null;
+  const isMultiDrop = link.drops !== undefined;
+  const singleDrop: DropSummary | null = drops[0] ?? link.drop ?? null;
 
   return (
     <Card className="mx-auto mt-12 max-w-md">
@@ -485,22 +510,45 @@ function ReceivePageForLink() {
                 </AlertDescription>
               </Alert>
             )}
-            {!drop && <p>{t("waitingForFile")}</p>}
-            {drop && (
-              <DropDetail
-                slug={slug!}
-                drop={drop}
-                decryptMetadata={decryptMetadata}
-                decryptMessage={decryptMessage}
-                decryptArchive={decryptArchive}
-                decryptPercent={decryptPercent}
-                autoSave={autoSave}
-                onAutoSaveChange={(value) => {
-                  setAutoSave(value);
-                  window.localStorage.setItem(AUTO_SAVE_STORAGE_KEY, String(value));
-                }}
-                t={t}
-              />
+            {isMultiDrop ? (
+              <>
+                {queued.length === 0 && <p>{t("waitingForFile")}</p>}
+                {queued.map((drop) => (
+                  <div key={drop.id} className="space-y-2 border-b pb-4 last:border-0">
+                    <DropDetail
+                      slug={slug!}
+                      drop={drop}
+                      decryptMetadata={decryptMetadata}
+                      decryptMessage={decryptMessage}
+                      decryptArchive={decryptArchive}
+                      decryptPercent={decryptPercent}
+                      autoSave={autoSave}
+                      onDownloaded={handleDropDownloaded}
+                      t={t}
+                    />
+                  </div>
+                ))}
+              </>
+            ) : (
+              <>
+                {!singleDrop && <p>{t("waitingForFile")}</p>}
+                {singleDrop && (
+                  <DropDetail
+                    slug={slug!}
+                    drop={singleDrop}
+                    decryptMetadata={decryptMetadata}
+                    decryptMessage={decryptMessage}
+                    decryptArchive={decryptArchive}
+                    decryptPercent={decryptPercent}
+                    autoSave={autoSave}
+                    onAutoSaveChange={(value) => {
+                      setAutoSave(value);
+                      window.localStorage.setItem(AUTO_SAVE_STORAGE_KEY, String(value));
+                    }}
+                    t={t}
+                  />
+                )}
+              </>
             )}
           </>
         )}
