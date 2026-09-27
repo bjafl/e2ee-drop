@@ -423,4 +423,47 @@ describe("contact routes", () => {
     expect(attempt.statusCode).toBe(baseline.statusCode);
     expect(attempt.json()).toEqual(baseline.json());
   });
+
+  it("does not mask allowContactRequests as 'User not found' for an existing (accepted) contact — only genuinely new requests are gated", async () => {
+    // Regression test for a fix found in review: the allowContactRequests
+    // check originally ran unconditionally, before the existing-relationship
+    // lookup. That meant an already-accepted contact who later toggled the
+    // setting off would flip a repeat request's response from "A contact
+    // relationship already exists" to "User not found" — a new,
+    // distinguishable signal that the target specifically toggled the
+    // setting, leaking information to a caller who already knows the target
+    // exists and is their contact. The check must only apply when there is
+    // no existing relationship at all.
+    const server = buildServer();
+    const alice = await registerAndGetCookie(server, "alice-noreq2");
+    const bob = await registerAndGetCookie(server, "bob-noreq2");
+
+    const req = await server.inject({
+      method: "POST",
+      url: "/api/contacts",
+      cookies: alice.cookies,
+      payload: { username: "bob-noreq2" },
+    });
+    expect(req.statusCode).toBe(200);
+    const accept = await server.inject({
+      method: "POST",
+      url: `/api/contacts/${req.json().id}/accept`,
+      cookies: bob.cookies,
+    });
+    expect(accept.statusCode).toBe(200);
+
+    // Bob turns off contact requests after already being an accepted contact.
+    await prisma.user.update({ where: { username: "bob-noreq2" }, data: { allowContactRequests: false } });
+
+    // Alice retries (stray double-click / client retry) — must still see the
+    // normal "already exists" response, not the masked "User not found".
+    const retry = await server.inject({
+      method: "POST",
+      url: "/api/contacts",
+      cookies: alice.cookies,
+      payload: { username: "bob-noreq2" },
+    });
+    expect(retry.statusCode).toBe(400);
+    expect(retry.json()).toEqual({ error: "A contact relationship already exists" });
+  });
 });

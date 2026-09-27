@@ -17,11 +17,6 @@ export interface ContactSummary {
 export async function sendContactRequest(userId: string, targetUsername: string): Promise<Contact> {
   const target = await prisma.user.findUnique({ where: { username: targetUsername } });
   if (!target) throw new HttpError(400, "User not found");
-  // A target who has turned off contact requests must look identical to a
-  // nonexistent user — never reveal that the username belongs to a real
-  // account that simply isn't accepting requests. Runs before the
-  // self/existing-relationship checks below, on every call.
-  if (!target.allowContactRequests) throw new HttpError(400, "User not found");
   if (target.id === userId) throw new HttpError(400, "Cannot add yourself as a contact");
 
   const existing = await prisma.contact.findFirst({
@@ -40,6 +35,16 @@ export async function sendContactRequest(userId: string, targetUsername: string)
     }
     throw new HttpError(400, "A contact relationship already exists");
   }
+  // A target who has turned off contact requests must look identical to a
+  // nonexistent user — but ONLY for a genuinely new request. This must run
+  // AFTER the existing-relationship lookup above: an already-known
+  // relationship (pending, accepted, or a block already surfaced above)
+  // must still get its normal, distinguishing response — masking it as
+  // "User not found" here would itself leak "the target toggled this
+  // setting off" to a caller who already knows the target exists and is
+  // their contact, which is exactly the kind of signal this masking
+  // discipline exists to prevent.
+  if (!target.allowContactRequests) throw new HttpError(400, "User not found");
 
   try {
     return await prisma.contact.create({ data: { userId, contactUserId: target.id, status: "pending" } });
