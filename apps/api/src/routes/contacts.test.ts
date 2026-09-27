@@ -347,4 +347,55 @@ describe("contact routes", () => {
     const aliceReblock = await server.inject({ method: "POST", url: `/api/contacts/${contactId}/block`, cookies: alice.cookies });
     expect(aliceReblock.statusCode).toBe(200);
   });
+
+  it("does not let the blocked party escape the block via /reject", async () => {
+    // Regression test for a fix found in review: rejectContactRequest only
+    // checked relationship membership, not row.status. That let a blocked
+    // party call /reject on the blocked row (deleting it), then send a fresh
+    // contact request — fully escaping the original block.
+    const server = buildServer();
+    const alice = await registerAndGetCookie(server, "alice-block5");
+    const bob = await registerAndGetCookie(server, "bob-block5");
+    const req = await server.inject({ method: "POST", url: "/api/contacts", cookies: bob.cookies, payload: { username: "alice-block5" } });
+    const contactId = req.json().id;
+
+    const block = await server.inject({ method: "POST", url: `/api/contacts/${contactId}/block`, cookies: alice.cookies });
+    expect(block.statusCode).toBe(200);
+
+    // Bob (the blocked party) tries to escape the block by rejecting (deleting) the row.
+    const bobRejectAttempt = await server.inject({ method: "POST", url: `/api/contacts/${contactId}/reject`, cookies: bob.cookies });
+    expect(bobRejectAttempt.statusCode).toBe(403);
+
+    // The row must still exist, still blocked by alice, unaffected by bob's attempt.
+    const stillBlocked = await prisma.contact.findUnique({ where: { id: contactId } });
+    expect(stillBlocked?.status).toBe("blocked");
+    expect(stillBlocked?.blockedByUserId).toBe(alice.userId);
+  });
+
+  it("does not let the blocked party escape the block via /accept", async () => {
+    // Regression test for a fix found in review: acceptContactRequest only
+    // checked that the caller is the request's recipient, not row.status. If
+    // alice sent bob a request and then blocked him, the row becomes
+    // status: "blocked", blockedByUserId: alice, but row.contactUserId is
+    // still bob — so bob (still "the recipient") could call /accept to flip
+    // status to "accepted" while blockedByUserId stayed stale at alice,
+    // turning the block into contacts-only link access for bob.
+    const server = buildServer();
+    const alice = await registerAndGetCookie(server, "alice-block6");
+    const bob = await registerAndGetCookie(server, "bob-block6");
+    const req = await server.inject({ method: "POST", url: "/api/contacts", cookies: alice.cookies, payload: { username: "bob-block6" } });
+    const contactId = req.json().id;
+
+    const block = await server.inject({ method: "POST", url: `/api/contacts/${contactId}/block`, cookies: alice.cookies });
+    expect(block.statusCode).toBe(200);
+
+    // Bob (the blocked party, and the request's original recipient) tries to accept his way out.
+    const bobAcceptAttempt = await server.inject({ method: "POST", url: `/api/contacts/${contactId}/accept`, cookies: bob.cookies });
+    expect(bobAcceptAttempt.statusCode).toBe(404);
+
+    // The row must be unchanged: still blocked, still pointing at alice as the blocker.
+    const stillBlocked = await prisma.contact.findUnique({ where: { id: contactId } });
+    expect(stillBlocked?.status).toBe("blocked");
+    expect(stillBlocked?.blockedByUserId).toBe(alice.userId);
+  });
 });

@@ -87,6 +87,13 @@ export async function acceptContactRequest(userId: string, contactId: string): P
   if (row.contactUserId !== userId) {
     throw new HttpError(403, "Only the request's recipient can accept it");
   }
+  // A non-pending row (already accepted, or — critically — blocked) is not a
+  // pending request to accept. If A blocked B after sending B a request, the
+  // row is status: "blocked", blockedByUserId: A, and row.contactUserId still
+  // === B, so the membership check above alone would let B "accept" their
+  // way out of the block. Treat it the same as a missing row: never a
+  // distinguishable message that would leak the row's real status.
+  if (row.status !== "pending") throw new HttpError(404, "Contact request not found");
   return prisma.contact.update({ where: { id: contactId }, data: { status: "accepted" } });
 }
 
@@ -94,6 +101,13 @@ export async function rejectContactRequest(userId: string, contactId: string): P
   const row = await prisma.contact.findUnique({ where: { id: contactId } });
   if (!row) throw new HttpError(404, "Contact request not found");
   if (row.userId !== userId && row.contactUserId !== userId) {
+    throw new HttpError(403, "Not part of this contact relationship");
+  }
+  // A blocked row must not be deletable via /reject by either party — that
+  // would let a blocked party immediately re-request and escape the block.
+  // Same error message as the non-member case above: a distinguishable
+  // message here would itself leak "this row is blocked".
+  if (row.status === "blocked") {
     throw new HttpError(403, "Not part of this contact relationship");
   }
   await prisma.contact.delete({ where: { id: contactId } });
