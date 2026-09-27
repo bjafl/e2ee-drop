@@ -24,6 +24,7 @@ import {
   deleteLinkIfExists,
   isLinkInactive,
   recomputeDeliveryStatus,
+  shouldMaskAsNotFound,
   toDropSummary,
   toLinkStatusResponse,
 } from "./links";
@@ -508,6 +509,99 @@ describe("canReceive", () => {
 
     expect(await canReceive(link, owner.id)).toBe(true);
     expect(await canReceive(link, "stranger-id")).toBe(false);
+  });
+});
+
+// Finding F6: unifies the masking rule GET /:slug and upload-url already
+// apply inline, so every other route reading a link on a caller's behalf
+// (downloads.ts, events.ts, links.ts's GET .../drops and DELETE /:slug) can
+// reuse the exact same decision instead of re-deriving it.
+describe("shouldMaskAsNotFound", () => {
+  beforeEach(async () => {
+    await prisma.contact.deleteMany();
+    await prisma.drop.deleteMany();
+    await prisma.link.deleteMany();
+    await prisma.user.deleteMany();
+  });
+
+  it("is always false for an anonymous (ownerless) link, regardless of caller identity", async () => {
+    const link = makeLink({ ownerId: null, visibility: "contacts-only" });
+
+    expect(await shouldMaskAsNotFound(link, undefined)).toBe(false);
+    expect(await shouldMaskAsNotFound(link, "some-random-id")).toBe(false);
+  });
+
+  it("is false for the true owner, even on their own contacts-only link", async () => {
+    const owner = await makeOwner({ username: "maskowner1", email: "maskowner1@example.com" });
+    const link = makeLink({ ownerId: owner.id, visibility: "contacts-only" });
+
+    expect(await shouldMaskAsNotFound(link, owner.id)).toBe(false);
+  });
+
+  it("is true for a non-contact, non-owner caller on a contacts-only link", async () => {
+    const owner = await makeOwner({ username: "maskowner2", email: "maskowner2@example.com" });
+    const stranger = await makeOwner({ username: "maskstranger2", email: "maskstranger2@example.com" });
+    const link = makeLink({ ownerId: owner.id, visibility: "contacts-only" });
+
+    expect(await shouldMaskAsNotFound(link, stranger.id)).toBe(true);
+  });
+
+  it("is true for an anonymous (no session) caller on a contacts-only link — an anonymous caller can never be a contact", async () => {
+    const owner = await makeOwner({ username: "maskowner3", email: "maskowner3@example.com" });
+    const link = makeLink({ ownerId: owner.id, visibility: "contacts-only" });
+
+    expect(await shouldMaskAsNotFound(link, undefined)).toBe(true);
+    expect(await shouldMaskAsNotFound(link, null)).toBe(true);
+  });
+
+  it("is false for an accepted contact on a contacts-only link", async () => {
+    const owner = await makeOwner({ username: "maskowner4", email: "maskowner4@example.com" });
+    const friend = await makeOwner({ username: "maskfriend4", email: "maskfriend4@example.com" });
+    await prisma.contact.create({ data: { userId: friend.id, contactUserId: owner.id, status: "accepted" } });
+    const link = makeLink({ ownerId: owner.id, visibility: "contacts-only" });
+
+    expect(await shouldMaskAsNotFound(link, friend.id)).toBe(false);
+  });
+
+  it("is false for a non-owner, non-contact caller on a PUBLIC link — visibility alone never masks a public link", async () => {
+    const owner = await makeOwner({ username: "maskowner5", email: "maskowner5@example.com" });
+    const stranger = await makeOwner({ username: "maskstranger5", email: "maskstranger5@example.com" });
+    const link = makeLink({ ownerId: owner.id, visibility: "public" });
+
+    expect(await shouldMaskAsNotFound(link, stranger.id)).toBe(false);
+  });
+
+  it("is true for a caller with an active block relationship, even on a PUBLIC link — a block overrides visibility", async () => {
+    const owner = await makeOwner({ username: "maskowner6", email: "maskowner6@example.com" });
+    const blocker = await makeOwner({ username: "maskblocker6", email: "maskblocker6@example.com" });
+    await prisma.contact.create({
+      data: { userId: blocker.id, contactUserId: owner.id, status: "blocked", blockedByUserId: blocker.id },
+    });
+    const link = makeLink({ ownerId: owner.id, visibility: "public" });
+
+    expect(await shouldMaskAsNotFound(link, blocker.id)).toBe(true);
+  });
+
+  it("is true for the other direction of a block relationship too (owner blocked the caller)", async () => {
+    const owner = await makeOwner({ username: "maskowner7", email: "maskowner7@example.com" });
+    const blocked = await makeOwner({ username: "maskblocked7", email: "maskblocked7@example.com" });
+    await prisma.contact.create({
+      data: { userId: owner.id, contactUserId: blocked.id, status: "blocked", blockedByUserId: owner.id },
+    });
+    const link = makeLink({ ownerId: owner.id, visibility: "public" });
+
+    expect(await shouldMaskAsNotFound(link, blocked.id)).toBe(true);
+  });
+
+  it("is true for a block even between parties who were previously accepted contacts on a contacts-only link", async () => {
+    const owner = await makeOwner({ username: "maskowner8", email: "maskowner8@example.com" });
+    const friend = await makeOwner({ username: "maskfriend8", email: "maskfriend8@example.com" });
+    await prisma.contact.create({
+      data: { userId: friend.id, contactUserId: owner.id, status: "blocked", blockedByUserId: owner.id },
+    });
+    const link = makeLink({ ownerId: owner.id, visibility: "contacts-only" });
+
+    expect(await shouldMaskAsNotFound(link, friend.id)).toBe(true);
   });
 });
 

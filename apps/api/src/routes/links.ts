@@ -20,6 +20,7 @@ import {
   isLinkExpired,
   isLinkInactive,
   isSenderInitiatedReceiveCapability,
+  shouldMaskAsNotFound,
   toDropSummary,
   toLinkStatusResponse,
   toLinkSummary,
@@ -331,6 +332,18 @@ export function registerLinkRoutes(server: FastifyInstance): void {
     async (request, reply) => {
       const link = await getLinkBySlug(request.params.slug);
       if (!link) return reply.status(404).send({ error: "Link not found" });
+      // Contacts-only/blocked-relationship masking (finding F6): must return
+      // the same 404 a nonexistent slug gets, never a distinguishing 403,
+      // before the ownership check below runs. See shouldMaskAsNotFound in
+      // lib/links.ts — it already returns false for the true owner, and a
+      // sender-initiated request link's real claimant hits this route as a
+      // non-owner too, but that link is always `visibility: "public"`
+      // (POST /api/links/request), so this never masks the claimant's
+      // existing 403 below, which ReceivePage.tsx relies on to detect "I am
+      // this request link's claimant, not its owner".
+      if (await shouldMaskAsNotFound(link, request.user!.id)) {
+        return reply.status(404).send({ error: "Link not found" });
+      }
       if (link.ownerId !== request.user!.id) return reply.status(403).send({ error: "Forbidden" });
 
       const drops = link.drops
@@ -392,6 +405,16 @@ export function registerLinkRoutes(server: FastifyInstance): void {
   server.delete<{ Params: { slug: string } }>("/api/links/:slug", async (request, reply) => {
     const link = await getLinkBySlug(request.params.slug);
     if (!link) return reply.status(404).send({ error: "Link not found" });
+    // Contacts-only/blocked-relationship masking (finding F6): must return
+    // the same 404 a nonexistent slug gets, never a distinguishing 403,
+    // before the ownership branch below runs. See shouldMaskAsNotFound in
+    // lib/links.ts — it returns false outright for an anonymous
+    // (ownerId === null) link, so the anonymous-deletion branch below is
+    // unaffected, and false for the true owner, so an owner's own delete is
+    // never masked either.
+    if (await shouldMaskAsNotFound(link, request.user?.id)) {
+      return reply.status(404).send({ error: "Link not found" });
+    }
     // This route is unauthenticated: knowing an anonymous link's random slug is
     // the only capability it checks, which is what Plan 1 designed it for. An
     // owned link's slug is NOT a secret (a user's default link slug is their

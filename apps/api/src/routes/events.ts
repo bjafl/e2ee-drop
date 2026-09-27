@@ -1,6 +1,6 @@
 // apps/api/src/routes/events.ts
 import type { FastifyInstance } from "fastify";
-import { canReceive, getLinkBySlug, isLinkInactive } from "../lib/links";
+import { canReceive, getLinkBySlug, isLinkInactive, shouldMaskAsNotFound } from "../lib/links";
 import { subscribeToLink } from "../lib/dropEvents";
 
 // A comment line written periodically so a reverse proxy never sees the stream
@@ -13,6 +13,14 @@ export function registerEventRoutes(server: FastifyInstance): void {
   server.get<{ Params: { slug: string } }>("/api/links/:slug/events", async (request, reply) => {
     const link = await getLinkBySlug(request.params.slug);
     if (!link || (await isLinkInactive(link))) return reply.status(404).send({ error: "Link not found" });
+    // Contacts-only/blocked-relationship masking (finding F6): must return the
+    // same 404 a nonexistent slug gets, never a distinguishing 403, before the
+    // ownership/canReceive check below runs. See shouldMaskAsNotFound in
+    // lib/links.ts — it already returns false for the true owner, so this
+    // never masks the owner's own subscription to their own link.
+    if (await shouldMaskAsNotFound(link, request.user?.id)) {
+      return reply.status(404).send({ error: "Link not found" });
+    }
     // Anonymous (ownerless) links stay open to any link holder, exactly like
     // Plan 1's other link routes. `request.user` is set on every request
     // (null when there's no valid session) by the global onRequest hook in

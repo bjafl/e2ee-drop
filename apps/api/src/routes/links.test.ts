@@ -385,6 +385,79 @@ describe("link routes", () => {
       expect(deleteObjectMock).not.toHaveBeenCalled();
     });
 
+    // Finding F6: DELETE must mask a contacts-only link from a non-contact
+    // caller the same way GET /:slug and upload-url already do — a
+    // distinguishing 403 leaks that a link with this slug exists and is
+    // owned. shouldMaskAsNotFound (lib/links.ts) already returns false for
+    // an anonymous link and for the true owner, so the two tests above and
+    // below are unaffected.
+    it("masks DELETE from a non-contact caller on a contacts-only link, byte-identical to a nonexistent slug", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "deleteownerco");
+      await prisma.user.update({ where: { username: "deleteownerco" }, data: { emailVerified: true } });
+      const link = await prisma.link.create({
+        data: {
+          ownerId: owner.userId,
+          slug: "owner-delete-co",
+          mode: "permanent",
+          visibility: "contacts-only",
+          recipientPublicKey: owner.publicKey,
+          retentionDays: 7,
+        },
+      });
+      const stranger = await registerAndGetCookie(server, "deletestrangerco");
+
+      const masked = await server.inject({
+        method: "DELETE",
+        url: `/api/links/${link.slug}`,
+        cookies: stranger.cookies,
+      });
+      const nonexistent = await server.inject({
+        method: "DELETE",
+        url: "/api/links/does-not-exist-deleteco",
+        cookies: stranger.cookies,
+      });
+
+      expect(masked.statusCode).toBe(404);
+      expect(masked.statusCode).toBe(nonexistent.statusCode);
+      expect(masked.json()).toEqual(nonexistent.json());
+      expect(await prisma.link.findUnique({ where: { id: link.id } })).not.toBeNull();
+      expect(deleteObjectMock).not.toHaveBeenCalled();
+    });
+
+    // The block-relationship arm of shouldMaskAsNotFound applies even to a
+    // PUBLIC link — a block is a stronger signal than visibility. Confirms
+    // DELETE picks up that branch too, not just contacts-only.
+    it("masks DELETE from a caller with an active block relationship, even though the link is public", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "deleteownerblock");
+      await prisma.user.update({ where: { username: "deleteownerblock" }, data: { emailVerified: true } });
+      const link = await prisma.link.create({
+        data: {
+          ownerId: owner.userId,
+          slug: "owner-delete-block",
+          mode: "permanent",
+          visibility: "public",
+          recipientPublicKey: owner.publicKey,
+          retentionDays: 7,
+        },
+      });
+      const blocker = await registerAndGetCookie(server, "deleteblocker");
+      await prisma.contact.create({
+        data: { userId: blocker.userId, contactUserId: owner.userId, status: "blocked", blockedByUserId: blocker.userId },
+      });
+
+      const masked = await server.inject({
+        method: "DELETE",
+        url: `/api/links/${link.slug}`,
+        cookies: blocker.cookies,
+      });
+
+      expect(masked.statusCode).toBe(404);
+      expect(await prisma.link.findUnique({ where: { id: link.id } })).not.toBeNull();
+      expect(deleteObjectMock).not.toHaveBeenCalled();
+    });
+
     it("anonymous-link deletion is unchanged", async () => {
       const server = buildServer();
       const { link: anonymousLink, drop } = await createLinkWithDrop("owner-delete-anon-unchanged", new Date(Date.now() + 60_000));
@@ -574,6 +647,116 @@ describe("link routes", () => {
       method: "GET",
       url: `/api/links/${link.slug}/drops`,
       cookies: intruder.cookies,
+    });
+
+    expect(response.statusCode).toBe(403);
+  });
+
+  // Finding F6: GET .../drops must mask a contacts-only link from a
+  // non-contact caller the same way GET /:slug and upload-url already do —
+  // a distinguishing 403 leaks that a link with this slug exists and is
+  // owned.
+  it("masks GET .../drops from a non-contact caller on a contacts-only link, byte-identical to a nonexistent slug", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "queueownerco");
+    await prisma.user.update({ where: { username: "queueownerco" }, data: { emailVerified: true } });
+    const link = await prisma.link.create({
+      data: {
+        ownerId: owner.userId,
+        slug: "private-queue-co",
+        mode: "permanent",
+        visibility: "contacts-only",
+        recipientPublicKey: owner.publicKey,
+        retentionDays: 7,
+      },
+    });
+    const stranger = await registerAndGetCookie(server, "queuestrangerco");
+
+    const masked = await server.inject({
+      method: "GET",
+      url: `/api/links/${link.slug}/drops`,
+      cookies: stranger.cookies,
+    });
+    const nonexistent = await server.inject({
+      method: "GET",
+      url: "/api/links/does-not-exist-queueco/drops",
+      cookies: stranger.cookies,
+    });
+
+    expect(masked.statusCode).toBe(404);
+    expect(masked.statusCode).toBe(nonexistent.statusCode);
+    expect(masked.json()).toEqual(nonexistent.json());
+  });
+
+  // The block-relationship arm applies even to a PUBLIC link.
+  it("masks GET .../drops from a caller with an active block relationship, even though the link is public", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "queueownerblock");
+    await prisma.user.update({ where: { username: "queueownerblock" }, data: { emailVerified: true } });
+    const link = await prisma.link.create({
+      data: {
+        ownerId: owner.userId,
+        slug: "private-queue-block",
+        mode: "permanent",
+        visibility: "public",
+        recipientPublicKey: owner.publicKey,
+        retentionDays: 7,
+      },
+    });
+    const blocker = await registerAndGetCookie(server, "queueblocker");
+    await prisma.contact.create({
+      data: { userId: blocker.userId, contactUserId: owner.userId, status: "blocked", blockedByUserId: blocker.userId },
+    });
+
+    const masked = await server.inject({
+      method: "GET",
+      url: `/api/links/${link.slug}/drops`,
+      cookies: blocker.cookies,
+    });
+
+    expect(masked.statusCode).toBe(404);
+  });
+
+  // Task 2 brief's "Important" callout, and the reasoning re-verified against
+  // current code before this task touched this route: a sender-initiated
+  // request link (POST /api/links/request) is always created with
+  // `visibility: "public"` (see that route in links.ts), so
+  // shouldMaskAsNotFound never masks its claimant here (barring an actual
+  // block relationship, a separate edge case) — the claimant's request must
+  // still fall through unaffected to the existing 403 Forbidden below,
+  // exactly as ReceivePage.tsx's loadSnapshot effect relies on (a 403 from
+  // this exact route is how it detects "I claimed this link, I don't own
+  // it" and falls back to the single-drop claimant view).
+  it("still returns 403 (never masked to 404) for an authenticated non-owner on a claimed sender-initiated request link's GET .../drops", async () => {
+    const server = buildServer();
+    const initiator = await registerAndGetCookie(server, "initiatorclaimq");
+    await prisma.user.update({ where: { username: "initiatorclaimq" }, data: { emailVerified: true } });
+    const requestRes = await server.inject({
+      method: "POST",
+      url: "/api/links/request",
+      payload: {},
+      cookies: initiator.cookies,
+    });
+    const { slug } = requestRes.json();
+    await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/claim`,
+      payload: { recipientPublicKey: "claimant-pubkey" },
+    });
+    const link = await prisma.link.findUniqueOrThrow({ where: { slug } });
+    expect(link.visibility).toBe("public");
+
+    // The real claimant is anonymous (no session tied to the claim itself —
+    // see POST /:slug/claim's own doc comment), so any OTHER authenticated,
+    // non-owner account calling this owner-gated route reproduces exactly
+    // the response ReceivePage.tsx's fallback logic depends on: a plain 403,
+    // never masked, regardless of who is asking.
+    const someoneElse = await registerAndGetCookie(server, "notclaimantq");
+
+    const response = await server.inject({
+      method: "GET",
+      url: `/api/links/${slug}/drops`,
+      cookies: someoneElse.cookies,
     });
 
     expect(response.statusCode).toBe(403);

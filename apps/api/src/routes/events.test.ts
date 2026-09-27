@@ -177,6 +177,40 @@ describe("SSE events route", () => {
     expect(response.statusCode).toBe(403);
   });
 
+  // Finding F6: /events must mask a contacts-only link from a non-contact
+  // caller the same way GET /:slug and upload-url already do — a
+  // distinguishing 403 leaks that a link with this slug exists and is
+  // owned. shouldMaskAsNotFound (lib/links.ts) already returns false for
+  // the true owner, so this doesn't touch the owner-subscribes-to-their-own-
+  // link tests below.
+  it("masks a contacts-only link's events from a non-contact caller, byte-identical to a nonexistent slug", async () => {
+    const owner = await registerAndGetCookie(server, "sseownerco");
+    await prisma.user.update({ where: { username: "sseownerco" }, data: { emailVerified: true } });
+    const patch = await server.inject({
+      method: "PATCH",
+      url: "/api/links/sseownerco",
+      cookies: owner.cookies,
+      payload: { visibility: "contacts-only" },
+    });
+    expect(patch.statusCode).toBe(200);
+    const stranger = await registerAndGetCookie(server, "sseownerco-stranger");
+
+    const masked = await server.inject({
+      method: "GET",
+      url: "/api/links/sseownerco/events",
+      cookies: stranger.cookies,
+    });
+    const nonexistent = await server.inject({
+      method: "GET",
+      url: "/api/links/does-not-exist-sseco/events",
+      cookies: stranger.cookies,
+    });
+
+    expect(masked.statusCode).toBe(404);
+    expect(masked.statusCode).toBe(nonexistent.statusCode);
+    expect(masked.json()).toEqual(nonexistent.json());
+  });
+
   it("allows a claimed sender-initiated request link's non-owner claimant to open the connection", async () => {
     const initiator = await registerAndGetCookie(server, "sseinitiator");
     await prisma.user.update({ where: { username: "sseinitiator" }, data: { emailVerified: true } });

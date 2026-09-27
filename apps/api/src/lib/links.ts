@@ -5,6 +5,7 @@ import type { FileUploadStatus, DropSummary, LinkStatusResponse, LinkSummary } f
 import { env } from "../env";
 import { resolveLocale, deriveCodewords } from "./codewords";
 import { deleteObject } from "./storage";
+import { hasAcceptedContact, hasBlockRelationship } from "./contacts";
 
 // Also used by routes/links.ts's sender-initiated POST /api/links/request (Task 12), which
 // needs the same anonymous-slug shape but isn't creating a one-time link.
@@ -51,6 +52,40 @@ export async function isLinkInactive(link: Link): Promise<boolean> {
   if (link.ownerId !== null) {
     const owner = await prisma.user.findUnique({ where: { id: link.ownerId }, select: { emailVerified: true } });
     if (!owner || !owner.emailVerified) return true;
+  }
+  return false;
+}
+
+// Unifies the "never let a caller's identity confirm this link exists"
+// masking rule that GET /api/links/:slug and upload-url (uploads.ts) already
+// apply inline, for every other route that reads a link on a caller's
+// behalf (downloads.ts's four receive-side handlers, events.ts's /events,
+// links.ts's GET .../drops and DELETE /:slug). Returns true when the caller
+// must get the SAME "not found" response as a genuinely nonexistent slug —
+// never a distinguishing 403 or any other reply that would leak "a link
+// with this slug exists (and is owned/contacts-only/blocking you)".
+//
+// Two independent reasons to mask, both short-circuited by true ownership
+// (the owner is never masked from their own link):
+//  - an active block relationship with the owner, in either direction —
+//    this overrides even a `public` link's visibility, since a block is a
+//    stronger signal than visibility and must hide the link regardless.
+//  - `visibility === "contacts-only"` and the caller is not an accepted
+//    contact of the owner. An anonymous caller (no session) can never be a
+//    contact, so this masks them the same as a non-contact caller.
+// An anonymous link (ownerId === null) has no owner to be blocked by or
+// contacts-gated against, so it is never masked here — its slug alone is
+// already its whole trust model (see canReceive below).
+export async function shouldMaskAsNotFound(link: Link, callerId: string | null | undefined): Promise<boolean> {
+  if (link.ownerId === null) return false;
+  const isOwner = callerId != null && callerId === link.ownerId;
+  if (isOwner) return false;
+
+  if (callerId != null && (await hasBlockRelationship(link.ownerId, callerId))) return true;
+
+  if (link.visibility === "contacts-only") {
+    const isContact = callerId != null && (await hasAcceptedContact(link.ownerId, callerId));
+    if (!isContact) return true;
   }
   return false;
 }

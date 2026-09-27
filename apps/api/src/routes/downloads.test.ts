@@ -1208,6 +1208,167 @@ describe("owned-link reveal-message route", () => {
   });
 });
 
+// Finding F6: download-url, complete-download, download-failed, and
+// reveal-message must all mask a contacts-only link from a non-contact
+// caller (and any blocked-relationship caller) exactly like GET /:slug and
+// upload-url already do — a distinguishing 403 leaks that a link with this
+// slug exists and is owned. shouldMaskAsNotFound (lib/links.ts) is the
+// shared helper; these tests confirm it's actually wired into all four
+// handlers, and that the resulting 404 is byte-identical to a genuinely
+// nonexistent slug's — not just the same status code.
+describe("contacts-only/blocked-relationship masking (finding F6) on receive-side routes", () => {
+  beforeEach(async () => {
+    deleteObjectMock.mockReset();
+    deleteObjectMock.mockResolvedValue(undefined);
+    await prisma.contact.deleteMany();
+    await prisma.session.deleteMany();
+    await prisma.drop.deleteMany();
+    await prisma.link.deleteMany();
+    await prisma.user.deleteMany();
+  });
+
+  // Registration's default link (slug === username) starts out `visibility:
+  // "public"`; PATCH it to "contacts-only" the same way links.test.ts's PATCH
+  // suite does, rather than reaching around the API into prisma directly.
+  async function contactsOnlyLinkWithQueue(server: ReturnType<typeof buildServer>, username: string) {
+    const owner = await registerAndGetCookie(server, username);
+    await prisma.user.update({ where: { id: owner.userId }, data: { emailVerified: true } });
+    const patch = await server.inject({
+      method: "PATCH",
+      url: `/api/links/${username}`,
+      cookies: owner.cookies,
+      payload: { visibility: "contacts-only" },
+    });
+    expect(patch.statusCode).toBe(200);
+    const link = (await prisma.link.findUnique({ where: { slug: username } }))!;
+    const drop = await createQueuedDrop(link.id, "drop1");
+    const messageDrop = await prisma.drop.create({
+      data: {
+        linkId: link.id,
+        senderPublicKey: "c2VuZGVy",
+        s3Key: `${link.id}/with-message`,
+        archiveNonce: "YXJjaGl2ZQ==",
+        contentMD5: "bWQ1",
+        encryptedMetadata: "bWV0YWRhdGE=",
+        metadataNonce: "bWV0YW5vbmNl",
+        fileSize: 1024,
+        fileUploadStatus: "complete",
+        encryptedMessage: "c2VjcmV0",
+        messageNonce: "bm9uY2U=",
+      },
+    });
+    return { owner, link, drop, messageDrop };
+  }
+
+  it("masks download-url from a non-contact caller, byte-identical to a nonexistent slug", async () => {
+    const server = buildServer();
+    const { link } = await contactsOnlyLinkWithQueue(server, "maskdlurl");
+    const stranger = await registerAndGetCookie(server, "maskdlurl-stranger");
+
+    const masked = await server.inject({
+      method: "GET",
+      url: `/api/links/${link.slug}/download-url`,
+      cookies: stranger.cookies,
+    });
+    const nonexistent = await server.inject({
+      method: "GET",
+      url: "/api/links/does-not-exist-maskdlurl/download-url",
+      cookies: stranger.cookies,
+    });
+
+    expect(masked.statusCode).toBe(404);
+    expect(masked.statusCode).toBe(nonexistent.statusCode);
+    expect(masked.json()).toEqual(nonexistent.json());
+  });
+
+  it("masks download-url from a caller with an active block relationship with the owner, even though the link is public", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "maskdlblockowner");
+    await prisma.user.update({ where: { id: owner.userId }, data: { emailVerified: true } });
+    const link = (await prisma.link.findUnique({ where: { slug: "maskdlblockowner" } }))!;
+    const blocker = await registerAndGetCookie(server, "maskdlblocker");
+    await prisma.contact.create({
+      data: { userId: blocker.userId, contactUserId: owner.userId, status: "blocked", blockedByUserId: blocker.userId },
+    });
+
+    const masked = await server.inject({
+      method: "GET",
+      url: `/api/links/${link.slug}/download-url`,
+      cookies: blocker.cookies,
+    });
+    const nonexistent = await server.inject({
+      method: "GET",
+      url: "/api/links/does-not-exist-maskdlblock/download-url",
+      cookies: blocker.cookies,
+    });
+
+    expect(masked.statusCode).toBe(404);
+    expect(masked.json()).toEqual(nonexistent.json());
+  });
+
+  it("masks complete-download from a non-contact caller, byte-identical to a nonexistent slug", async () => {
+    const server = buildServer();
+    const { link, drop } = await contactsOnlyLinkWithQueue(server, "maskcd");
+    const stranger = await registerAndGetCookie(server, "maskcd-stranger");
+
+    const masked = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/drops/${drop.id}/complete-download`,
+      cookies: stranger.cookies,
+    });
+    const nonexistent = await server.inject({
+      method: "POST",
+      url: `/api/links/does-not-exist-maskcd/drops/${drop.id}/complete-download`,
+      cookies: stranger.cookies,
+    });
+
+    expect(masked.statusCode).toBe(404);
+    expect(masked.json()).toEqual(nonexistent.json());
+    expect(deleteObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("masks download-failed from a non-contact caller, byte-identical to a nonexistent slug", async () => {
+    const server = buildServer();
+    const { link, drop } = await contactsOnlyLinkWithQueue(server, "maskdf");
+    const stranger = await registerAndGetCookie(server, "maskdf-stranger");
+
+    const masked = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/drops/${drop.id}/download-failed`,
+      cookies: stranger.cookies,
+    });
+    const nonexistent = await server.inject({
+      method: "POST",
+      url: `/api/links/does-not-exist-maskdf/drops/${drop.id}/download-failed`,
+      cookies: stranger.cookies,
+    });
+
+    expect(masked.statusCode).toBe(404);
+    expect(masked.json()).toEqual(nonexistent.json());
+  });
+
+  it("masks reveal-message from a non-contact caller, byte-identical to a nonexistent slug, and never scrubs the message", async () => {
+    const server = buildServer();
+    const { link, messageDrop } = await contactsOnlyLinkWithQueue(server, "maskrm");
+    const stranger = await registerAndGetCookie(server, "maskrm-stranger");
+
+    const masked = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/drops/${messageDrop.id}/reveal-message`,
+      cookies: stranger.cookies,
+    });
+    const nonexistent = await server.inject({
+      method: "POST",
+      url: `/api/links/does-not-exist-maskrm/drops/${messageDrop.id}/reveal-message`,
+      cookies: stranger.cookies,
+    });
+
+    expect(masked.statusCode).toBe(404);
+    expect(masked.json()).toEqual(nonexistent.json());
+    expect((await prisma.drop.findUnique({ where: { id: messageDrop.id } }))?.encryptedMessage).not.toBeNull();
+  });
+});
+
 describe("owner-cancel route", () => {
   beforeEach(async () => {
     deleteObjectMock.mockReset();
