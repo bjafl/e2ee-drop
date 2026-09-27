@@ -362,10 +362,15 @@ export function registerUploadRoutes(server: FastifyInstance): void {
         // and the idempotent early return means the real sender's own call
         // still succeeds afterwards. Slot-taking and DELETE by a slug holder
         // remain accepted trade-offs (spec §5.1).
-        updated = await transitionFileUploadStatus(dropId, link.id, ["uploading"], "complete");
-        if (updated) {
-          await prisma.drop.update({ where: { id: dropId }, data: { deliveryStatus: "sent" } });
-        }
+        //
+        // Fold deliveryStatus into the same CAS update so both state changes
+        // commit atomically, preventing a race where a concurrent operation could
+        // see intermediate state (spec §6.3, CAS discipline).
+        const { count } = await prisma.drop.updateMany({
+          where: { id: dropId, linkId: link.id, fileUploadStatus: "uploading" },
+          data: { fileUploadStatus: "complete", deliveryStatus: "sent" },
+        });
+        updated = count === 1;
       } else {
         // Owned link: the CAS and the owner's quota charge commit together, and
         // the charge happens only if this call won the CAS — so a drop is charged

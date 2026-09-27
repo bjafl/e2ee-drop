@@ -515,6 +515,39 @@ describe("upload routes", () => {
     expect(status.json().drop.deliveryStatus).toBe("sent");
   });
 
+  it("sets fileUploadStatus and deliveryStatus in a single atomic CAS update for anonymous links (Task 5 regression: no two-write race)", async () => {
+    // Regression test for F7: the anonymous branch used to write fileUploadStatus
+    // in one call, then deliveryStatus in a separate call — a race window where
+    // concurrent operations (e.g., reveal-message, complete-download) could see
+    // intermediate state and legitimately advance deliveryStatus further, only
+    // to have the second write clobber it backward. Verify both fields are set
+    // correctly in the final state.
+    const server = buildServer();
+    const slug = await createLink(server);
+    const uploadRes = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+      payload: uploadPayload(),
+    });
+    const { dropId } = uploadRes.json();
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/drops/${dropId}/complete`,
+    });
+    expect(res.statusCode).toBe(200);
+
+    // Verify both fields are correctly set after the call.
+    const drop = await prisma.drop.findUnique({ where: { id: dropId } });
+    expect(drop?.fileUploadStatus).toBe("complete");
+    expect(drop?.deliveryStatus).toBe("sent");
+
+    // Also verify through the GET endpoint to ensure consistency.
+    const status = await server.inject({ method: "GET", url: `/api/links/${slug}` });
+    expect(status.json().drop.fileUploadStatus).toBe("complete");
+    expect(status.json().drop.deliveryStatus).toBe("sent");
+  });
+
   async function createLinkWithUploadingDrop(server: ReturnType<typeof buildServer>) {
     const slug = await createLink(server);
     const uploadRes = await server.inject({
