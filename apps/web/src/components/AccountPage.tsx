@@ -1,5 +1,5 @@
 // apps/web/src/components/AccountPage.tsx
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,10 +16,27 @@ export function AccountPage() {
   const { t } = useTranslation("account");
   const { user, loading, logout } = useAuth();
   const [deleted, setDeleted] = useState(false);
+  // Finding 4 (final review): a plain `useState(user?.allowContactRequests ??
+  // true)` only reads its seed once, at mount. On a hard refresh of /account,
+  // `user` is still null on that first render (loading=true), so the
+  // checkbox locked in `true` and never updated once /me resolved with the
+  // real (possibly false) value — same problem right after login()/
+  // register(), where the field is undefined until the next /me fetch
+  // (Task 8's disclosed gap).
+  //
+  // Fix: the displayed value is always DERIVED from user.allowContactRequests
+  // (never frozen), with a local override only while an optimistic toggle
+  // (below) is in flight. The override is cleared whenever
+  // user.allowContactRequests itself changes, so it can never mask a real,
+  // later value from /me.
+  const [pendingOverride, setPendingOverride] = useState<boolean | null>(null);
+  useEffect(() => {
+    setPendingOverride(null);
+  }, [user?.allowContactRequests]);
   // Defaults to true, matching the DB column's default (see
   // packages/db/prisma/schema.prisma) — undefined here just means the
   // initial /api/auth/me restore hasn't populated it yet (see AuthUser).
-  const [allowContactRequests, setAllowContactRequests] = useState(user?.allowContactRequests ?? true);
+  const allowContactRequests = pendingOverride ?? user?.allowContactRequests ?? true;
 
   // Checked before the logged-out guard: logout() below sets user to null,
   // and without this the re-render would hit `!user` and land on /login.
@@ -44,16 +61,16 @@ export function AccountPage() {
   // it's known to have failed.
   const toggleAllowContactRequests = async () => {
     const next = !allowContactRequests;
-    setAllowContactRequests(next);
+    setPendingOverride(next);
     try {
       const response = await fetch("/api/account", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ allowContactRequests: next }),
       });
-      if (!response.ok) setAllowContactRequests(!next);
+      if (!response.ok) setPendingOverride(!next);
     } catch {
-      setAllowContactRequests(!next);
+      setPendingOverride(!next);
     }
   };
 

@@ -62,6 +62,22 @@ describe("AccountPage", () => {
     expect(screen.queryByText("login page")).not.toBeInTheDocument();
   });
 
+  // Finding 4 (final review): a `useState(user?.allowContactRequests ??
+  // true)` seed only reads its value once, at mount, and so could freeze on
+  // the default `true` and never self-correct once the real, `false` value
+  // arrived. The full async-resolution sequence (loading -> /me resolves)
+  // is exercised end to end in AccountPage.integration.test.tsx, which uses
+  // the real AuthProvider; this mocked-useAuth harness can only mount
+  // directly with the final value already set, which still covers the
+  // regression (the checkbox must never default to checked).
+  it("renders the checkbox unchecked when allowContactRequests is false on mount", () => {
+    authState.user = { id: "u1", username: "alice", email: "alice@example.com", allowContactRequests: false };
+
+    renderAt("/account");
+
+    expect(screen.getByLabelText(/allow contact requests/i)).not.toBeChecked();
+  });
+
   it("shows the user and mounts the delete-account dialog when logged in", () => {
     authState.user = { id: "u1", username: "alice", email: "alice@example.com" };
 
