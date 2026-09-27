@@ -922,6 +922,68 @@ describe("upload routes", () => {
     expect((await prisma.drop.findUnique({ where: { id: dropId } }))?.fileUploadStatus).toBe("complete");
   });
 
+  it("rejects a blocked authenticated caller's upload-url request with 404", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "blockowner");
+    await prisma.user.update({ where: { username: "blockowner" }, data: { emailVerified: true } });
+    const blocker = await registerAndGetCookie(server, "blockblocker");
+    // Create a contact and block it (owner blocks blocker)
+    const contact = await prisma.contact.create({
+      data: { userId: owner.userId, contactUserId: blocker.userId, status: "accepted" },
+    });
+    await prisma.contact.update({ where: { id: contact.id }, data: { status: "blocked", blockedByUserId: owner.userId } });
+
+    const link = await prisma.link.create({
+      data: {
+        ownerId: owner.userId, slug: "block-test", mode: "permanent",
+        recipientPublicKey: "blockowner-pubkey", retentionDays: 7,
+      },
+    });
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/upload-url`,
+      payload: uploadPayload({ senderPublicKey: "blockblocker-pubkey" }),
+      cookies: blocker.cookies,
+    });
+
+    // Blocked caller sees 404, indistinguishable from nonexistent link
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ error: "Link not found" });
+    // No drop should be created
+    expect(await prisma.drop.count({ where: { linkId: link.id } })).toBe(0);
+  });
+
+  it("allows an anonymous sender on a link whose owner has blocked other users", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "anonblockowner");
+    await prisma.user.update({ where: { username: "anonblockowner" }, data: { emailVerified: true } });
+    const blockedUser = await registerAndGetCookie(server, "anonblockblocked");
+    // Create and block a contact
+    const contact = await prisma.contact.create({
+      data: { userId: owner.userId, contactUserId: blockedUser.userId, status: "accepted" },
+    });
+    await prisma.contact.update({ where: { id: contact.id }, data: { status: "blocked", blockedByUserId: owner.userId } });
+
+    const link = await prisma.link.create({
+      data: {
+        ownerId: owner.userId, slug: "anon-unaffected-test", mode: "permanent",
+        recipientPublicKey: "anonblockowner-pubkey", retentionDays: 7,
+      },
+    });
+
+    // Anonymous (no cookies) sender should not be affected by the block
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/upload-url`,
+      payload: uploadPayload(),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toHaveProperty("dropId");
+    expect(response.json()).toHaveProperty("uploadUrl");
+  });
+
   it("still allows an anonymous sender on a public permanent link", async () => {
     const server = buildServer();
     const owner = await registerAndGetCookie(server, "coowner4");

@@ -13,7 +13,7 @@ import {
 } from "../lib/links";
 import { getSignedUploadUrl, objectHasSize } from "../lib/storage";
 import { emitDropEvent, emitOwnerDropEvent, type DropEvent } from "../lib/dropEvents";
-import { hasAcceptedContact } from "../lib/contacts";
+import { hasAcceptedContact, hasBlockRelationship } from "../lib/contacts";
 import {
   NACL_BOX_OVERHEAD_BYTES,
   QUOTA_TX_OPTIONS,
@@ -105,6 +105,12 @@ export function registerUploadRoutes(server: FastifyInstance): void {
       // (this handler's link.visibility check, above): a contacts-only link
       // must be indistinguishable from a nonexistent one everywhere, not just
       // on GET — a distinguishable 403 here would leak that the link exists.
+      // Also block authenticated callers blocked by the link owner, per the
+      // same masking principle: a blocked caller must see 404 (indistinguishable
+      // from nonexistent), never 403 or any other hint the link exists.
+      if (request.user && link.ownerId && await hasBlockRelationship(link.ownerId, request.user.id)) {
+        return reply.status(404).send({ error: "Link not found" });
+      }
       if (link.visibility === "contacts-only") {
         const allowed = request.user ? await hasAcceptedContact(link.ownerId!, request.user.id) : false;
         if (!allowed) {
