@@ -92,6 +92,74 @@ describe("POST /api/auth/register", () => {
     expect(await prisma.user.findUnique({ where: { username: "numericemail" } })).toBeNull();
   });
 
+  it("rejects an email over the 254-char maxLength with 400 (not 500) via JSON-schema body validation", async () => {
+    const server = buildServer();
+    const longEmail = `${"a".repeat(250)}@x.co`; // 255 chars, one over the RFC 254-char limit
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: {
+        email: longEmail,
+        username: "toolongemail",
+        name: "Too Long",
+        authKey: "p",
+        passwordSalt: "s",
+        passwordWrappedPrivateKey: "w",
+        recoveryWrappedPrivateKey: "r",
+        publicKey: "k",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(await prisma.user.findUnique({ where: { username: "toolongemail" } })).toBeNull();
+  });
+
+  it("rejects a name over the 100-char maxLength with 400 (not 500) via JSON-schema body validation", async () => {
+    const server = buildServer();
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: {
+        email: "toolongname@example.com",
+        username: "toolongname",
+        name: "a".repeat(101),
+        authKey: "p",
+        passwordSalt: "s",
+        passwordWrappedPrivateKey: "w",
+        recoveryWrappedPrivateKey: "r",
+        publicKey: "k",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(await prisma.user.findUnique({ where: { username: "toolongname" } })).toBeNull();
+  });
+
+  it("accepts an email and name exactly at their maxLength (254 and 100 chars respectively)", async () => {
+    const server = buildServer();
+    const atLimitEmail = `${"a".repeat(249)}@x.co`; // exactly 254 chars
+    expect(atLimitEmail).toHaveLength(254);
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: {
+        email: atLimitEmail,
+        username: "atlimitfields",
+        name: "a".repeat(100),
+        authKey: "p",
+        passwordSalt: "s",
+        passwordWrappedPrivateKey: "w",
+        recoveryWrappedPrivateKey: "r",
+        publicKey: "k",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const user = await prisma.user.findUniqueOrThrow({ where: { username: "atlimitfields" } });
+    expect(user.email).toHaveLength(254);
+    expect(user.name).toHaveLength(100);
+  });
+
   it("returns 409 (not 500) and leaves no orphaned user when the username equals an existing anonymous link's slug", async () => {
     const server = buildServer();
     // An anonymous one-time link, created the real way; its random slug is a
@@ -502,6 +570,17 @@ describe("POST /api/auth/login, /api/auth/logout, GET /api/auth/me", () => {
     expect(response.statusCode).toBe(401);
   });
 
+  it("rejects an email over the 254-char maxLength on /api/auth/login with 400 (not 500) via JSON-schema body validation", async () => {
+    const server = buildServer();
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { email: `${"a".repeat(250)}@x.co`, authKey: "correct horse battery staple" }, // 255 chars
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
   it("requires a TOTP code when 2FA is enabled, accepts a valid one, and rejects replaying it", async () => {
     const server = buildServer();
     await register(server);
@@ -865,5 +944,17 @@ describe("POST /api/auth/prelogin", () => {
     const server = buildServer();
     const response = await server.inject({ method: "POST", url: "/api/auth/prelogin", payload: {} });
     expect(response.statusCode).toBe(400);
+  });
+
+  it("rejects an email over the 254-char maxLength with 400 (not 500) via JSON-schema body validation", async () => {
+    const server = buildServer();
+    const response = await prelogin(server, `${"a".repeat(250)}@x.co`); // 255 chars
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("accepts an email at the 254-char maxLength", async () => {
+    const server = buildServer();
+    const response = await prelogin(server, `${"a".repeat(249)}@x.co`); // exactly 254 chars
+    expect(response.statusCode).toBe(200);
   });
 });

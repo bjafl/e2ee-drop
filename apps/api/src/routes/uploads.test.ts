@@ -396,6 +396,64 @@ describe("upload routes", () => {
     expect(drop?.messageNonce).toBe("bWVzc2FnZS1ub25jZQ==");
   });
 
+  it("rejects an encryptedMessage over the 2800-char maxLength with 400 (not 500) via JSON-schema body validation", async () => {
+    const server = buildServer();
+    const slug = await createLink(server);
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+      payload: uploadPayload({ encryptedMessage: "a".repeat(2801), messageNonce: "bWVzc2FnZS1ub25jZQ==" }),
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(await prisma.drop.count({ where: { link: { slug } } })).toBe(0);
+  });
+
+  it("accepts an encryptedMessage at the 2800-char maxLength", async () => {
+    const server = buildServer();
+    const slug = await createLink(server);
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+      payload: uploadPayload({ encryptedMessage: "a".repeat(2800), messageNonce: "bWVzc2FnZS1ub25jZQ==" }),
+    });
+
+    expect(response.statusCode).toBe(200);
+    const drop = await prisma.drop.findFirst({ where: { link: { slug } } });
+    expect(drop?.encryptedMessage).toHaveLength(2800);
+  });
+
+  it("rejects an encryptedMetadata over the 500000-char maxLength with 400 (not 500) via JSON-schema body validation", async () => {
+    const server = buildServer();
+    const slug = await createLink(server);
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+      payload: uploadPayload({ encryptedMetadata: "a".repeat(500001) }),
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(await prisma.drop.count({ where: { link: { slug } } })).toBe(0);
+  });
+
+  it("accepts an encryptedMetadata at the 500000-char maxLength", async () => {
+    const server = buildServer();
+    const slug = await createLink(server);
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+      payload: uploadPayload({ encryptedMetadata: "a".repeat(500000) }),
+    });
+
+    expect(response.statusCode).toBe(200);
+    const drop = await prisma.drop.findFirst({ where: { link: { slug } } });
+    expect(drop?.encryptedMetadata).toHaveLength(500000);
+  });
+
   it("rejects encryptedMessage without messageNonce (and vice versa)", async () => {
     const server = buildServer();
     const slug = await createLink(server);

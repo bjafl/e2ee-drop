@@ -161,6 +161,29 @@ describe("link routes", () => {
     expect(get.json().ownerNote).toBe("please send the invoice");
   });
 
+  it("rejects an ownerNote over the 2000-char maxLength on POST /api/links with 400 (not 500) via JSON-schema body validation", async () => {
+    const server = buildServer();
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/links",
+      payload: { recipientPublicKey: "pk", ownerNote: "a".repeat(2001) },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("accepts an ownerNote at the 2000-char maxLength on POST /api/links", async () => {
+    const server = buildServer();
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/links",
+      payload: { recipientPublicKey: "pk", ownerNote: "a".repeat(2000) },
+    });
+    expect(response.statusCode).toBe(200);
+    const { slug } = response.json();
+    const get = await server.inject({ method: "GET", url: `/api/links/${slug}` });
+    expect(get.json().ownerNote).toHaveLength(2000);
+  });
+
   it("deletes a link", async () => {
     const server = buildServer();
     const createResponse = await server.inject({
@@ -836,6 +859,38 @@ describe("link routes", () => {
       expect(response.statusCode).toBe(400);
       expect(await prisma.link.findUnique({ where: { slug: "bad-retention" } })).toBeNull();
     });
+
+    it("rejects an ownerNote over the 2000-char maxLength with 400 (not 500) via JSON-schema body validation", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "notetoolongowner");
+
+      const response = await server.inject({
+        method: "POST",
+        url: "/api/links/custom",
+        payload: { slug: "note-too-long", mode: "permanent", ownerNote: "a".repeat(2001) },
+        cookies: owner.cookies,
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(await prisma.link.findUnique({ where: { slug: "note-too-long" } })).toBeNull();
+    });
+
+    it("accepts an ownerNote at the 2000-char maxLength", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "noteatlimitowner");
+      await prisma.user.update({ where: { username: "noteatlimitowner" }, data: { emailVerified: true } });
+
+      const response = await server.inject({
+        method: "POST",
+        url: "/api/links/custom",
+        payload: { slug: "note-at-limit", mode: "permanent", ownerNote: "a".repeat(2000) },
+        cookies: owner.cookies,
+      });
+
+      expect(response.statusCode).toBe(200);
+      const created = await prisma.link.findUniqueOrThrow({ where: { slug: "note-at-limit" } });
+      expect(created.ownerNote).toHaveLength(2000);
+    });
   });
 
   it("rejects POST /api/links/custom from an unverified account", async () => {
@@ -1245,6 +1300,36 @@ describe("link routes", () => {
         cookies: owner.cookies,
       });
       expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects an ownerNote over the 2000-char maxLength with 400 (not 500) via JSON-schema body validation", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "requesternotetoolong");
+
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/links/request",
+        payload: { ownerNote: "a".repeat(2001) },
+        cookies: owner.cookies,
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("accepts an ownerNote at the 2000-char maxLength", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "requesternoteatlimit");
+      await prisma.user.update({ where: { username: "requesternoteatlimit" }, data: { emailVerified: true } });
+
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/links/request",
+        payload: { ownerNote: "a".repeat(2000) },
+        cookies: owner.cookies,
+      });
+      expect(res.statusCode).toBe(200);
+      const { slug } = res.json();
+      const link = await prisma.link.findUniqueOrThrow({ where: { slug } });
+      expect(link.ownerNote).toHaveLength(2000);
     });
   });
 

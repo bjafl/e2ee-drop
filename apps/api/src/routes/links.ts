@@ -43,7 +43,11 @@ export function registerLinkRoutes(server: FastifyInstance): void {
           properties: {
             recipientPublicKey: { type: "string" },
             locale: { type: ["string", "null"] },
-            ownerNote: { type: ["string", "null"] },
+            // Free-text note the link owner attaches for senders. Not
+            // encrypted client-side, so it's a plain server-visible field —
+            // bounded well above any realistic note (a sentence or two) but
+            // far below arbitrary Postgres-storage growth (finding F4).
+            ownerNote: { type: ["string", "null"], maxLength: 2000 },
             retentionDays: { type: ["integer", "null"] },
           },
         },
@@ -100,7 +104,8 @@ export function registerLinkRoutes(server: FastifyInstance): void {
             mode: { type: "string" },
             visibility: { type: ["string", "null"] },
             retentionDays: { type: ["integer", "null"] },
-            ownerNote: { type: ["string", "null"] },
+            // See POST /api/links above for the sizing rationale.
+            ownerNote: { type: ["string", "null"], maxLength: 2000 },
           },
         },
       },
@@ -198,7 +203,8 @@ export function registerLinkRoutes(server: FastifyInstance): void {
         body: {
           type: "object",
           properties: {
-            ownerNote: { type: ["string", "null"] },
+            // See POST /api/links above for the sizing rationale.
+            ownerNote: { type: ["string", "null"], maxLength: 2000 },
             retentionDays: { type: ["integer", "null"] },
           },
         },

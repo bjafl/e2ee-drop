@@ -149,9 +149,12 @@ export function registerAuthRoutes(server: FastifyInstance): void {
         body: {
           type: "object",
           properties: {
-            email: { type: "string" },
+            // 254: the RFC 5321/5322 maximum total email address length.
+            email: { type: "string", maxLength: 254 },
             username: { type: "string" },
-            name: { type: "string" },
+            // 100: generous headroom over any real display name; bounds an
+            // otherwise-unbounded field stored verbatim on the User row.
+            name: { type: "string", maxLength: 100 },
             authKey: { type: "string" },
             passwordSalt: { type: "string" },
             passwordWrappedPrivateKey: { type: "string" },
@@ -292,7 +295,8 @@ export function registerAuthRoutes(server: FastifyInstance): void {
         body: {
           type: "object",
           properties: {
-            email: { type: "string" },
+            // Same RFC 5321/5322 bound as /register's email field.
+            email: { type: "string", maxLength: 254 },
           },
         },
       },
@@ -314,7 +318,8 @@ export function registerAuthRoutes(server: FastifyInstance): void {
         body: {
           type: "object",
           properties: {
-            email: { type: "string" },
+            // Same RFC 5321/5322 bound as /register's email field.
+            email: { type: "string", maxLength: 254 },
             authKey: { type: "string" },
             totpCode: { type: "string" },
           },

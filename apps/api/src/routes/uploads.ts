@@ -77,9 +77,24 @@ export function registerUploadRoutes(server: FastifyInstance): void {
           properties: {
             senderPublicKey: { type: "string" },
             archiveNonce: { type: "string" },
-            encryptedMessage: { type: ["string", "null"] },
+            // Base64 nacl.box ciphertext of the sender's optional note. The web
+            // client caps the plaintext at 500 characters (UploadPage.tsx's
+            // MAX_MESSAGE_LENGTH); worst-case UTF-8 is 4 bytes/char, so 500 chars
+            // -> 2000 bytes, +16 bytes nacl.box MAC overhead = 2016 bytes ->
+            // base64 (4/3) = 2688 chars. 2800 keeps that with headroom.
+            encryptedMessage: { type: ["string", "null"], maxLength: 2800 },
             messageNonce: { type: ["string", "null"] },
-            encryptedMetadata: { type: "string" },
+            // Base64 nacl.box ciphertext of the JSON-encoded file list
+            // (`{ files: [{ name, size }], mimeType }` — useFileEncryption.ts).
+            // The dropzone (UploadPage.tsx) caps neither file count nor filename
+            // length, so this is sized from the shape rather than any client
+            // cap: assuming up to 1000 files (a large folder drop) with 255-byte
+            // filenames (the common filesystem component limit) gives per-file
+            // JSON of ~285 bytes (`{"name":"<255>","size":<10 digits>},`), i.e.
+            // ~285,000 bytes plaintext for the array, +16 bytes nacl.box
+            // overhead, -> base64 (4/3) ~= 380,000 chars. 500000 keeps that with
+            // headroom while staying well under Fastify's default 1 MiB body limit.
+            encryptedMetadata: { type: "string", maxLength: 500000 },
             metadataNonce: { type: "string" },
             metadata: {
               type: "object",
