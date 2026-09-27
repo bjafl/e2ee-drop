@@ -5,7 +5,7 @@ import type { TotpSetupResponse, TotpEnableRequest } from "@e2ee-drop/shared";
 import { generateTotpSecret, buildOtpauthUrl, verifyTotpCode, encryptTotpSecret, decryptTotpSecret } from "../lib/totp";
 import { getUsedCodesForUser } from "../lib/totpReplayGuard";
 import { twoFactorRateLimiter, rateLimitExceededBody } from "../lib/rateLimit";
-import { generateAndStoreBackupCodes } from "../lib/totpBackupCodes";
+import { generateAndStoreBackupCodes, consumeBackupCodeIfValid } from "../lib/totpBackupCodes";
 
 // Keyed by the authenticated user's id (same convention as account.ts's
 // accountDeletionRateLimit): runs after requireAuth, so request.user is
@@ -148,7 +148,10 @@ export function registerTwoFactorRoutes(server: FastifyInstance): void {
         return reply.status(401).send({ error: "TOTP code required to disable 2FA" });
       }
       const secret = decryptTotpSecret(user.totpSecretEncrypted);
-      if (!verifyTotpCode(secret, code, getUsedCodesForUser(user.id))) {
+      const totpValid = verifyTotpCode(secret, code, getUsedCodesForUser(user.id));
+      // Same ordering as /api/auth/login (routes/auth.ts): a backup code is
+      // checked only when the TOTP check itself fails.
+      if (!totpValid && !(await consumeBackupCodeIfValid(user.id, code))) {
         return reply.status(401).send({ error: "Invalid TOTP code" });
       }
       await prisma.user.update({
@@ -173,7 +176,10 @@ export function registerTwoFactorRoutes(server: FastifyInstance): void {
       const code = request.body?.code;
       if (!code) return reply.status(401).send({ error: "TOTP code required" });
       const secret = decryptTotpSecret(user.totpSecretEncrypted);
-      if (!verifyTotpCode(secret, code, getUsedCodesForUser(user.id))) {
+      const totpValid = verifyTotpCode(secret, code, getUsedCodesForUser(user.id));
+      // Same ordering as /api/auth/login (routes/auth.ts): a backup code is
+      // checked only when the TOTP check itself fails.
+      if (!totpValid && !(await consumeBackupCodeIfValid(user.id, code))) {
         return reply.status(401).send({ error: "Invalid TOTP code" });
       }
       const backupCodes = await generateAndStoreBackupCodes(user.id);

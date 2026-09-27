@@ -191,6 +191,8 @@ export function AccountPage() {
                 id="totp-action-code"
                 data-testid="totp-action-code-input"
                 inputMode="numeric"
+                autoCapitalize="off"
+                spellCheck={false}
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
                 className="w-full rounded border p-2"

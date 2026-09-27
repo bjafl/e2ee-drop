@@ -12,7 +12,7 @@
     "scanQr": "Scan this QR code with your authenticator app, or enter the code manually:",
     "codeLabel": "Enter the 6-digit code from your app",
     "confirm": "Confirm",
-    "currentCodeLabel": "Enter your current 6-digit code to continue",
+    "currentCodeLabel": "Enter your current 6-digit code or a backup code to continue",
     "backupCodesWarning": "Save these codes now — they will not be shown again. Each can be used once to log in if you lose access to your authenticator.",
     "backupCodesCopy": "Copy all",
     "backupCodesDone": "I've saved these codes"
