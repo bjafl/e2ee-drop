@@ -236,6 +236,15 @@ export async function toLinkStatusResponse(
   // row", which is still true) — callers needing the display rule check emailVerified directly,
   // exactly as this function already does for the fields below.
   if (!owner.emailVerified) return base;
+  // docs/STATUS.md gap 2: `owner` here is the row for link.ownerId, which for a
+  // claimed sender-initiated link (POST /api/links/request + /claim) is the
+  // INITIATOR (sender), never the real recipient (whoever claimed it — see
+  // isClaimedSenderInitiatedLink's doc comment above). Populating recipient*
+  // from it would show the sender's own name/username/email/verification
+  // status back to them (or anyone else reading this response) mislabeled as
+  // "the recipient" — a real trust-signal bug, since a sender could otherwise
+  // look verified/2FA-enabled while the actual recipient may be anonymous.
+  if (await isClaimedSenderInitiatedLink(link)) return base;
 
   const showEmail = owner.showEmailOnPublicProfile || !link.isDefault;
 

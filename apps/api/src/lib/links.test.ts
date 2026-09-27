@@ -278,6 +278,57 @@ describe("toLinkStatusResponse", () => {
       expect(response.drop).toBeNull();
     });
   });
+
+  // docs/STATUS.md gap 2: a claimed sender-initiated link's `owner` row is the
+  // INITIATOR (sender), not the real recipient — so recipient* must never be
+  // derived from it, regardless of the initiator's own emailVerified/totpEnabled
+  // status. Whoever reads this response (the initiator themselves, or anyone
+  // else) must never see the sender's own identity mislabeled as "recipient".
+  describe("gap 2: a claimed sender-initiated link never exposes recipient* fields", () => {
+    it("omits every recipient* key even when the initiator is emailVerified and shows their email", async () => {
+      const owner = await makeOwner({
+        username: "initiatorverified",
+        email: "initiatorverified@example.com",
+        emailVerified: true,
+        totpEnabled: true,
+        showEmailOnPublicProfile: true,
+      });
+      const link = {
+        ...makeLink({ ownerId: owner.id, isDefault: true, recipientPublicKey: "claimant-key" }),
+        drops: [],
+      };
+
+      const response = await toLinkStatusResponse(link);
+
+      for (const key of [
+        "recipientName",
+        "recipientUsername",
+        "recipientEmail",
+        "recipientEmailVerified",
+        "recipientTotpEnabled",
+      ]) {
+        expect(Object.prototype.hasOwnProperty.call(response, key)).toBe(false);
+      }
+    });
+
+    it("still shows recipient* fields for a NORMAL owned link with a verified owner (no regression)", async () => {
+      const owner = await makeOwner({
+        username: "normalownerverified",
+        email: "normalownerverified@example.com",
+        emailVerified: true,
+        showEmailOnPublicProfile: true,
+      });
+      const link = {
+        ...makeLink({ ownerId: owner.id, isDefault: true, recipientPublicKey: owner.publicKey }),
+        drops: [],
+      };
+
+      const response = await toLinkStatusResponse(link);
+
+      expect(response.recipientName).toBe(owner.name);
+      expect(response.recipientEmailVerified).toBe(true);
+    });
+  });
 });
 
 describe("canReceive", () => {
