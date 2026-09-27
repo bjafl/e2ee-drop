@@ -15,6 +15,7 @@ vi.mock("../lib/storage", async (importOriginal) => ({
 
 import { buildServer } from "../server";
 import { prisma } from "@e2ee-drop/db";
+import { chargedBytes } from "../lib/quota";
 
 // Creates an anonymous link with a single drop against the current schema
 // (mirrors the reveal-message suite's createLinkWithMessage below). Calling
@@ -573,6 +574,32 @@ describe("owned-link complete-download route", () => {
     expect((await prisma.drop.findUnique({ where: { id: second.id } }))?.fileEnvelopeStatus).toBe("sealed");
     expect(deleteObjectMock).toHaveBeenCalledTimes(1);
     expect(deleteObjectMock).toHaveBeenCalledWith(first.s3Key);
+  });
+
+  // Finding C1: complete-download used to never release the owner's quota at all, so every
+  // successfully delivered drop kept counting against the owner's storage forever.
+  it("releases exactly chargedBytes(fileSize) of the owner's quota when its CAS wins, and nothing on a repeat call", async () => {
+    const server = buildServer();
+    const { owner, link, first, second } = await ownedLinkWithQueue(server, "cdquota");
+    // Both queued drops are "complete", i.e. charged at /complete.
+    await prisma.user.update({
+      where: { id: owner.userId },
+      data: { storageUsedBytes: chargedBytes(first.fileSize) + chargedBytes(second.fileSize) },
+    });
+    const url = `/api/links/${link.slug}/drops/${first.id}/complete-download`;
+
+    const response = await server.inject({ method: "POST", url, cookies: owner.cookies });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ completed: true });
+    const afterFirst = await prisma.user.findUniqueOrThrow({ where: { id: owner.userId } });
+    expect(afterFirst.storageUsedBytes).toBe(chargedBytes(second.fileSize)); // decreased by exactly one drop's charge
+
+    const repeat = await server.inject({ method: "POST", url, cookies: owner.cookies });
+
+    expect(repeat.json()).toEqual({ completed: false });
+    const afterRepeat = await prisma.user.findUniqueOrThrow({ where: { id: owner.userId } });
+    expect(afterRepeat.storageUsedBytes).toBe(chargedBytes(second.fileSize)); // not released twice
   });
 });
 

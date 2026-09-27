@@ -4,7 +4,7 @@ import { prisma } from "@e2ee-drop/db";
 import type { DownloadUrlResponse, RevealMessageResponse } from "@e2ee-drop/shared";
 import { abandonDrop, canReceive, getLinkBySlug, isLinkExpired, recomputeDeliveryStatus } from "../lib/links";
 import { getSignedDownloadUrl, deleteObject } from "../lib/storage";
-import { scrubDropContent } from "../lib/quota";
+import { scrubDropContent, lockOwnerQuota, releaseCharged, QUOTA_TX_OPTIONS } from "../lib/quota";
 
 // fileEnvelopeStatus values that mean "this drop's file bytes are gone/spoken
 // for" — a compare-and-swap gate never lets a write clobber either of these.
@@ -126,6 +126,25 @@ export function registerDownloadRoutes(server: FastifyInstance): void {
         // way — deleteObject above is idempotent, and the winner deleted it if
         // this call didn't — so this is not an error, just not this call's win.
         return reply.send({ completed: false });
+      }
+
+      // Quota is charged against the file's storage bytes, and those bytes are now gone:
+      // release the owner's charge for this drop. Safe as a separate step after the CAS
+      // (not in one transaction with it) because the CAS above can be won by at most one
+      // caller, ever, for this drop — across complete-download and scrubDropContent alike —
+      // so count === 1 is an exclusive, one-time ticket to perform this release.
+      // `drop` is the pre-CAS snapshot: its fileEnvelopeStatus is still non-terminal, which
+      // is exactly what releaseCharged's filter needs to see to treat this as unreleased.
+      if (link.ownerId) {
+        const ownerId = link.ownerId;
+        await prisma.$transaction(async (tx) => {
+          const owner = await lockOwnerQuota(tx, ownerId);
+          if (owner) {
+            await releaseCharged(tx, ownerId, [
+              { fileSize: drop.fileSize, fileUploadStatus: drop.fileUploadStatus, fileEnvelopeStatus: drop.fileEnvelopeStatus },
+            ]);
+          }
+        }, QUOTA_TX_OPTIONS);
       }
 
       // Derive the overall deliveryStatus fresh from current DB state — NOT

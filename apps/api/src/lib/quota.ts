@@ -5,12 +5,17 @@
 // helper here leaves anonymous links on their original, unaccounted code path.
 //
 // Invariant: User.storageUsedBytes == sum of chargedBytes(fileSize) over the
-// user's drops whose fileUploadStatus is "complete" (see isChargedStatus).
+// user's drops whose fileUploadStatus is "complete" (see isChargedStatus) AND
+// whose fileEnvelopeStatus is not terminal ("delivered"/"shredded").
 // "reserved" and "uploading" drops are in-flight and not yet charged. A drop
 // is charged exactly once, when /complete wins its "uploading" -> "complete"
-// CAS, and released exactly once, when a charged drop's row is deleted. No
-// status ever moves back out of "complete", so isChargedStatus(status) is
-// exactly the set of charged drops.
+// CAS, and released exactly once, by whichever of these happens first:
+//   - a CAS moving its file envelope to a terminal state wins
+//     (complete-download -> "delivered", scrubDropContent -> "shredded"), or
+//   - its row is hard-deleted while its file envelope is still non-terminal
+//     (deleteLinkReleasingQuota / deleteDropReleasingQuota).
+// Neither fileUploadStatus "complete" nor a terminal fileEnvelopeStatus is
+// ever left again, so each drop crosses the release boundary at most once.
 //
 // Lock ordering (to rule out deadlocks between these transactions):
 //   User row  ->  Link row  ->  Drop row(s)
@@ -69,6 +74,15 @@ export function chargedBytes(fileSize: number): bigint {
 
 export function isChargedStatus(fileUploadStatus: string): boolean {
   return fileUploadStatus === "complete";
+}
+
+// The two values fileEnvelopeStatus/messageEnvelopeStatus can permanently settle into.
+// Shared here because releaseCharged (below) and scrubDropContent both need to test
+// against the file envelope's own terminal-ness to decide whether a charge has already
+// been released elsewhere.
+const TERMINAL_ENVELOPE_STATUSES = ["delivered", "shredded"] as const;
+function isTerminalEnvelope(status: string): boolean {
+  return (TERMINAL_ENVELOPE_STATUSES as readonly string[]).includes(status);
 }
 
 type OwnerQuotaRow = { storageQuotaBytes: bigint; storageUsedBytes: bigint };
@@ -205,13 +219,19 @@ export async function assertWithinSenderShare(
   }
 }
 
+// Releases the owner's quota for every drop in `deleted` that is still charged: its upload
+// completed (isChargedStatus) AND its file envelope has not already reached a terminal state.
+// A drop whose file side is already "delivered"/"shredded" had its charge released at the
+// moment that terminal CAS won (complete-download, or scrubDropContent), so releasing it again
+// here would double-count. Callers must pass each drop's fileEnvelopeStatus as it was
+// immediately BEFORE the caller's own terminal transition (or at delete time, for a hard delete).
 export async function releaseCharged(
   tx: Prisma.TransactionClient,
   userId: string,
-  deleted: { fileSize: number; fileUploadStatus: string }[]
+  deleted: { fileSize: number; fileUploadStatus: string; fileEnvelopeStatus: string }[]
 ): Promise<void> {
   const released = deleted
-    .filter((drop) => isChargedStatus(drop.fileUploadStatus))
+    .filter((drop) => isChargedStatus(drop.fileUploadStatus) && !isTerminalEnvelope(drop.fileEnvelopeStatus))
     .reduce((sum, drop) => sum + chargedBytes(drop.fileSize), 0n);
   if (released > 0n) {
     await tx.user.update({ where: { id: userId }, data: { storageUsedBytes: { decrement: released } } });
@@ -242,8 +262,8 @@ export async function deleteLinkReleasingQuota(link: { id: string; ownerId: stri
     // lock on this row) until the link is gone, so no drop can slip in
     // between the Drop delete and the Link delete below.
     await tx.$queryRaw`SELECT "id" FROM "Link" WHERE "id" = ${link.id} FOR UPDATE`;
-    const deleted = await tx.$queryRaw<{ fileSize: number; fileUploadStatus: string }[]>`
-      DELETE FROM "Drop" WHERE "linkId" = ${link.id} RETURNING "fileSize", "fileUploadStatus"`;
+    const deleted = await tx.$queryRaw<{ fileSize: number; fileUploadStatus: string; fileEnvelopeStatus: string }[]>`
+      DELETE FROM "Drop" WHERE "linkId" = ${link.id} RETURNING "fileSize", "fileUploadStatus", "fileEnvelopeStatus"`;
     if (owner) await releaseCharged(tx, ownerId, deleted);
     await tx.link.deleteMany({ where: { id: link.id } });
   }, QUOTA_TX_OPTIONS);
@@ -254,8 +274,8 @@ export async function deleteLinkReleasingQuota(link: { id: string; ownerId: stri
 export async function deleteDropReleasingQuota(dropId: string, ownerId: string): Promise<boolean> {
   return prisma.$transaction(async (tx) => {
     const owner = await lockOwnerQuota(tx, ownerId);
-    const deleted = await tx.$queryRaw<{ fileSize: number; fileUploadStatus: string }[]>`
-      DELETE FROM "Drop" WHERE "id" = ${dropId} RETURNING "fileSize", "fileUploadStatus"`;
+    const deleted = await tx.$queryRaw<{ fileSize: number; fileUploadStatus: string; fileEnvelopeStatus: string }[]>`
+      DELETE FROM "Drop" WHERE "id" = ${dropId} RETURNING "fileSize", "fileUploadStatus", "fileEnvelopeStatus"`;
     if (owner) await releaseCharged(tx, ownerId, deleted);
     return deleted.length > 0;
   }, QUOTA_TX_OPTIONS);
@@ -266,6 +286,9 @@ export async function deleteDropReleasingQuota(dropId: string, ownerId: string):
 // UPDATEs it, so it works identically for anonymous and owned drops (only the quota-release step
 // differs). The caller is responsible for actually deleting the returned s3Key from storage —
 // this function only ever touches the database.
+//
+// Returns null when there was nothing left to scrub, or when every field this call would have
+// resolved was already resolved by a concurrent caller (a pure no-op, not an error).
 export async function scrubDropContent(
   dropId: string
 ): Promise<{ ownerId: string | null; s3Key: string } | null> {
@@ -275,51 +298,94 @@ export async function scrubDropContent(
       s3Key: true,
       fileSize: true,
       fileUploadStatus: true,
-      encryptedMessage: true,
       messageEnvelopeStatus: true,
+      encryptedMessage: true,
       fileEnvelopeStatus: true,
       link: { select: { id: true, ownerId: true } },
     },
   });
   if (!drop) return null;
 
-  // hasMessage disambiguates a message-less drop (messageEnvelopeStatus stuck at its schema
-  // default "sealed" forever, since nothing ever writes to it when there was no message) from
-  // one whose message is still sealed and unretrieved. Without this, a message-less drop whose
-  // file was already fully delivered would never be seen as "both sides terminal": this function
-  // would then needlessly stamp messageEnvelopeStatus: "shredded" on a drop that never had a
-  // message, and worse, reset contentDeletedAt on every subsequent cleanup-sweep tick over an
-  // already-fully-resolved row, permanently defeating Task 9's audit-retention purge (which ages
-  // rows off of contentDeletedAt). Same disambiguation recomputeDeliveryStatus uses (lib/links.ts).
+  // Same hasMessage disambiguation as recomputeDeliveryStatus (lib/links.ts) — a
+  // message-less drop's messageEnvelopeStatus is stuck at its schema default "sealed"
+  // forever, so it must never be mistaken for "has an unrevealed message". Without this,
+  // a message-less, already-delivered drop would never be seen as fully resolved, and
+  // every cleanup tick would re-stamp contentDeletedAt, defeating the audit-retention purge.
   const hasMessage = drop.encryptedMessage !== null || drop.messageEnvelopeStatus !== "sealed";
-  const messageAlreadyTerminal =
-    !hasMessage || drop.messageEnvelopeStatus === "delivered" || drop.messageEnvelopeStatus === "shredded";
-  const fileAlreadyTerminal =
-    drop.fileEnvelopeStatus === "delivered" || drop.fileEnvelopeStatus === "shredded";
-  if (messageAlreadyTerminal && fileAlreadyTerminal) return null;
+  const messageAlreadyTerminal = !hasMessage || isTerminalEnvelope(drop.messageEnvelopeStatus);
+  const fileAlreadyTerminal = isTerminalEnvelope(drop.fileEnvelopeStatus);
+  if (messageAlreadyTerminal && fileAlreadyTerminal) return null; // nothing left to scrub at all
 
   const ownerId = drop.link.ownerId;
-  const scrub = async (tx: Prisma.TransactionClient) => {
-    await tx.drop.updateMany({
-      where: { id: dropId },
-      data: {
-        encryptedMessage: null,
-        messageNonce: null,
-        contentDeletedAt: new Date(),
-        ...(messageAlreadyTerminal ? {} : { messageEnvelopeStatus: "shredded" }),
-        ...(fileAlreadyTerminal ? {} : { fileEnvelopeStatus: "shredded" }),
-      },
-    });
-    if (ownerId) {
-      const owner = await lockOwnerQuota(tx, ownerId);
-      if (owner) await releaseCharged(tx, ownerId, [{ fileSize: drop.fileSize, fileUploadStatus: drop.fileUploadStatus }]);
+
+  // Returns whether anything was actually resolved by THIS call (false means every
+  // field this call might have touched was already resolved by a concurrent caller
+  // between the snapshot read above and this transaction — a pure no-op, not an error).
+  const scrub = async (tx: Prisma.TransactionClient): Promise<boolean> => {
+    // Lock the owner FIRST, before touching the Drop row at all — matches this
+    // module's documented lock order (User -> Link -> Drop) and avoids a deadlock
+    // against /complete's or complete-download's own owner-locked transactions,
+    // which also lock the owner before their Drop CAS.
+    const owner = ownerId ? await lockOwnerQuota(tx, ownerId) : null;
+
+    // Two INDEPENDENT per-field CASes — not one combined WHERE. A race on either
+    // field must never block the other field's legitimate resolution: e.g. if a
+    // concurrent complete-download resolves the file side between our snapshot read
+    // and here, this call must still be free to shred an unrevealed message (and
+    // vice versa). Each CAS re-checks that field's LIVE value inside this locked
+    // transaction — never the snapshot read above, which only decided whether to
+    // bother opening this transaction at all. This is what makes it safe against a
+    // concurrent reveal-message/complete-download CAS winning first: a field
+    // already moved to a terminal value by the time this statement runs simply
+    // matches zero rows, so it is never clobbered back to "shredded".
+    let fileJustResolved = false;
+    if (!fileAlreadyTerminal) {
+      const { count } = await tx.drop.updateMany({
+        where: { id: dropId, fileEnvelopeStatus: { notIn: [...TERMINAL_ENVELOPE_STATUSES] } },
+        data: { fileEnvelopeStatus: "shredded", contentDeletedAt: new Date() },
+      });
+      fileJustResolved = count === 1;
     }
+
+    let messageJustResolved = false;
+    if (!messageAlreadyTerminal) {
+      const { count } = await tx.drop.updateMany({
+        where: { id: dropId, messageEnvelopeStatus: { notIn: [...TERMINAL_ENVELOPE_STATUSES] } },
+        data: { encryptedMessage: null, messageNonce: null, messageEnvelopeStatus: "shredded" },
+      });
+      messageJustResolved = count === 1;
+    }
+
+    if (!fileJustResolved && !messageJustResolved) return false; // lost every race there was
+
+    // contentDeletedAt marks "some content was scrubbed" — the file-side update above
+    // already sets it when the file side resolves; also set it here when ONLY the
+    // message side resolved this call, so the audit-retention clock still starts even
+    // for a message-only scrub.
+    if (messageJustResolved && !fileJustResolved) {
+      await tx.drop.updateMany({ where: { id: dropId }, data: { contentDeletedAt: new Date() } });
+    }
+
+    // Quota is charged against the FILE's storage bytes (chargedBytes(fileSize) — see
+    // this module's header comment), so it is released exactly when THIS call is the
+    // one that resolved the file side for the first time — never for the message side
+    // alone, and never twice: fileJustResolved can be true for at most one caller,
+    // ever, across every path that can reach a terminal file envelope (the cleanup
+    // sweeps and owner-cancel via this function, complete-download via its own CAS).
+    // The snapshot's fileEnvelopeStatus is passed deliberately: fileJustResolved implies
+    // it was non-terminal, which is exactly what releaseCharged needs to see.
+    if (fileJustResolved && owner) {
+      await releaseCharged(tx, ownerId!, [
+        { fileSize: drop.fileSize, fileUploadStatus: drop.fileUploadStatus, fileEnvelopeStatus: drop.fileEnvelopeStatus },
+      ]);
+    }
+
+    return true;
   };
 
-  if (ownerId) {
-    await prisma.$transaction(scrub, QUOTA_TX_OPTIONS);
-  } else {
-    await scrub(prisma as unknown as Prisma.TransactionClient);
-  }
-  return { ownerId, s3Key: drop.s3Key };
+  const resolved = ownerId
+    ? await prisma.$transaction(scrub, QUOTA_TX_OPTIONS)
+    : await scrub(prisma as unknown as Prisma.TransactionClient);
+
+  return resolved ? { ownerId, s3Key: drop.s3Key } : null;
 }
