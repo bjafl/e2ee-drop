@@ -201,6 +201,49 @@ describe("getInboxForUser", () => {
     expect(inbox.counterparties).toHaveLength(0);
   });
 
+  it("gives incoming and outgoing counterparties for the same person structurally different keys", async () => {
+    const owner = await makeUser("inbox-owner-11");
+    const other = await makeUser("inbox-other-11");
+    // owner's own link: `other` sends owner a drop -> incoming counterparty for owner.
+    const ownerLink = await prisma.link.create({
+      data: { ownerId: owner.id, slug: "inbox-owner-11", mode: "permanent", recipientPublicKey: owner.publicKey, retentionDays: 7 },
+    });
+    await makeDrop({ linkId: ownerLink.id, senderPublicKey: "s11a", senderUserId: other.id });
+    // other's own link: owner sends other a drop -> outgoing counterparty for owner.
+    const otherLink = await prisma.link.create({
+      data: { ownerId: other.id, slug: "inbox-other-11", mode: "permanent", recipientPublicKey: other.publicKey, retentionDays: 7 },
+    });
+    await makeDrop({ linkId: otherLink.id, senderPublicKey: "s11b", senderUserId: owner.id });
+
+    const inbox = await getInboxForUser(owner.id);
+
+    expect(inbox.counterparties).toHaveLength(2);
+    const incoming = inbox.counterparties.find((c) => c.direction === "incoming")!;
+    const outgoing = inbox.counterparties.find((c) => c.direction === "outgoing")!;
+    expect(incoming).toBeDefined();
+    expect(outgoing).toBeDefined();
+    expect(incoming.key).not.toBe(outgoing.key);
+    // Both describe the same counterparty ("inbox-other-11") so they'd share a display name too.
+    expect(incoming.displayName).toBe("inbox-other-11");
+    expect(outgoing.displayName).toBe("inbox-other-11");
+  });
+
+  it("never shows the caller their own username as an incoming sender to themselves (sender-initiated request-link shape)", async () => {
+    const owner = await makeUser("inbox-owner-12");
+    // Simulate the claimed sender-initiated request-link shape directly (per lib/links.ts's
+    // isClaimedSenderInitiatedLink): an owned link whose ownerId is the request's initiator,
+    // who later uploads a drop to their own link (senderUserId === ownerId).
+    const link = await prisma.link.create({
+      data: { ownerId: owner.id, slug: "inbox-owner-12", mode: "permanent", recipientPublicKey: "claimant-pubkey", retentionDays: 7 },
+    });
+    await makeDrop({ linkId: link.id, senderPublicKey: owner.publicKey, senderUserId: owner.id });
+
+    const inbox = await getInboxForUser(owner.id);
+    const incoming = inbox.counterparties.filter((c) => c.direction === "incoming");
+
+    expect(incoming).toHaveLength(0);
+  });
+
   it("numbers anonymous buckets by first-seen order across ALL of the owner's links, not per-link", async () => {
     const owner = await makeUser("inbox-owner-10");
     // Link A is created first, so an unordered `findMany` is likely (though

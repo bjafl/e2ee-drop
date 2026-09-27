@@ -44,10 +44,14 @@ export async function getInboxForUser(userId: string): Promise<InboxResponse> {
   // the other (this plan's Review Focus).
   //
   // Note: a self-send (userId owns the link AND is drop.senderUserId on it)
-  // would surface the same Drop row once in each bucket below — intentional
-  // given the two-query split above, and left unhandled since a link's
-  // recipientPublicKey is the owner's own key, making self-send only
-  // reachable if the plan ever allows sending to one's own link.
+  // IS reachable in practice — a sender-initiated request-link
+  // (POST /api/links/request, see lib/links.ts's isClaimedSenderInitiatedLink)
+  // has ownerId set to the request's INITIATOR, who later uploads to their
+  // own link as its sender. Left unhandled here would show the caller their
+  // own username as an "incoming" sender to themselves in the incoming
+  // branch below; that's filtered out there. The outgoing branch still
+  // surfaces the same Drop row (self as an "outgoing" counterparty to
+  // themselves) — that half is out of scope for this fix.
   const [incomingLinks, blockedByMe, outgoingDrops] = await Promise.all([
     prisma.link.findMany({ where: { ownerId: userId }, include: { drops: true } }),
     prisma.contact.findMany({ where: { blockedByUserId: userId, status: "blocked" } }),
@@ -87,9 +91,12 @@ export async function getInboxForUser(userId: string): Promise<InboxResponse> {
   for (const { drop, linkSlug } of incomingDropsFlat) {
     if (isDropResolved(drop)) continue;
     if (drop.senderUserId && blockedUserIds.has(drop.senderUserId)) continue;
+    // A self-send (see the comment above the incoming/outgoing query split):
+    // the caller must never appear as their own "incoming" counterparty.
+    if (drop.senderUserId === userId) continue;
 
     const isKnown = drop.senderUserId !== null;
-    const bucketKey = isKnown ? `account:${drop.senderUserId}` : `anon:${drop.senderPublicKey}`;
+    const bucketKey = isKnown ? `incoming:account:${drop.senderUserId}` : `incoming:anon:${drop.senderPublicKey}`;
 
     let counterparty = incomingByCounterparty.get(bucketKey);
     if (!counterparty) {
@@ -120,7 +127,7 @@ export async function getInboxForUser(userId: string): Promise<InboxResponse> {
   for (const drop of outgoingDrops) {
     if (isDropResolved(drop)) continue;
     if (!drop.link.ownerId) continue; // defensive: skip if the other end's link is somehow unowned
-    const bucketKey = `account:${drop.link.ownerId}`;
+    const bucketKey = `outgoing:account:${drop.link.ownerId}`;
     let counterparty = outgoingByCounterparty.get(bucketKey);
     if (!counterparty) {
       counterparty = {

@@ -121,8 +121,12 @@ export interface InboxDrop {
 }
 
 export interface InboxCounterparty {
-  // Stable within one response; "account:<userId>" or "anon:<senderPublicKey>".
-  // Never persisted or reused as a lookup key server-side beyond this response.
+  // Stable within one response; "incoming:account:<userId>" / "incoming:anon:<senderPublicKey>"
+  // / "outgoing:account:<userId>". The direction prefix is load-bearing: the SAME person can
+  // appear as both an incoming and an outgoing counterparty (a mutual exchange of drops), and
+  // those two entries must have structurally different keys or a UI keyed on this field (e.g.
+  // React list keys, "find selected by key") cannot tell them apart. Never persisted or reused
+  // as a lookup key server-side beyond this response.
   key: string;
   kind: "account" | "anonymous";
   displayName: string; // username for "account", "Anonym1"/"Anonym2"/... for "anonymous"
