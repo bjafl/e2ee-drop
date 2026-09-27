@@ -213,6 +213,99 @@ describe("password reset routes", () => {
     expect(verify.statusCode).toBe(200);
   });
 
+  it("still succeeds when the password reset email send throws (best-effort)", async () => {
+    const server = buildServer();
+    const { userId } = await registerUser(server);
+
+    vi.mocked(isMailerConfigured).mockReturnValueOnce(true);
+    vi.mocked(sendPasswordResetEmail).mockRejectedValueOnce(new Error("smtp down"));
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/auth/password-reset/request",
+      payload: { email: "dana@example.com" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(await prisma.passwordResetToken.count({ where: { userId } })).toBe(1);
+  });
+
+  it("logs (via request.log.warn) when the best-effort email send fails, without blocking the response", async () => {
+    const serverWithHook = buildServer();
+
+    // request.log is a per-request pino child logger that generates its own
+    // independent level methods (warn/info/etc.) rather than inheriting them
+    // from server.log — spying on server.log.warn never observes a call made
+    // through a request's own request.log.warn. Instead, wrap the actual
+    // per-request instance via an onRequest hook, which runs early enough
+    // (before the route handler) to patch the exact request.log the handler
+    // and its later .catch() callback will both use.
+    const warnCalls: unknown[][] = [];
+    serverWithHook.addHook("onRequest", (request, _reply, done) => {
+      const original = request.log.warn.bind(request.log);
+      request.log.warn = (...args: Parameters<typeof original>) => {
+        warnCalls.push(args);
+        return original(...args);
+      };
+      done();
+    });
+
+    // Register a user on this server, then test the email send failure.
+    await serverWithHook.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: {
+        email: "dana@example.com",
+        username: "dana",
+        name: "Dana",
+        authKey: "original password",
+        passwordSalt: "b3JpZ2luYWwtc2FsdA==",
+        passwordWrappedPrivateKey: "b3JpZ2luYWwtd3JhcHBlZA==",
+        recoveryWrappedPrivateKey: "b3JpZ2luYWwtcmVjb3Zlcnk=",
+        publicKey: "b3JpZ2luYWwtcHVia2V5",
+      },
+    });
+
+    // Set up mocks for the password reset request: mailer is configured,
+    // but the email send will fail.
+    vi.mocked(isMailerConfigured).mockReturnValue(true);
+    vi.mocked(sendPasswordResetEmail).mockClear();
+    vi.mocked(sendPasswordResetEmail).mockRejectedValue(new Error("smtp down"));
+
+    const start = Date.now();
+    const response = await serverWithHook.inject({
+      method: "POST",
+      url: "/api/auth/password-reset/request",
+      payload: { email: "dana@example.com" },
+    });
+    const elapsedMs = Date.now() - start;
+
+    expect(response.statusCode).toBe(200);
+
+    // The email send is fire-and-forget: the route kicks it off but does not
+    // await it on the response path. Poll for the mock to be called.
+    await vi.waitFor(() => {
+      expect(vi.mocked(sendPasswordResetEmail)).toHaveBeenCalledTimes(1);
+    });
+
+    // The response must not wait on the (failing) mail send — it should
+    // return promptly rather than only after the send's own rejection.
+    expect(elapsedMs).toBeLessThan(500);
+
+    // Wait for the error to be logged.
+    await vi.waitFor(() => {
+      expect(warnCalls).toHaveLength(1);
+    });
+    const [logArg, msgArg] = warnCalls[0];
+    expect(msgArg).toBe("password reset email send failed");
+    expect(logArg).toMatchObject({ err: expect.anything() });
+    // Never logs the reset URL or token itself, only the error.
+    expect(JSON.stringify(warnCalls)).not.toContain("/reset-password/confirm?token=");
+
+    // Reset mocks for next tests.
+    vi.mocked(isMailerConfigured).mockReturnValue(false);
+    vi.mocked(sendPasswordResetEmail).mockResolvedValue(undefined);
+  });
+
   it("rejects verify-token and complete for an invalid token", async () => {
     const server = buildServer();
     const verify = await server.inject({
