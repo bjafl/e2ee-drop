@@ -11,36 +11,153 @@ import { runCleanup, sweepExpiredDrops, sweepAbandonedUploads, pruneExpiredPassw
 const deleteObjectMock = vi.mocked(deleteObject);
 
 describe("runCleanup", () => {
+  const dropDefaults = {
+    senderPublicKey: "c2VuZGVy",
+    archiveNonce: "bm9uY2U=",
+    encryptedMetadata: "ZW5jcnlwdGVkLW1ldGFkYXRh",
+    metadataNonce: "bWV0YWRhdGEtbm9uY2U=",
+    fileSize: 1024,
+    contentMD5: "bWQ1",
+  };
+
   beforeEach(async () => {
     await prisma.drop.deleteMany();
     await prisma.link.deleteMany();
+    await prisma.user.deleteMany({ where: { username: { startsWith: "run-cleanup-" } } });
+    deleteObjectMock.mockClear();
   });
 
-  it("deletes expired one-time links and their drops", async () => {
-    await prisma.link.create({
+  async function createOwner(suffix: string, used: bigint) {
+    return prisma.user.create({
       data: {
-        slug: "expired-link",
+        email: `run-cleanup-${suffix}@example.com`,
+        username: `run-cleanup-${suffix}`,
+        name: "Q",
+        passwordHash: "h",
+        passwordSalt: "s",
+        passwordWrappedPrivateKey: "w",
+        recoveryWrappedPrivateKey: "r",
+        publicKey: "k",
+        storageQuotaBytes: 10_000_000,
+        storageUsedBytes: used,
+      },
+    });
+  }
+
+  it("scrubs an expired one-time link's drop instead of deleting the row", async () => {
+    const link = await prisma.link.create({
+      data: {
+        slug: "expired-scrub",
         mode: "one-time",
         recipientPublicKey: "x",
         retentionDays: 7,
         expiresAt: new Date(Date.now() - 1000),
       },
     });
-    await prisma.link.create({
+    const drop = await prisma.drop.create({
       data: {
-        slug: "fresh-link",
-        mode: "one-time",
-        recipientPublicKey: "x",
-        retentionDays: 7,
-        expiresAt: new Date(Date.now() + 60_000),
+        ...dropDefaults,
+        linkId: link.id,
+        s3Key: `${link.id}/a`,
+        fileUploadStatus: "complete",
+        fileEnvelopeStatus: "sealed",
       },
     });
 
     const result = await runCleanup();
 
-    expect(result.deletedLinks).toBe(1);
-    expect(await prisma.link.findFirst({ where: { slug: "expired-link" } })).toBeNull();
-    expect(await prisma.link.findFirst({ where: { slug: "fresh-link" } })).not.toBeNull();
+    expect(result.scrubbedLinks).toBe(1);
+    const persistedLink = await prisma.link.findUnique({ where: { slug: "expired-scrub" } });
+    expect(persistedLink).not.toBeNull(); // row survives
+    const persistedDrop = await prisma.drop.findUniqueOrThrow({ where: { id: drop.id } });
+    expect(persistedDrop.fileEnvelopeStatus).toBe("shredded");
+    expect(persistedDrop.contentDeletedAt).not.toBeNull();
+  });
+
+  it("treats an owned expired one-time link identically to an anonymous one", async () => {
+    const owner = await createOwner("owned-ot", 100_000n);
+    const link = await prisma.link.create({
+      data: {
+        ownerId: owner.id,
+        slug: "expired-owned",
+        mode: "one-time",
+        recipientPublicKey: "x",
+        retentionDays: 7,
+        expiresAt: new Date(Date.now() - 1000),
+      },
+    });
+    await prisma.drop.create({
+      data: {
+        ...dropDefaults,
+        linkId: link.id,
+        s3Key: `${link.id}/a`,
+        fileUploadStatus: "complete",
+        fileEnvelopeStatus: "sealed",
+      },
+    });
+
+    const before = await prisma.user.findUniqueOrThrow({ where: { id: owner.id } });
+    await runCleanup();
+    const after = await prisma.user.findUniqueOrThrow({ where: { id: owner.id } });
+
+    expect(after.storageUsedBytes).toBeLessThan(before.storageUsedBytes);
+    const persistedLink = await prisma.link.findUnique({ where: { slug: "expired-owned" } });
+    expect(persistedLink).not.toBeNull(); // row survives — this is the behavior change from today
+  });
+
+  it("does not re-scrub a drop that is already delivered", async () => {
+    const link = await prisma.link.create({
+      data: {
+        slug: "expired-delivered",
+        mode: "one-time",
+        recipientPublicKey: "x",
+        retentionDays: 7,
+        expiresAt: new Date(Date.now() - 1000),
+      },
+    });
+    const drop = await prisma.drop.create({
+      data: {
+        ...dropDefaults,
+        linkId: link.id,
+        s3Key: `${link.id}/already-delivered`,
+        fileUploadStatus: "complete",
+        fileEnvelopeStatus: "delivered",
+        messageEnvelopeStatus: "delivered",
+      },
+    });
+
+    const result = await runCleanup();
+
+    expect(result.scrubbedLinks).toBe(0);
+    expect(deleteObjectMock).not.toHaveBeenCalledWith(drop.s3Key);
+  });
+
+  it("leaves a still-uploading drop on an expired one-time link alone (sweepAbandonedUploads' job, not this sweep's)", async () => {
+    const link = await prisma.link.create({
+      data: {
+        slug: "expired-uploading",
+        mode: "one-time",
+        recipientPublicKey: "x",
+        retentionDays: 7,
+        expiresAt: new Date(Date.now() - 1000),
+      },
+    });
+    const drop = await prisma.drop.create({
+      data: {
+        ...dropDefaults,
+        linkId: link.id,
+        s3Key: `${link.id}/still-uploading`,
+        fileUploadStatus: "uploading",
+      },
+    });
+
+    const result = await runCleanup();
+
+    expect(result.scrubbedLinks).toBe(0);
+    const persistedDrop = await prisma.drop.findUniqueOrThrow({ where: { id: drop.id } });
+    expect(persistedDrop.contentDeletedAt).toBeNull();
+    expect(persistedDrop.fileEnvelopeStatus).toBe("sealed"); // untouched, still at default
+    expect(deleteObjectMock).not.toHaveBeenCalledWith(drop.s3Key);
   });
 });
 
@@ -262,7 +379,7 @@ describe("storage quota release", () => {
 
     await runCleanup();
 
-    expect(await prisma.link.findUnique({ where: { id: link.id } })).toBeNull();
+    expect(await prisma.link.findUnique({ where: { id: link.id } })).not.toBeNull(); // row survives, scrubbed not deleted
     expect(await used(owner.id)).toBe(BASELINE);
   });
 
@@ -275,7 +392,7 @@ describe("storage quota release", () => {
 
     await runCleanup();
 
-    expect(await prisma.link.findUnique({ where: { id: link.id } })).toBeNull();
+    expect(await prisma.link.findUnique({ where: { id: link.id } })).not.toBeNull(); // row survives, scrubbed not deleted
     expect(await used(owner.id)).toBe(BASELINE);
   });
 
@@ -288,7 +405,7 @@ describe("storage quota release", () => {
 
     await runCleanup();
 
-    expect(await prisma.link.findUnique({ where: { id: link.id } })).toBeNull();
+    expect(await prisma.link.findUnique({ where: { id: link.id } })).not.toBeNull(); // row survives, scrubbed not deleted
     expect(await used(bystander.id)).toBe(BASELINE);
   });
 

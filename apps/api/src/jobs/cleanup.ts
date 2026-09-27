@@ -1,30 +1,41 @@
 // apps/api/src/jobs/cleanup.ts
 import { prisma } from "@e2ee-drop/db";
 import { deleteObject } from "../lib/storage";
-import { deleteLinkIfExists } from "../lib/links";
-import { deleteDropReleasingQuota, deleteLinkReleasingQuota, reservationCutoff } from "../lib/quota";
+import { deleteDropReleasingQuota, reservationCutoff, scrubDropContent } from "../lib/quota";
 
-export async function runCleanup(): Promise<{ deletedLinks: number }> {
+// Scrubs (never hard-deletes) an expired one-time link's drop content, so the row survives as
+// the audit trail (design spec §5) instead of the link/drop rows being deleted outright. Identical
+// for anonymous and owned links — scrubDropContent itself handles the owner quota release.
+//
+// Only drops whose upload actually completed (fileUploadStatus === "complete") are scrubbed here.
+// scrubDropContent never touches fileUploadStatus, and sweepAbandonedUploads (below, run in the
+// same cron tick by main()) hard-deletes any drop still at fileUploadStatus "uploading" past
+// reservationCutoff() by matching on that same field — so a still-uploading/reserved drop on an
+// expired one-time link is left for that sweep to handle, rather than being scrubbed here first
+// (which would leave it looking "shredded" for one tick before sweepAbandonedUploads then deletes
+// the row anyway, destroying the very audit trail this function exists to preserve).
+export async function runCleanup(): Promise<{ scrubbedLinks: number }> {
   const now = new Date();
   const expiredLinks = await prisma.link.findMany({
     where: { mode: "one-time", expiresAt: { lt: now } },
     include: { drops: true },
   });
 
+  let scrubbedLinks = 0;
   for (const link of expiredLinks) {
+    let scrubbedAny = false;
     for (const drop of link.drops) {
-      await deleteObject(drop.s3Key);
+      if (drop.fileUploadStatus !== "complete") continue;
+      const result = await scrubDropContent(drop.id);
+      if (result) {
+        await deleteObject(result.s3Key);
+        scrubbedAny = true;
+      }
     }
-    if (link.ownerId === null) {
-      await deleteLinkIfExists(link.id);
-    } else {
-      // An owned one-time link (POST /api/links/custom, mode "one-time"):
-      // release the owner's quota for its drop if that drop had been charged.
-      await deleteLinkReleasingQuota(link);
-    }
+    if (scrubbedAny) scrubbedLinks++;
   }
 
-  return { deletedLinks: expiredLinks.length };
+  return { scrubbedLinks };
 }
 
 export async function sweepExpiredDrops(): Promise<{ deletedDrops: number }> {
@@ -115,7 +126,7 @@ async function main() {
       const abandonedResult = await sweepAbandonedUploads();
       const tokenResult = await pruneExpiredPasswordResetTokens();
       console.log(
-        `[cleanup] removed ${linkResult.deletedLinks} expired link(s), ${dropResult.deletedDrops} expired drop(s), ` +
+        `[cleanup] scrubbed ${linkResult.scrubbedLinks} expired link(s), ${dropResult.deletedDrops} expired drop(s), ` +
           `${abandonedResult.deletedDrops} abandoned upload(s), ${tokenResult.deletedTokens} expired password-reset token(s)`
       );
     } catch (error) {
