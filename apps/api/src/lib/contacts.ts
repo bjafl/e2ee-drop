@@ -17,6 +17,11 @@ export interface ContactSummary {
 export async function sendContactRequest(userId: string, targetUsername: string): Promise<Contact> {
   const target = await prisma.user.findUnique({ where: { username: targetUsername } });
   if (!target) throw new HttpError(400, "User not found");
+  // A target who has turned off contact requests must look identical to a
+  // nonexistent user — never reveal that the username belongs to a real
+  // account that simply isn't accepting requests. Runs before the
+  // self/existing-relationship checks below, on every call.
+  if (!target.allowContactRequests) throw new HttpError(400, "User not found");
   if (target.id === userId) throw new HttpError(400, "Cannot add yourself as a contact");
 
   const existing = await prisma.contact.findFirst({
@@ -147,6 +152,19 @@ export async function hasAcceptedContact(ownerId: string, otherUserId: string): 
       OR: [
         { userId: ownerId, contactUserId: otherUserId },
         { userId: otherUserId, contactUserId: ownerId },
+      ],
+    },
+  });
+  return row !== null;
+}
+
+export async function hasBlockRelationship(userId: string, otherUserId: string): Promise<boolean> {
+  const row = await prisma.contact.findFirst({
+    where: {
+      status: "blocked",
+      OR: [
+        { userId: userId, contactUserId: otherUserId },
+        { userId: otherUserId, contactUserId: userId },
       ],
     },
   });

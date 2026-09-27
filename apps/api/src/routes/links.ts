@@ -21,7 +21,7 @@ import {
   toDropSummary,
   toLinkStatusResponse,
 } from "../lib/links";
-import { hasAcceptedContact } from "../lib/contacts";
+import { hasAcceptedContact, hasBlockRelationship } from "../lib/contacts";
 import { deleteObject } from "../lib/storage";
 import { resolveLocale, deriveCodewords } from "../lib/codewords";
 import { resolveRetentionDays } from "../lib/retention";
@@ -266,9 +266,19 @@ export function registerLinkRoutes(server: FastifyInstance): void {
     // Deleting the row lazily here would lose the s3Key and orphan the object in
     // storage forever.
     if (await isLinkInactive(link)) return reply.status(404).send({ error: "Link not found" });
+    const requesterId = request.user?.id;
+    const isOwner = requesterId !== undefined && requesterId === link.ownerId;
+    // A block relationship overrides visibility entirely — a blocked party
+    // must see the same "not found" as a genuinely nonexistent link,
+    // regardless of whether the link is public or contacts-only. This must
+    // run before/independent of the contacts-only check below, since it
+    // also applies to public links.
+    if (!isOwner && requesterId !== undefined && link.ownerId !== null) {
+      if (await hasBlockRelationship(link.ownerId, requesterId)) {
+        return reply.status(404).send({ error: "Link not found" });
+      }
+    }
     if (link.visibility === "contacts-only") {
-      const requesterId = request.user?.id;
-      const isOwner = requesterId !== undefined && requesterId === link.ownerId;
       const isContact =
         !isOwner && requesterId !== undefined && link.ownerId !== null && (await hasAcceptedContact(link.ownerId, requesterId));
       if (!isOwner && !isContact) return reply.status(404).send({ error: "Link not found" });
