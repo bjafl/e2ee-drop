@@ -1,7 +1,7 @@
 // apps/api/src/lib/links.ts
 import { customAlphabet } from "nanoid";
 import { prisma, Prisma, type Link, type Drop } from "@e2ee-drop/db";
-import type { FileUploadStatus, DropSummary, LinkStatusResponse } from "@e2ee-drop/shared";
+import type { FileUploadStatus, DropSummary, LinkStatusResponse, LinkSummary } from "@e2ee-drop/shared";
 import { env } from "../env";
 import { resolveLocale, deriveCodewords } from "./codewords";
 import { deleteObject } from "./storage";
@@ -247,6 +247,23 @@ export async function recomputeDeliveryStatus(dropId: string, linkId: string): P
     if (count === 1) return; // won
     // else: lost the race — loop and retry against fresh state.
   }
+}
+
+// Reused nowhere else in this plan but kept as a named export for symmetry
+// with toDropSummary/toLinkStatusResponse, and to keep GET /api/links's
+// route handler thin.
+export function toLinkSummary(link: Link): LinkSummary {
+  return {
+    slug: link.slug,
+    mode: link.mode as LinkSummary["mode"],
+    visibility: link.visibility as LinkSummary["visibility"],
+    isDefault: link.isDefault,
+    createdAt: link.createdAt.getTime(),
+    ...(link.expiresAt ? { expiresAt: link.expiresAt.getTime() } : {}),
+    ...(link.revokedAt ? { revokedAt: link.revokedAt.getTime() } : {}),
+    ...(link.lastSenderOpenedAt ? { lastSenderOpenedAt: link.lastSenderOpenedAt.getTime() } : {}),
+    retentionDays: link.retentionDays,
+  };
 }
 
 export function toDropSummary(drop: Drop, link: { retentionDays: number }): DropSummary {

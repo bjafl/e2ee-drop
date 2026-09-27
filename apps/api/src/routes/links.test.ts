@@ -1659,4 +1659,54 @@ describe("link routes", () => {
       expect(ownerView.statusCode).toBe(200);
     });
   });
+
+  describe("GET /api/links", () => {
+    it("requires authentication", async () => {
+      const server = buildServer();
+      const response = await server.inject({ method: "GET", url: "/api/links" });
+      expect(response.statusCode).toBe(403);
+    });
+
+    it("returns only the caller's own links, not another owner's or an anonymous one", async () => {
+      const server = buildServer();
+      const alice = await registerAndGetCookie(server, "alice-links-list");
+      const bob = await registerAndGetCookie(server, "bob-links-list");
+
+      await prisma.link.create({
+        data: { ownerId: bob.userId, slug: "bobs-custom-link", mode: "permanent", recipientPublicKey: bob.publicKey, retentionDays: 7 },
+      });
+      await prisma.link.create({
+        data: { slug: "anon-link-not-mine", mode: "one-time", recipientPublicKey: "x", expiresAt: new Date(Date.now() + 3600_000), retentionDays: 1 },
+      });
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/api/links",
+        cookies: alice.cookies,
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json() as { links: Array<{ slug: string }> };
+      const slugs = body.links.map((l) => l.slug);
+      expect(slugs).toContain("alice-links-list"); // the default link created at registration
+      expect(slugs).not.toContain("bobs-custom-link");
+      expect(slugs).not.toContain("anon-link-not-mine");
+    });
+
+    it("reports revokedAt and lastSenderOpenedAt when set, omits them when not", async () => {
+      const server = buildServer();
+      const carol = await registerAndGetCookie(server, "carol-links-list");
+      const now = new Date();
+      await prisma.link.update({
+        where: { slug: "carol-links-list" },
+        data: { lastSenderOpenedAt: now },
+      });
+
+      const response = await server.inject({ method: "GET", url: "/api/links", cookies: carol.cookies });
+      const body = response.json() as { links: Array<{ slug: string; revokedAt?: number; lastSenderOpenedAt?: number }> };
+      const mine = body.links.find((l) => l.slug === "carol-links-list")!;
+      expect(mine.lastSenderOpenedAt).toBe(now.getTime());
+      expect(mine.revokedAt).toBeUndefined();
+    });
+  });
 });
