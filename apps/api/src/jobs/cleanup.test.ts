@@ -165,6 +165,7 @@ describe("sweepExpiredDrops", () => {
   beforeEach(async () => {
     await prisma.drop.deleteMany();
     await prisma.link.deleteMany();
+    deleteObjectMock.mockClear();
   });
 
   const dropDefaults = {
@@ -176,7 +177,7 @@ describe("sweepExpiredDrops", () => {
     contentMD5: "bWQ1",
   };
 
-  it("deletes a drop on a permanent link once it is older than the global retention default", async () => {
+  it("scrubs a permanent link's expired drop instead of deleting it", async () => {
     const link = await prisma.link.create({
       data: { slug: "perm-1", mode: "permanent", recipientPublicKey: "x", retentionDays: 7 },
     });
@@ -185,15 +186,19 @@ describe("sweepExpiredDrops", () => {
         ...dropDefaults,
         linkId: link.id,
         s3Key: `${link.id}/old`,
+        fileUploadStatus: "complete",
+        fileEnvelopeStatus: "sealed",
         createdAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000), // 8 days ago, default retention is 7
       },
     });
 
     const result = await sweepExpiredDrops();
 
-    expect(result.deletedDrops).toBe(1);
-    expect(await prisma.drop.findUnique({ where: { id: oldDrop.id } })).toBeNull();
-    expect(await prisma.link.findUnique({ where: { id: link.id } })).not.toBeNull();
+    expect(result.scrubbedDrops).toBe(1);
+    const persistedDrop = await prisma.drop.findUniqueOrThrow({ where: { id: oldDrop.id } });
+    expect(persistedDrop.fileEnvelopeStatus).toBe("shredded");
+    expect(persistedDrop.contentDeletedAt).not.toBeNull();
+    expect(await prisma.link.findUnique({ where: { id: link.id } })).not.toBeNull(); // row survives
   });
 
   it("keeps a drop that is still within the retention window", async () => {
@@ -205,14 +210,19 @@ describe("sweepExpiredDrops", () => {
         ...dropDefaults,
         linkId: link.id,
         s3Key: `${link.id}/fresh`,
+        fileUploadStatus: "complete",
+        fileEnvelopeStatus: "sealed",
         createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000), // 2 days ago
       },
     });
 
     const result = await sweepExpiredDrops();
 
-    expect(result.deletedDrops).toBe(0);
-    expect(await prisma.drop.findUnique({ where: { id: freshDrop.id } })).not.toBeNull();
+    expect(result.scrubbedDrops).toBe(0);
+    const persistedDrop = await prisma.drop.findUniqueOrThrow({ where: { id: freshDrop.id } });
+    expect(persistedDrop.contentDeletedAt).toBeNull();
+    expect(persistedDrop.fileEnvelopeStatus).toBe("sealed");
+    expect(deleteObjectMock).not.toHaveBeenCalledWith(freshDrop.s3Key);
   });
 
   it("honors a link's own retentionDays override over the global default", async () => {
@@ -224,14 +234,41 @@ describe("sweepExpiredDrops", () => {
         ...dropDefaults,
         linkId: link.id,
         s3Key: `${link.id}/short-retention`,
+        fileUploadStatus: "complete",
+        fileEnvelopeStatus: "sealed",
         createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000), // 2 days ago, override is 1 day
       },
     });
 
     const result = await sweepExpiredDrops();
 
-    expect(result.deletedDrops).toBe(1);
-    expect(await prisma.drop.findUnique({ where: { id: drop.id } })).toBeNull();
+    expect(result.scrubbedDrops).toBe(1);
+    const persistedDrop = await prisma.drop.findUniqueOrThrow({ where: { id: drop.id } });
+    expect(persistedDrop.fileEnvelopeStatus).toBe("shredded");
+    expect(persistedDrop.contentDeletedAt).not.toBeNull();
+  });
+
+  it("leaves a still-uploading drop past its retention window alone (sweepAbandonedUploads' job, not this sweep's)", async () => {
+    const link = await prisma.link.create({
+      data: { slug: "perm-4", mode: "permanent", recipientPublicKey: "x", retentionDays: 1 },
+    });
+    const drop = await prisma.drop.create({
+      data: {
+        ...dropDefaults,
+        linkId: link.id,
+        s3Key: `${link.id}/still-uploading`,
+        fileUploadStatus: "uploading",
+        createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000), // 2 days ago, override is 1 day
+      },
+    });
+
+    const result = await sweepExpiredDrops();
+
+    expect(result.scrubbedDrops).toBe(0);
+    const persistedDrop = await prisma.drop.findUniqueOrThrow({ where: { id: drop.id } });
+    expect(persistedDrop.contentDeletedAt).toBeNull();
+    expect(persistedDrop.fileEnvelopeStatus).toBe("sealed"); // untouched, still at default
+    expect(deleteObjectMock).not.toHaveBeenCalledWith(drop.s3Key);
   });
 });
 
@@ -416,15 +453,31 @@ describe("storage quota release", () => {
     const link = await prisma.link.create({
       data: { ownerId: owner.id, slug: "quota-perm", mode: "permanent", recipientPublicKey: "x", retentionDays: 7 },
     });
-    await prisma.drop.create({ data: dropData(link.id, "uploaded-old", 300, "uploaded", old) });
-    await prisma.drop.create({ data: dropData(link.id, "downloading-old", 400, "downloading", old) });
-    await prisma.drop.create({ data: dropData(link.id, "uploading-old", 700, "uploading", old) });
+    const uploadedOld = await prisma.drop.create({ data: dropData(link.id, "uploaded-old", 300, "uploaded", old) });
+    const downloadingOld = await prisma.drop.create({ data: dropData(link.id, "downloading-old", 400, "downloading", old) });
+    // Still "uploading" and past retention — left alone here (sweepAbandonedUploads' job), so it
+    // stays uncharged and untouched rather than being scrubbed.
+    const uploadingOld = await prisma.drop.create({ data: dropData(link.id, "uploading-old", 700, "uploading", old) });
     const fresh = await prisma.drop.create({ data: dropData(link.id, "uploaded-fresh", 900, "uploaded") });
 
     const result = await sweepExpiredDrops();
 
-    expect(result.deletedDrops).toBe(3);
-    expect((await prisma.drop.findMany({ where: { linkId: link.id } })).map((d) => d.id)).toEqual([fresh.id]);
+    expect(result.scrubbedDrops).toBe(2);
+    // Rows survive as the audit trail — scrubbed, not deleted.
+    expect((await prisma.drop.findMany({ where: { linkId: link.id } })).map((d) => d.id).sort()).toEqual(
+      [uploadedOld.id, downloadingOld.id, uploadingOld.id, fresh.id].sort()
+    );
+    const persistedUploadedOld = await prisma.drop.findUniqueOrThrow({ where: { id: uploadedOld.id } });
+    expect(persistedUploadedOld.contentDeletedAt).not.toBeNull();
+    expect(persistedUploadedOld.fileEnvelopeStatus).toBe("shredded");
+    const persistedDownloadingOld = await prisma.drop.findUniqueOrThrow({ where: { id: downloadingOld.id } });
+    expect(persistedDownloadingOld.contentDeletedAt).not.toBeNull();
+    expect(persistedDownloadingOld.fileEnvelopeStatus).toBe("shredded");
+    const persistedUploadingOld = await prisma.drop.findUniqueOrThrow({ where: { id: uploadingOld.id } });
+    expect(persistedUploadingOld.contentDeletedAt).toBeNull();
+    expect(persistedUploadingOld.fileEnvelopeStatus).toBe("sealed");
+    const persistedFresh = await prisma.drop.findUniqueOrThrow({ where: { id: fresh.id } });
+    expect(persistedFresh.contentDeletedAt).toBeNull();
     expect(await used(owner.id)).toBe(BASELINE + 916n);
   });
 });

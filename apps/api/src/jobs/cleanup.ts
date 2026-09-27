@@ -1,7 +1,7 @@
 // apps/api/src/jobs/cleanup.ts
 import { prisma } from "@e2ee-drop/db";
 import { deleteObject } from "../lib/storage";
-import { deleteDropReleasingQuota, reservationCutoff, scrubDropContent } from "../lib/quota";
+import { reservationCutoff, scrubDropContent } from "../lib/quota";
 
 // Scrubs (never hard-deletes) an expired one-time link's drop content, so the row survives as
 // the audit trail (design spec §5) instead of the link/drop rows being deleted outright. Identical
@@ -38,31 +38,36 @@ export async function runCleanup(): Promise<{ scrubbedLinks: number }> {
   return { scrubbedLinks };
 }
 
-export async function sweepExpiredDrops(): Promise<{ deletedDrops: number }> {
+// Scrubs (never hard-deletes) a permanent link's retention-expired drop content, mirroring
+// runCleanup above — the row survives as the audit trail instead of being deleted outright.
+//
+// Same fileUploadStatus === "complete" guard as runCleanup, and for the same reason: this cron
+// tick also runs sweepAbandonedUploads (below), which hard-deletes any drop still at
+// fileUploadStatus "uploading" past reservationCutoff(). scrubDropContent never touches
+// fileUploadStatus, so without this guard an old-enough still-uploading drop on a permanent link
+// could get scrubbed here and then still get hard-deleted by sweepAbandonedUploads, destroying
+// the audit-trail row. Leaving it at "uploading" here defers it entirely to that other sweep.
+export async function sweepExpiredDrops(): Promise<{ scrubbedDrops: number }> {
   const now = Date.now();
   const drops = await prisma.drop.findMany({
     where: { link: { mode: "permanent" } },
     include: { link: true },
   });
 
-  let deletedDrops = 0;
+  let scrubbedDrops = 0;
   for (const drop of drops) {
-    const retentionDays = drop.link.retentionDays;
-    const cutoff = drop.createdAt.getTime() + retentionDays * 24 * 60 * 60 * 1000;
+    if (drop.fileUploadStatus !== "complete") continue;
+    const cutoff = drop.createdAt.getTime() + drop.link.retentionDays * 24 * 60 * 60 * 1000;
     if (cutoff < now) {
-      await deleteObject(drop.s3Key);
-      if (drop.link.ownerId === null) {
-        await prisma.drop.delete({ where: { id: drop.id } });
-      } else {
-        // Releases the owner's quota iff the row still exists and had been
-        // charged (i.e. isn't an abandoned "uploading" drop) at delete time.
-        await deleteDropReleasingQuota(drop.id, drop.link.ownerId);
+      const result = await scrubDropContent(drop.id);
+      if (result) {
+        await deleteObject(result.s3Key);
+        scrubbedDrops++;
       }
-      deletedDrops++;
     }
   }
 
-  return { deletedDrops };
+  return { scrubbedDrops };
 }
 
 // No equivalent existed before this plan: sweepExpiredDrops only ever covered
@@ -126,7 +131,7 @@ async function main() {
       const abandonedResult = await sweepAbandonedUploads();
       const tokenResult = await pruneExpiredPasswordResetTokens();
       console.log(
-        `[cleanup] scrubbed ${linkResult.scrubbedLinks} expired link(s), ${dropResult.deletedDrops} expired drop(s), ` +
+        `[cleanup] scrubbed ${linkResult.scrubbedLinks} expired link(s), ${dropResult.scrubbedDrops} expired drop(s), ` +
           `${abandonedResult.deletedDrops} abandoned upload(s), ${tokenResult.deletedTokens} expired password-reset token(s)`
       );
     } catch (error) {
