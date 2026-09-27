@@ -5,7 +5,7 @@ import { prisma } from "@e2ee-drop/db";
 vi.mock("../lib/storage", () => ({ deleteObject: vi.fn().mockResolvedValue(undefined) }));
 
 import { deleteObject } from "../lib/storage";
-import { UPLOAD_RESERVATION_WINDOW_MS } from "../lib/quota";
+import { UPLOAD_RESERVATION_WINDOW_MS, chargedBytes } from "../lib/quota";
 import {
   runCleanup,
   sweepExpiredDrops,
@@ -164,6 +164,107 @@ describe("runCleanup", () => {
     expect(persistedDrop.contentDeletedAt).toBeNull();
     expect(persistedDrop.fileEnvelopeStatus).toBe("sealed"); // untouched, still at default
     expect(deleteObjectMock).not.toHaveBeenCalledWith(drop.s3Key);
+  });
+
+  it("deletes an expired one-time link that never received any drop (finding I3)", async () => {
+    const unused = await prisma.link.create({
+      data: {
+        slug: "expired-unused",
+        mode: "one-time",
+        recipientPublicKey: "x",
+        retentionDays: 7,
+        expiresAt: new Date(Date.now() - 1000),
+      },
+    });
+    // Controls: a not-yet-expired unused one-time link, and an unused permanent-mode link,
+    // must both survive — only expired, drop-less ONE-TIME links are removed.
+    const notExpired = await prisma.link.create({
+      data: {
+        slug: "unexpired-unused",
+        mode: "one-time",
+        recipientPublicKey: "x",
+        retentionDays: 7,
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+    const permanent = await prisma.link.create({
+      data: { slug: "perm-unused", mode: "permanent", recipientPublicKey: "x", retentionDays: 7 },
+    });
+
+    const result = await runCleanup();
+
+    expect(result.scrubbedLinks).toBe(0); // nothing scrubbed — this deletion isn't counted there
+    expect(await prisma.link.findUnique({ where: { id: unused.id } })).toBeNull();
+    expect(await prisma.link.findUnique({ where: { id: notExpired.id } })).not.toBeNull();
+    expect(await prisma.link.findUnique({ where: { id: permanent.id } })).not.toBeNull();
+  });
+
+  it("never clobbers a concurrent complete-download's 'delivered', nor releases its quota twice (finding I2)", async () => {
+    // Reproduces the TOCTOU window inside scrubDropContent: its snapshot findUnique sees the
+    // file side still "sealed", then — before its owner-locked scrub transaction runs — a
+    // concurrent complete-download wins its own CAS (fileEnvelopeStatus -> "delivered") and
+    // releases the owner's charge for this drop. The scrub's per-field CAS must re-check the
+    // LIVE fileEnvelopeStatus, leave "delivered" alone, and NOT release quota a second time —
+    // while still independently shredding the still-unrevealed message.
+    const fileSize = dropDefaults.fileSize;
+    const owner = await createOwner("i2-race", chargedBytes(fileSize));
+    const link = await prisma.link.create({
+      data: {
+        ownerId: owner.id,
+        slug: "expired-i2-race",
+        mode: "one-time",
+        recipientPublicKey: "x",
+        retentionDays: 7,
+        expiresAt: new Date(Date.now() - 1000),
+      },
+    });
+    const drop = await prisma.drop.create({
+      data: {
+        ...dropDefaults,
+        linkId: link.id,
+        s3Key: `${link.id}/i2-race`,
+        encryptedMessage: "cipher-message",
+        messageNonce: "msg-nonce",
+        fileUploadStatus: "complete",
+        fileEnvelopeStatus: "sealed",
+        messageEnvelopeStatus: "sealed",
+      },
+    });
+
+    const originalFindUnique = prisma.drop.findUnique.bind(prisma.drop);
+    const findUniqueSpy = vi.spyOn(prisma.drop, "findUnique").mockImplementationOnce(((args: unknown) =>
+      (async () => {
+        const row = await originalFindUnique(args as never);
+        // Simulate complete-download landing right here: exactly its CAS, then exactly its
+        // winner-only quota release (routes/downloads.ts).
+        const { count } = await prisma.drop.updateMany({
+          where: { id: drop.id, fileEnvelopeStatus: { notIn: ["delivered", "shredded"] } },
+          data: { fileEnvelopeStatus: "delivered", contentDeletedAt: new Date() },
+        });
+        expect(count).toBe(1);
+        await prisma.user.update({
+          where: { id: owner.id },
+          data: { storageUsedBytes: { decrement: chargedBytes(fileSize) } },
+        });
+        return row;
+      })()) as typeof prisma.drop.findUnique);
+
+    try {
+      await runCleanup();
+      expect(findUniqueSpy).toHaveBeenCalled(); // the race really was injected into scrubDropContent
+    } finally {
+      // Not findUniqueSpy.mockRestore(): on a Prisma model delegate (whose methods come from
+      // a proxy, not an own property) vitest 2's restore leaves prisma.drop.findUnique
+      // undefined for every later test in this file. Put the bound original back directly.
+      (prisma.drop as { findUnique: unknown }).findUnique = originalFindUnique;
+    }
+
+    const persisted = await prisma.drop.findUniqueOrThrow({ where: { id: drop.id } });
+    expect(persisted.fileEnvelopeStatus).toBe("delivered"); // not clobbered back to "shredded"
+    expect(persisted.messageEnvelopeStatus).toBe("shredded"); // independent CAS still resolved it
+    expect(persisted.encryptedMessage).toBeNull();
+    const after = await prisma.user.findUniqueOrThrow({ where: { id: owner.id } });
+    expect(after.storageUsedBytes).toBe(0n); // released once (by complete-download), not twice
   });
 });
 

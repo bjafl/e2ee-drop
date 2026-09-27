@@ -17,6 +17,17 @@ import { reservationCutoff, scrubDropContent } from "../lib/quota";
 // the row anyway, destroying the very audit trail this function exists to preserve).
 export async function runCleanup(): Promise<{ scrubbedLinks: number }> {
   const now = new Date();
+
+  // Expired one-time links that were never used at all (no upload ever started, or
+  // their sole drop was already reaped by sweepAbandonedUploads) have nothing to
+  // scrub and nothing worth keeping as an audit trail — delete them outright, the
+  // same way this function always did before content-scrubbing existed. Without
+  // this, an unused anonymous one-time link (creation is unauthenticated) would live
+  // forever once expired.
+  await prisma.link.deleteMany({
+    where: { mode: "one-time", expiresAt: { lt: now }, drops: { none: {} } },
+  });
+
   const expiredLinks = await prisma.link.findMany({
     where: { mode: "one-time", expiresAt: { lt: now } },
     include: { drops: true },
