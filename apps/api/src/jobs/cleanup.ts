@@ -1,7 +1,7 @@
 // apps/api/src/jobs/cleanup.ts
 import { prisma } from "@e2ee-drop/db";
 import { env } from "../env";
-import { deleteObject } from "../lib/storage";
+import { deleteObject, listObjects } from "../lib/storage";
 import { reservationCutoff, scrubDropContent } from "../lib/quota";
 
 // Scrubs (never hard-deletes) an expired one-time link's drop content, so the row survives as
@@ -126,6 +126,54 @@ export async function sweepAbandonedUploads(): Promise<{ deletedDrops: number }>
   return { deletedDrops };
 }
 
+// Finding F5: abandonDrop (routes/uploads.ts) and sweepAbandonedUploads above both delete the
+// Drop row and then its storage object, but a presigned PUT that started before that deletion
+// can still land afterward — a PUT started before its URL expires succeeds even if it finishes
+// well after (see UPLOAD_RESERVATION_WINDOW_MS's own comment in lib/quota.ts) — leaving an
+// object in storage with no Drop row referencing it, ever. Nothing else reconciles bucket
+// contents against the database, so such an object is orphaned permanently unless something
+// enumerates the bucket itself and cross-checks it, which is what this sweep does. It's also a
+// repeatable abuse vector on anonymous links: drop ids are public (GET /:slug, SSE), so a
+// bystander can /abandon someone else's in-flight upload to force exactly this.
+//
+// Every real object key is `${linkId}/${dropId}` (routes/uploads.ts) — no other path segments,
+// no extension — so a key's dropId is recovered by splitting on the first "/". A dropId is
+// generated (and its Drop row inserted) before the presigned upload URL naming that key is ever
+// handed out, so no object can land at a key before that key's Drop row exists; the only way an
+// object ends up with NO row at all is that row being deleted out from under it later (abandon,
+// or this same reservation-window race). That also rules out the race this sweep might otherwise
+// need to guard against — a listed orphan gaining a Drop row between listObjects() and the
+// per-object check below: dropIds are randomly generated, so nothing can ever re-insert a row
+// with the exact id a deleted row already used. A plain live check right before deleting is
+// therefore enough; no CAS/re-check-after-delete dance like sweepAbandonedUploads' is needed.
+//
+// Only objects older than the reservation window are ever deleted, so a PUT that is still
+// legitimately in flight (started before its presigned URL expired, not yet at /complete) is
+// never raced — reuses UPLOAD_RESERVATION_WINDOW_MS/reservationCutoff() rather than a new
+// threshold, so "still reserved" and "old enough to sweep" can never disagree with the rest of
+// this module's reservation logic.
+export async function sweepOrphanedStorageObjects(): Promise<{ deletedObjects: number }> {
+  const cutoff = reservationCutoff();
+  const objects = await listObjects();
+
+  let deletedObjects = 0;
+  for (const object of objects) {
+    const slashIndex = object.key.indexOf("/");
+    if (slashIndex === -1) continue; // not a `${linkId}/${dropId}` key this sweep understands
+
+    if (object.lastModified >= cutoff) continue; // still inside the reservation window; may be a legitimate in-flight PUT
+
+    const dropId = object.key.slice(slashIndex + 1);
+    const drop = await prisma.drop.findUnique({ where: { id: dropId }, select: { id: true } });
+    if (drop) continue; // still has a live Drop row — not an orphan
+
+    await deleteObject(object.key);
+    deletedObjects++;
+  }
+
+  return { deletedObjects };
+}
+
 // Password-reset tokens are single-use and short-lived, but an unused one
 // is never deleted by the reset flow itself, so expired rows are pruned here.
 export async function pruneExpiredPasswordResetTokens(): Promise<{ deletedTokens: number }> {
@@ -177,11 +225,13 @@ async function main() {
       const linkResult = await runCleanup();
       const dropResult = await sweepExpiredDrops();
       const abandonedResult = await sweepAbandonedUploads();
+      const orphanResult = await sweepOrphanedStorageObjects();
       const tokenResult = await pruneExpiredPasswordResetTokens();
       const purgeResult = await purgeAuditExpiredRows();
       console.log(
         `[cleanup] scrubbed ${linkResult.scrubbedLinks} expired link(s), ${dropResult.scrubbedDrops} expired drop(s), ` +
-          `${abandonedResult.deletedDrops} abandoned upload(s), ${tokenResult.deletedTokens} expired password-reset token(s), ` +
+          `${abandonedResult.deletedDrops} abandoned upload(s), ${orphanResult.deletedObjects} orphaned storage object(s), ` +
+          `${tokenResult.deletedTokens} expired password-reset token(s), ` +
           `purged ${purgeResult.purgedDrops} drop(s) and ${purgeResult.purgedLinks} link(s) past audit retention`
       );
     } catch (error) {

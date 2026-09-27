@@ -2,19 +2,24 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { prisma } from "@e2ee-drop/db";
 
-vi.mock("../lib/storage", () => ({ deleteObject: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("../lib/storage", () => ({
+  deleteObject: vi.fn().mockResolvedValue(undefined),
+  listObjects: vi.fn().mockResolvedValue([]),
+}));
 
-import { deleteObject } from "../lib/storage";
+import { deleteObject, listObjects } from "../lib/storage";
 import { UPLOAD_RESERVATION_WINDOW_MS, chargedBytes } from "../lib/quota";
 import {
   runCleanup,
   sweepExpiredDrops,
   sweepAbandonedUploads,
+  sweepOrphanedStorageObjects,
   pruneExpiredPasswordResetTokens,
   purgeAuditExpiredRows,
 } from "./cleanup";
 
 const deleteObjectMock = vi.mocked(deleteObject);
+const listObjectsMock = vi.mocked(listObjects);
 
 describe("runCleanup", () => {
   const dropDefaults = {
@@ -459,6 +464,73 @@ describe("sweepAbandonedUploads", () => {
     expect(result.deletedDrops).toBe(0);
     expect(await prisma.drop.findUnique({ where: { id: drop.id } })).not.toBeNull();
     expect(deleteObjectMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("sweepOrphanedStorageObjects", () => {
+  const dropDefaults = {
+    senderPublicKey: "c2VuZGVy",
+    archiveNonce: "bm9uY2U=",
+    encryptedMetadata: "ZW5jcnlwdGVkLW1ldGFkYXRh",
+    metadataNonce: "bWV0YWRhdGEtbm9uY2U=",
+    fileSize: 1024,
+    contentMD5: "bWQ1",
+  };
+
+  beforeEach(async () => {
+    await prisma.drop.deleteMany();
+    await prisma.link.deleteMany();
+    deleteObjectMock.mockClear();
+    listObjectsMock.mockReset();
+    listObjectsMock.mockResolvedValue([]);
+  });
+
+  async function createLink(slug: string) {
+    return prisma.link.create({
+      data: { slug, mode: "one-time", recipientPublicKey: "x", retentionDays: 7, expiresAt: new Date(Date.now() + 60_000) },
+    });
+  }
+
+  it("deletes an orphaned object (no matching Drop row) once it clears the reservation window", async () => {
+    const link = await createLink("orphan-old");
+    const key = `${link.id}/no-such-drop`;
+    listObjectsMock.mockResolvedValue([{ key, lastModified: new Date(Date.now() - UPLOAD_RESERVATION_WINDOW_MS - 60_000) }]);
+
+    const result = await sweepOrphanedStorageObjects();
+
+    expect(result.deletedObjects).toBe(1);
+    expect(deleteObjectMock).toHaveBeenCalledTimes(1);
+    expect(deleteObjectMock).toHaveBeenCalledWith(key);
+  });
+
+  it("leaves an orphaned object alone while it is still inside the reservation window", async () => {
+    const link = await createLink("orphan-fresh");
+    const key = `${link.id}/no-such-drop`;
+    listObjectsMock.mockResolvedValue([{ key, lastModified: new Date() }]);
+
+    const result = await sweepOrphanedStorageObjects();
+
+    expect(result.deletedObjects).toBe(0);
+    expect(deleteObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("leaves an object with a live matching Drop row alone regardless of age", async () => {
+    const link = await createLink("has-row");
+    // s3Key is derived from the drop's own generated id (the real key format,
+    // `${linkId}/${dropId}` — routes/uploads.ts), so it's only known once the row exists;
+    // create with a placeholder, then set it to the real key on that same row.
+    const drop = await prisma.drop.create({
+      data: { ...dropDefaults, linkId: link.id, s3Key: "placeholder", fileUploadStatus: "uploading" },
+    });
+    const key = `${link.id}/${drop.id}`;
+    await prisma.drop.update({ where: { id: drop.id }, data: { s3Key: key } });
+    listObjectsMock.mockResolvedValue([{ key, lastModified: new Date(Date.now() - UPLOAD_RESERVATION_WINDOW_MS - 60_000) }]);
+
+    const result = await sweepOrphanedStorageObjects();
+
+    expect(result.deletedObjects).toBe(0);
+    expect(deleteObjectMock).not.toHaveBeenCalled();
+    expect(await prisma.drop.findUnique({ where: { id: drop.id } })).not.toBeNull();
   });
 });
 
