@@ -398,4 +398,29 @@ describe("contact routes", () => {
     expect(stillBlocked?.status).toBe("blocked");
     expect(stillBlocked?.blockedByUserId).toBe(alice.userId);
   });
+
+  it("masks a target who has turned off allowContactRequests as a nonexistent user, byte-identical to a genuine 404", async () => {
+    // Scope addition to this plan (decided post-final-review): sendContactRequest
+    // must check the target's allowContactRequests flag server-side, using the
+    // exact same masking discipline as the existing blocked-target case above.
+    const server = buildServer();
+    const alice = await registerAndGetCookie(server, "alice-noreq");
+    await registerAndGetCookie(server, "bob-noreq");
+    await prisma.user.update({ where: { username: "bob-noreq" }, data: { allowContactRequests: false } });
+
+    const attempt = await server.inject({
+      method: "POST",
+      url: "/api/contacts",
+      cookies: alice.cookies,
+      payload: { username: "bob-noreq" },
+    });
+    const baseline = await server.inject({
+      method: "POST",
+      url: "/api/contacts",
+      cookies: alice.cookies,
+      payload: { username: "does-not-exist-noreq" },
+    });
+    expect(attempt.statusCode).toBe(baseline.statusCode);
+    expect(attempt.json()).toEqual(baseline.json());
+  });
 });
