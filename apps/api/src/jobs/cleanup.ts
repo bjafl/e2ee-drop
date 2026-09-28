@@ -181,6 +181,15 @@ export async function pruneExpiredPasswordResetTokens(): Promise<{ deletedTokens
   return { deletedTokens: result.count };
 }
 
+// Same pattern, same reasoning, as pruneExpiredPasswordResetTokens above:
+// email-verification tokens are single-use and short-lived, but an unused one
+// is never deleted by the verification flow itself, so expired rows are
+// pruned here too.
+export async function pruneExpiredEmailVerificationTokens(): Promise<{ deletedTokens: number }> {
+  const result = await prisma.emailVerificationToken.deleteMany({ where: { expiresAt: { lt: new Date() } } });
+  return { deletedTokens: result.count };
+}
+
 // The other sweeps above only ever scrub a Drop's content (row survives as the audit trail —
 // design spec §5). This is the sweep that finally hard-deletes that audit-trail row, once it's
 // been sitting scrubbed for longer than AUDIT_RETENTION_DAYS past contentDeletedAt.
@@ -227,11 +236,13 @@ async function main() {
       const abandonedResult = await sweepAbandonedUploads();
       const orphanResult = await sweepOrphanedStorageObjects();
       const tokenResult = await pruneExpiredPasswordResetTokens();
+      const emailTokenResult = await pruneExpiredEmailVerificationTokens();
       const purgeResult = await purgeAuditExpiredRows();
       console.log(
         `[cleanup] scrubbed ${linkResult.scrubbedLinks} expired link(s), ${dropResult.scrubbedDrops} expired drop(s), ` +
           `${abandonedResult.deletedDrops} abandoned upload(s), ${orphanResult.deletedObjects} orphaned storage object(s), ` +
           `${tokenResult.deletedTokens} expired password-reset token(s), ` +
+          `${emailTokenResult.deletedTokens} expired email-verification token(s), ` +
           `purged ${purgeResult.purgedDrops} drop(s) and ${purgeResult.purgedLinks} link(s) past audit retention`
       );
     } catch (error) {

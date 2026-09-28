@@ -104,7 +104,20 @@ export async function acceptContactRequest(userId: string, contactId: string): P
   // way out of the block. Treat it the same as a missing row: never a
   // distinguishable message that would leak the row's real status.
   if (row.status !== "pending") throw new HttpError(404, "Contact request not found");
-  return prisma.contact.update({ where: { id: contactId }, data: { status: "accepted" } });
+  // CAS on the exact state this function just verified (this codebase's
+  // updateMany + count convention, e.g. transitionFileUploadStatus in
+  // lib/links.ts): the findUnique above only proves the row LOOKED pending
+  // and owned-by-this-recipient at read time — a concurrent /block on this
+  // same row (blockContact below) could change its status between that read
+  // and this write. Narrowing the write itself to `status: "pending"` means
+  // a caller who read stale data loses this race cleanly (count !== 1, 404
+  // below) instead of blindly overwriting whatever the block CAS just wrote.
+  const { count } = await prisma.contact.updateMany({
+    where: { id: contactId, contactUserId: userId, status: "pending" },
+    data: { status: "accepted" },
+  });
+  if (count !== 1) throw new HttpError(404, "Contact request not found");
+  return prisma.contact.findUniqueOrThrow({ where: { id: contactId } });
 }
 
 export async function rejectContactRequest(userId: string, contactId: string): Promise<void> {
@@ -138,7 +151,27 @@ export async function blockContact(callerId: string, contactId: string): Promise
   if (row.status === "blocked" && row.blockedByUserId !== callerId) {
     throw new HttpError(403, "Not part of this contact relationship");
   }
-  return prisma.contact.update({ where: { id: contactId }, data: { status: "blocked", blockedByUserId: callerId } });
+  // CAS folding both checks above into the write itself (same convention as
+  // acceptContactRequest above): the findUnique only proves membership and
+  // "not blocked by someone else" at read time. A concurrent /accept on this
+  // row can't matter here (blockContact has no pending-status requirement —
+  // blocking an already-accepted contact is a normal, valid transition), but
+  // a concurrent /block by the other party racing this one must not let a
+  // stale read clobber whichever block CAS actually lands second — the
+  // narrowed where means a caller who read stale data loses cleanly
+  // (count !== 1, 403 below) rather than overwriting blockedByUserId.
+  const { count } = await prisma.contact.updateMany({
+    where: {
+      id: contactId,
+      AND: [
+        { OR: [{ userId: callerId }, { contactUserId: callerId }] },
+        { OR: [{ status: { not: "blocked" } }, { blockedByUserId: callerId }] },
+      ],
+    },
+    data: { status: "blocked", blockedByUserId: callerId },
+  });
+  if (count !== 1) throw new HttpError(403, "Not part of this contact relationship");
+  return prisma.contact.findUniqueOrThrow({ where: { id: contactId } });
 }
 
 export async function unblockContact(callerId: string, contactId: string): Promise<void> {

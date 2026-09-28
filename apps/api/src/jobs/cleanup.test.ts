@@ -15,6 +15,7 @@ import {
   sweepAbandonedUploads,
   sweepOrphanedStorageObjects,
   pruneExpiredPasswordResetTokens,
+  pruneExpiredEmailVerificationTokens,
   purgeAuditExpiredRows,
 } from "./cleanup";
 
@@ -842,5 +843,40 @@ describe("pruneExpiredPasswordResetTokens", () => {
     expect(result.deletedTokens).toBe(1);
     expect(await prisma.passwordResetToken.findUnique({ where: { id: expired.id } })).toBeNull();
     expect(await prisma.passwordResetToken.findUnique({ where: { id: fresh.id } })).not.toBeNull();
+  });
+});
+
+describe("pruneExpiredEmailVerificationTokens", () => {
+  beforeEach(async () => {
+    await prisma.emailVerificationToken.deleteMany();
+    await prisma.user.deleteMany({ where: { username: "email-verify-token-owner" } });
+  });
+
+  it("deletes expired email-verification tokens and keeps unexpired ones", async () => {
+    const user = await prisma.user.create({
+      data: {
+        email: "email-verify-token-owner@example.com",
+        username: "email-verify-token-owner",
+        name: "T",
+        passwordHash: "h",
+        passwordSalt: "s",
+        passwordWrappedPrivateKey: "w",
+        recoveryWrappedPrivateKey: "r",
+        publicKey: "k",
+        storageQuotaBytes: 1000,
+      },
+    });
+    const expired = await prisma.emailVerificationToken.create({
+      data: { userId: user.id, tokenHash: "expired-hash", expiresAt: new Date(Date.now() - 1000) },
+    });
+    const fresh = await prisma.emailVerificationToken.create({
+      data: { userId: user.id, tokenHash: "fresh-hash", expiresAt: new Date(Date.now() + 60_000) },
+    });
+
+    const result = await pruneExpiredEmailVerificationTokens();
+
+    expect(result.deletedTokens).toBe(1);
+    expect(await prisma.emailVerificationToken.findUnique({ where: { id: expired.id } })).toBeNull();
+    expect(await prisma.emailVerificationToken.findUnique({ where: { id: fresh.id } })).not.toBeNull();
   });
 });

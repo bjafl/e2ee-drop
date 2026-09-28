@@ -389,7 +389,24 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       if (!link) return reply.status(404).send({ error: "Link not found" });
       if (isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
       if (link.ownerId === null || (await isSenderInitiatedReceiveCapability(link, request.user?.id))) {
-        const drop = link.drops[0];
+        // link.drops has no ordering guarantee (getLinkBySlug's `include: {
+        // drops: true }` carries no orderBy) — docs/STATUS.md gap 3 already
+        // called this out for toLinkStatusResponse's old `link.drops[0]`, for
+        // the same underlying reason this route has: a claimed sender-
+        // initiated link (mode: "permanent") can accumulate more than one
+        // outstanding drop over its lifetime, so `[0]` there picked an
+        // arbitrary one instead of a meaningful one. An anonymous one-time
+        // link never has more than one drop ever, so this reordering is a
+        // no-op for that shape and only changes behavior for the multi-drop
+        // case. "The recipient opened the page" should advance whichever
+        // drop they'd actually see there — mirrored from the exact same
+        // filter/sort toLinkStatusResponse's `relevantDrops` and this file's
+        // owner-only GET .../drops queue already use: not yet
+        // delivered/shredded, oldest first.
+        const relevantDrops = [...link.drops]
+          .filter((drop) => drop.fileEnvelopeStatus !== "delivered" && drop.fileEnvelopeStatus !== "shredded")
+          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+        const drop = relevantDrops[0];
         if (drop) {
           await prisma.drop.updateMany({
             where: { id: drop.id, linkId: link.id, deliveryStatus: "sent" },
@@ -413,7 +430,11 @@ export function registerLinkRoutes(server: FastifyInstance): void {
     async (request, reply) => {
       const link = await getLinkBySlug(request.params.slug);
       if (!link) return reply.status(404).send({ error: "Link not found" });
-      if (isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+      // isLinkInactive, not isLinkExpired: consistent with /revoke's neighbors
+      // (Task 1) — a revoked or unverified-owner link is just as inactive as
+      // an expired one, and this telemetry field shouldn't keep advancing for
+      // any of those reasons either.
+      if (await isLinkInactive(link)) return reply.status(404).send({ error: "Link not found" });
       await prisma.link.updateMany({ where: { id: link.id }, data: { lastSenderOpenedAt: new Date() } });
       return reply.send({ acknowledged: true });
     }

@@ -1209,6 +1209,77 @@ describe("link routes", () => {
       const drop = await prisma.drop.findFirstOrThrow({ where: { linkId: link.id } });
       expect(drop.deliveryStatus).toBe("sent");
     });
+
+    it("advances the oldest still-outstanding drop, not an arbitrary/insertion-order one, on a multi-drop claimed link", async () => {
+      // Regression test for the arbitrary `link.drops[0]` fix: a claimed
+      // sender-initiated link (mode: "permanent") can accumulate more than
+      // one outstanding drop over its lifetime, unlike a one-time anonymous
+      // link. getLinkBySlug's `include: { drops: true }` carries no orderBy,
+      // so array order is not guaranteed to reflect creation order — this
+      // test creates the chronologically NEWER drop first (at the DB level)
+      // and the chronologically OLDER one second, so a naive `drops[0]`
+      // would pick the wrong (newer) one. The fix sorts by createdAt and
+      // filters out delivered/shredded drops, mirroring toLinkStatusResponse's
+      // own `relevantDrops` — the oldest still-outstanding drop is the one
+      // that must advance.
+      const server = buildServer();
+      const initiator = await registerAndGetCookie(server, "markopenedmulti");
+      await prisma.user.update({ where: { username: "markopenedmulti" }, data: { emailVerified: true } });
+      const requestRes = await server.inject({
+        method: "POST",
+        url: "/api/links/request",
+        payload: {},
+        cookies: initiator.cookies,
+      });
+      const { slug } = requestRes.json();
+      await server.inject({
+        method: "POST",
+        url: `/api/links/${slug}/claim`,
+        payload: { recipientPublicKey: "claimant-pubkey" },
+      });
+      const link = await prisma.link.findUniqueOrThrow({ where: { slug } });
+
+      const dropDefaults = {
+        linkId: link.id,
+        senderPublicKey: "c2VuZGVy",
+        archiveNonce: "bm9uY2U=",
+        contentMD5: "bWQ1",
+        encryptedMetadata: "ZW5jcnlwdGVkLW1ldGFkYXRh",
+        metadataNonce: "bWV0YS1ub25jZQ==",
+        fileSize: 1024,
+        fileUploadStatus: "complete" as const,
+        deliveryStatus: "sent" as const,
+      };
+      // Inserted FIRST in the DB, but chronologically NEWER (createdAt in the future).
+      const newerDrop = await prisma.drop.create({
+        data: { ...dropDefaults, s3Key: `${link.id}/newer`, createdAt: new Date(Date.now() + 60_000) },
+      });
+      // Inserted SECOND in the DB, but chronologically OLDER (createdAt in the past).
+      const olderDrop = await prisma.drop.create({
+        data: { ...dropDefaults, s3Key: `${link.id}/older`, createdAt: new Date(Date.now() - 60_000) },
+      });
+      // Also delivered/shredded drops (even older) must never be picked, whatever their createdAt.
+      const deliveredDrop = await prisma.drop.create({
+        data: {
+          ...dropDefaults,
+          s3Key: `${link.id}/delivered`,
+          createdAt: new Date(Date.now() - 120_000),
+          fileEnvelopeStatus: "delivered",
+        },
+      });
+
+      const markResponse = await server.inject({ method: "POST", url: `/api/links/${slug}/mark-receiver-opened` });
+      expect(markResponse.statusCode).toBe(200);
+
+      const after = {
+        newer: await prisma.drop.findUniqueOrThrow({ where: { id: newerDrop.id } }),
+        older: await prisma.drop.findUniqueOrThrow({ where: { id: olderDrop.id } }),
+        delivered: await prisma.drop.findUniqueOrThrow({ where: { id: deliveredDrop.id } }),
+      };
+      expect(after.older.deliveryStatus).toBe("receiver_opened");
+      expect(after.newer.deliveryStatus).toBe("sent");
+      expect(after.delivered.deliveryStatus).toBe("sent");
+    });
   });
 
   describe("POST /api/links/:slug/mark-sender-opened", () => {
@@ -1274,6 +1345,39 @@ describe("link routes", () => {
         url: "/api/links/does-not-exist/mark-sender-opened",
       });
       expect(response.statusCode).toBe(404);
+    });
+
+    it("does not update lastSenderOpenedAt on a revoked (but not yet expired) link", async () => {
+      // Regression test for the under-gating fix: this route used to check
+      // only isLinkExpired, so a revoked-but-not-expired link (revokedAt set,
+      // expiresAt still in the future) kept recording this telemetry field
+      // even though the link is otherwise treated as gone everywhere else
+      // (isLinkInactive — see GET /:slug, /claim). Now gated on
+      // isLinkInactive, matching /revoke's neighbors (Task 1).
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "revoked-sender-opened-owner");
+      await prisma.user.update({ where: { username: "revoked-sender-opened-owner" }, data: { emailVerified: true } });
+      const link = await prisma.link.create({
+        data: {
+          ownerId: owner.userId,
+          slug: "revoked-sender-opened",
+          mode: "one-time",
+          recipientPublicKey: owner.publicKey,
+          retentionDays: 7,
+          expiresAt: new Date(Date.now() + 60_000),
+          revokedAt: new Date(),
+        },
+      });
+      expect(link.lastSenderOpenedAt).toBeNull();
+
+      const response = await server.inject({
+        method: "POST",
+        url: `/api/links/${link.slug}/mark-sender-opened`,
+      });
+      expect(response.statusCode).toBe(404);
+
+      const after = await prisma.link.findUniqueOrThrow({ where: { slug: link.slug } });
+      expect(after.lastSenderOpenedAt).toBeNull();
     });
   });
 

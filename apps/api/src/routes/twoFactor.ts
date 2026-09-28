@@ -154,10 +154,20 @@ export function registerTwoFactorRoutes(server: FastifyInstance): void {
       if (!totpValid && !(await consumeBackupCodeIfValid(user.id, code))) {
         return reply.status(401).send({ error: "Invalid TOTP code" });
       }
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { totpEnabled: false, totpSecretEncrypted: null },
-      });
+      // 2FA is being turned off entirely here (unlike backup-codes/regenerate
+      // and generateAndStoreBackupCodes' own rotation, which only clear
+      // UNUSED codes to preserve the used-code audit trail) — a clean slate
+      // means every backup code, used or not, so a future re-enable doesn't
+      // accumulate stale rows across enable/disable cycles. Both writes
+      // commit together so a crash between them can never leave 2FA off
+      // with old codes still valid, or vice versa.
+      await prisma.$transaction([
+        prisma.user.update({
+          where: { id: user.id },
+          data: { totpEnabled: false, totpSecretEncrypted: null },
+        }),
+        prisma.totpBackupCode.deleteMany({ where: { userId: user.id } }),
+      ]);
       return reply.send({ disabled: true });
     }
   );

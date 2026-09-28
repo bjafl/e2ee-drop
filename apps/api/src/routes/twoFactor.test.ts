@@ -406,6 +406,57 @@ describe("2FA routes", () => {
     expect((await prisma.user.findUniqueOrThrow({ where: { id: userId } })).totpEnabled).toBe(true);
   });
 
+  it("deletes every backup code (used and unused) when 2FA is disabled", async () => {
+    // Regression test for the stale-backup-codes fix: /2fa/disable used to
+    // leave every TotpBackupCode row behind — generateAndStoreBackupCodes'
+    // own deleteMany only ever clears UNUSED codes (appropriate for a
+    // rotation, which must preserve the used-code audit trail), so nothing
+    // else ever cleared them. Disabling 2FA entirely should be a clean
+    // slate: every row for the user gone, used or not, so a future
+    // re-enable doesn't accumulate stale rows across cycles.
+    const server = buildServer();
+    const { userId, cookieValue } = await registerAndGetCookie(server);
+    const cookies = { e2ee_drop_session: cookieValue };
+
+    const setupRes = await server.inject({ method: "POST", url: "/api/auth/2fa/setup", cookies });
+    const { secretBase32 } = setupRes.json();
+    const totp = new TOTP({ secret: Secret.fromBase32(secretBase32) });
+    const enableRes = await server.inject({
+      method: "POST",
+      url: "/api/auth/2fa/enable",
+      cookies,
+      payload: { code: totp.generate() },
+    });
+    const backupCodes: string[] = enableRes.json().backupCodes;
+    expect(await prisma.totpBackupCode.count({ where: { userId } })).toBe(10);
+
+    // Consume one backup code (login-style usage elsewhere, simulated here
+    // directly against the DB) so at least one row is USED before disable —
+    // proving the disable-time cleanup isn't just the same unused-only
+    // deleteMany generateAndStoreBackupCodes already does.
+    const oneCode = await prisma.totpBackupCode.findFirstOrThrow({ where: { userId } });
+    await prisma.totpBackupCode.update({ where: { id: oneCode.id }, data: { usedAt: new Date() } });
+
+    // Fresh code, not the one just consumed by /2fa/enable's replay guard —
+    // same technique as the "sets up, enables ... disables" test above.
+    const disableCode = new TOTP({ secret: Secret.fromBase32(secretBase32) }).generate({
+      timestamp: Date.now() + 30_000,
+    });
+    const disableRes = await server.inject({
+      method: "POST",
+      url: "/api/auth/2fa/disable",
+      cookies,
+      payload: { code: disableCode },
+    });
+    expect(disableRes.statusCode).toBe(200);
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: userId } })).totpEnabled).toBe(false);
+
+    expect(await prisma.totpBackupCode.count({ where: { userId } })).toBe(0);
+    // Sanity: the codes really were live rows for this user, not an
+    // artifact of an already-empty table.
+    expect(backupCodes).toHaveLength(10);
+  });
+
   it("regenerate accepts a backup code, returns a fresh disjoint batch, and leaves exactly 10 USABLE (unused) codes — while the just-consumed code's now-used row is not deleted by the unused-only cleanup, so the true total row count is 11, not 10 (verified empirically, not assumed)", async () => {
     const server = buildServer();
     const { userId, cookieValue } = await registerAndGetCookie(server);
