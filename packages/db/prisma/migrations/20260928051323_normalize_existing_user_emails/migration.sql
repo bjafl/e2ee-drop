@@ -1,0 +1,28 @@
+-- Normalizes every existing User.email to lowercase+trimmed, matching the
+-- application-level normalizeEmail() now applied to every lookup and write
+-- path (apps/api/src/lib/validation.ts, wired in by the 2026-09-27-review-
+-- fixes plan's Task 11). Existing rows were never backfilled when that
+-- normalization landed, which could otherwise lock any pre-existing account
+-- whose stored email has uppercase characters or surrounding whitespace out
+-- of login, prelogin and password reset (they'd no longer be found by the
+-- now-normalized lookup).
+--
+-- Safety: "User"."email" carries a UNIQUE index (User_email_key, a plain
+-- btree index with Postgres's default case-sensitive collation -- see
+-- migration 20260925035229_add_accounts/migration.sql). If two existing
+-- rows' emails differ only by case (e.g. "Bob@x.com" and "bob@x.com"), this
+-- UPDATE hits that unique constraint and raises a unique_violation
+-- (SQLSTATE 23505). Prisma wraps each migration.sql in its own transaction
+-- by default (this file contains no CREATE INDEX CONCURRENTLY or other
+-- statement that would force it out of one), so that failure rolls back
+-- the whole migration cleanly rather than silently merging two accounts or
+-- leaving a partial update -- it stops the deploy so a human can resolve
+-- the collision (e.g. decide which account is canonical) instead of doing
+-- so automatically. As of writing, no such collision exists in this
+-- worktree's own test data; that is not a claim about any other database
+-- this migration might run against.
+--
+-- The WHERE clause skips rows already normalized, so a rerun (or a
+-- database where every row is already lowercase+trimmed) is a no-op write
+-- on zero rows rather than touching every row unnecessarily.
+UPDATE "User" SET "email" = LOWER(TRIM("email")) WHERE "email" != LOWER(TRIM("email"));
