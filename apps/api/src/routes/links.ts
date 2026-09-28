@@ -524,6 +524,15 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       reply.status(404).send({ error: "Link not found" });
       return null;
     }
+    // Contacts-only/blocked-relationship masking (finding F6): must return the
+    // same 404 a nonexistent slug gets, never a distinguishing 403, before the
+    // ownership check below runs. See shouldMaskAsNotFound in lib/links.ts —
+    // it returns false outright for the true owner, so the owner's own
+    // revoke/unrevoke/PATCH is never masked.
+    if (await shouldMaskAsNotFound(link, userId)) {
+      reply.status(404).send({ error: "Link not found" });
+      return null;
+    }
     if (link.ownerId !== userId) {
       reply.status(403).send({ error: "Forbidden" });
       return null;

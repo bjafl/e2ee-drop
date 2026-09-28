@@ -1783,6 +1783,48 @@ describe("link routes", () => {
       expect(attempt.statusCode).toBe(403);
     });
 
+    // Finding F6: requireOwnedLink (the shared owner-check helper behind
+    // revoke/unrevoke/PATCH) must mask a contacts-only link from a
+    // non-contact caller the same way DELETE /:slug and GET .../drops
+    // already do — a distinguishing 403 leaks that a link with this slug
+    // exists and is owned/contacts-only. shouldMaskAsNotFound (lib/links.ts)
+    // already returns false for the true owner, so the owner-only tests
+    // above are unaffected, and "rejects revoke from a non-owner" above
+    // (a public-visibility link, the default for /api/links/custom) confirms
+    // masking does NOT apply when existence isn't secret.
+    it("masks revoke from a non-contact caller on a contacts-only link, byte-identical to a nonexistent slug", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "revokeownerco");
+      await prisma.user.update({ where: { username: "revokeownerco" }, data: { emailVerified: true } });
+      const link = await prisma.link.create({
+        data: {
+          ownerId: owner.userId,
+          slug: "owner-revoke-co",
+          mode: "permanent",
+          visibility: "contacts-only",
+          recipientPublicKey: owner.publicKey,
+          retentionDays: 7,
+        },
+      });
+      const stranger = await registerAndGetCookie(server, "revokestrangerco");
+
+      const masked = await server.inject({
+        method: "POST",
+        url: `/api/links/${link.slug}/revoke`,
+        cookies: stranger.cookies,
+      });
+      const nonexistent = await server.inject({
+        method: "POST",
+        url: "/api/links/does-not-exist-revokeco/revoke",
+        cookies: stranger.cookies,
+      });
+
+      expect(masked.statusCode).toBe(404);
+      expect(masked.statusCode).toBe(nonexistent.statusCode);
+      expect(masked.json()).toEqual(nonexistent.json());
+      expect((await prisma.link.findUniqueOrThrow({ where: { id: link.id } })).revokedAt).toBeNull();
+    });
+
     it("lets the owner change visibility via PATCH", async () => {
       const server = buildServer();
       const { cookies } = await registerAndGetCookie(server, "patcher");

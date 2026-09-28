@@ -124,8 +124,10 @@ All four plans this section was tracking (`account-verification-2fa`,
 `main`. None remain outstanding.
 
 A follow-up punch-list plan (`2026-09-27-review-fixes`, generated from a
-full-codebase review after all four merged) has since closed out every
-"important"/"moderate" finding from that review — see its own plan file
-(`docs/superpowers/plans/2026-09-27-review-fixes.md`) and its SDD workspace
-under `.superpowers/sdd/2026-09-27-review-fixes/` for the full task-by-task
-record, including the rulings made along the way.
+full-codebase review after all four merged) has since closed out the
+majority of "important"/"moderate" findings from that review, but not all:
+two are recorded as parked/deferred with explicit rulings rather than fixed
+— see its own plan file (`docs/superpowers/plans/2026-09-27-review-fixes.md`)
+and its SDD workspace under `.superpowers/sdd/2026-09-27-review-fixes/` for
+the task-by-task record, including those rulings, kept as this branch's own
+internal working notes for the coordinating session to inspect before merge.
