@@ -90,10 +90,15 @@ vi.mock("@/hooks/useAuth", () => ({
 }));
 
 import { UploadPage } from "./UploadPage";
+import { CODEWORD_WORD_COUNT, deriveCodewords } from "@e2ee-drop/shared";
 
 const LINK_RESPONSE = {
+  linkId: "link-id-upload",
   recipientPublicKey: "cmVjaXBpZW50",
+  // Deliberately NOT what deriveCodewords produces for the key above: the
+  // page must never display the server's `codewords` field (finding F1).
   codewords: ["fox", "river", "lamp", "otter"],
+  codewordLocale: "en",
   retentionDays: 7,
 };
 
@@ -157,13 +162,54 @@ describe("UploadPage", () => {
     );
   });
 
-  it("shows only the first three verification codewords, not the rest", async () => {
+  // Review finding F1: the sender's phrase must come from the recipient key
+  // this page actually encrypts to, derived client-side — not from the API's
+  // `codewords` field, which a compromised server could make match anything.
+  it("derives the verification words locally from recipientPublicKey, ignoring the API's codewords", async () => {
+    const expected = await deriveCodewords(
+      LINK_RESPONSE.recipientPublicKey,
+      LINK_RESPONSE.linkId,
+      "en",
+      CODEWORD_WORD_COUNT
+    );
+    // Guard the test itself: the mocked API words must differ from the local ones.
+    expect(expected).not.toEqual(LINK_RESPONSE.codewords);
+
     renderAt("abc123");
 
     await waitFor(() => {
-      expect(screen.getByText("fox · river · lamp")).toBeInTheDocument();
+      expect(screen.getByTestId("codewords")).toHaveTextContent(expected.join(" · "));
     });
-    expect(screen.queryByText(/otter/)).not.toBeInTheDocument();
+    expect(screen.getByTestId("codewords")).not.toHaveTextContent(LINK_RESPONSE.codewords.join(" · "));
+  });
+
+  // Step 3 (finding F1): the sender shows the full shared word count, the
+  // same count every recipient-side surface shows — not a hardcoded 3.
+  it("shows all CODEWORD_WORD_COUNT words", async () => {
+    renderAt("abc123");
+    await waitFor(() => {
+      expect(screen.getByTestId("codewords")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("codewords").textContent!.split(" · ")).toHaveLength(CODEWORD_WORD_COUNT);
+  });
+
+  it("derives the words from a different key when the API's recipientPublicKey differs, even if its codewords don't", async () => {
+    // A server that swaps the recipient key but keeps sending the "right"
+    // codewords must not be able to keep the sender's phrase unchanged.
+    const swappedKey = "c3dhcHBlZGtleQ==";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...LINK_RESPONSE, recipientPublicKey: swappedKey }) })
+    );
+    const genuine = await deriveCodewords(LINK_RESPONSE.recipientPublicKey, LINK_RESPONSE.linkId, "en", CODEWORD_WORD_COUNT);
+    const swapped = await deriveCodewords(swappedKey, LINK_RESPONSE.linkId, "en", CODEWORD_WORD_COUNT);
+    expect(swapped).not.toEqual(genuine);
+
+    renderAt("abc123");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("codewords")).toHaveTextContent(swapped.join(" · "));
+    });
   });
 
   it("fires a fire-and-forget mark-sender-opened POST alongside the plain GET on mount", async () => {

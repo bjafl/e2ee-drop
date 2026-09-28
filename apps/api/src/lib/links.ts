@@ -5,6 +5,7 @@ import type { FileUploadStatus, DropSummary, LinkStatusResponse, LinkSummary } f
 import { env } from "../env";
 import { resolveLocale, deriveCodewords } from "./codewords";
 import { deleteObject } from "./storage";
+import { hasAcceptedContact, hasBlockRelationship } from "./contacts";
 
 // Also used by routes/links.ts's sender-initiated POST /api/links/request (Task 12), which
 // needs the same anonymous-slug shape but isn't creating a one-time link.
@@ -51,6 +52,40 @@ export async function isLinkInactive(link: Link): Promise<boolean> {
   if (link.ownerId !== null) {
     const owner = await prisma.user.findUnique({ where: { id: link.ownerId }, select: { emailVerified: true } });
     if (!owner || !owner.emailVerified) return true;
+  }
+  return false;
+}
+
+// Unifies the "never let a caller's identity confirm this link exists"
+// masking rule that GET /api/links/:slug and upload-url (uploads.ts) already
+// apply inline, for every other route that reads a link on a caller's
+// behalf (downloads.ts's four receive-side handlers, events.ts's /events,
+// links.ts's GET .../drops and DELETE /:slug). Returns true when the caller
+// must get the SAME "not found" response as a genuinely nonexistent slug —
+// never a distinguishing 403 or any other reply that would leak "a link
+// with this slug exists (and is owned/contacts-only/blocking you)".
+//
+// Two independent reasons to mask, both short-circuited by true ownership
+// (the owner is never masked from their own link):
+//  - an active block relationship with the owner, in either direction —
+//    this overrides even a `public` link's visibility, since a block is a
+//    stronger signal than visibility and must hide the link regardless.
+//  - `visibility === "contacts-only"` and the caller is not an accepted
+//    contact of the owner. An anonymous caller (no session) can never be a
+//    contact, so this masks them the same as a non-contact caller.
+// An anonymous link (ownerId === null) has no owner to be blocked by or
+// contacts-gated against, so it is never masked here — its slug alone is
+// already its whole trust model (see canReceive below).
+export async function shouldMaskAsNotFound(link: Link, callerId: string | null | undefined): Promise<boolean> {
+  if (link.ownerId === null) return false;
+  const isOwner = callerId != null && callerId === link.ownerId;
+  if (isOwner) return false;
+
+  if (callerId != null && (await hasBlockRelationship(link.ownerId, callerId))) return true;
+
+  if (link.visibility === "contacts-only") {
+    const isContact = callerId != null && (await hasAcceptedContact(link.ownerId, callerId));
+    if (!isContact) return true;
   }
   return false;
 }
@@ -198,6 +233,24 @@ const DELIVERY_STATUS_RANK: Record<string, number> = {
   delivered: 4,
 };
 
+// Whether this drop ever had a message attached, resolved or not — distinct
+// from "is there still something to reveal right now" (see toDropSummary's
+// own, deliberately different, `hasMessage` field below). `messageEnvelopeStatus`
+// can reach a terminal "shredded" state (cleanup's scrub) when a message
+// existed but was scrubbed WITHOUT ever being delivered/revealed; at that
+// point `encryptedMessage` is already null, so checking only that field would
+// misclassify "had a message, now gone" as "never had one". Checking
+// `!== "sealed"` still correctly treats a genuinely message-less drop (whose
+// messageEnvelopeStatus stays at its schema default "sealed" forever) as
+// having no message, while treating "delivered" and "shredded" alike as "a
+// message existed and is now resolved one way or the other". Exported so
+// lib/inbox.ts's `hadMessage` can share this exact derivation instead of
+// deriving it a third way (it previously used `messageRevealedAt !== null`,
+// which disagreed with this for a shredded-but-never-revealed message).
+export function hasEverHadMessage(drop: Pick<Drop, "encryptedMessage" | "messageEnvelopeStatus">): boolean {
+  return drop.encryptedMessage !== null || drop.messageEnvelopeStatus !== "sealed";
+}
+
 // Re-derives Drop.deliveryStatus from both envelope statuses and writes it if — and only if — the
 // derived value is strictly ahead of the row's CURRENT value at write time. Always re-reads the
 // row itself rather than trusting a caller's snapshot: this is what makes it safe to call from two
@@ -215,16 +268,10 @@ export async function recomputeDeliveryStatus(dropId: string, linkId: string): P
     });
     if (!drop) return;
 
-    // `messageEnvelopeStatus` can also reach a terminal "shredded" state (spec 1's Task 6/7/8
-    // cleanup scrub, once merged) when a message existed but was scrubbed WITHOUT ever being
-    // delivered. Checking only `=== "delivered"` here would misclassify that case as "no message
-    // ever existed", letting deliveryStatus reach "delivered" from file-delivery alone even though
-    // the message was lost unretrieved — it must cap at "partial_delivery" instead (see the
-    // messageDone check below). Checking `!== "sealed"` still correctly treats a genuinely
-    // message-less drop (whose messageEnvelopeStatus stays at its schema default "sealed" forever)
-    // as having no message, while treating both "delivered" and "shredded" as "a message existed
-    // and is now resolved one way or the other".
-    const hasMessage = drop.encryptedMessage !== null || drop.messageEnvelopeStatus !== "sealed";
+    // See hasEverHadMessage above for the full reasoning (shredded-but-never-
+    // delivered must still count as "had a message", so deliveryStatus caps at
+    // "partial_delivery" rather than reaching "delivered" from file-delivery alone).
+    const hasMessage = hasEverHadMessage(drop);
     const messageDone = !hasMessage || drop.messageEnvelopeStatus === "delivered";
     const fileDone = drop.fileEnvelopeStatus === "delivered";
 
@@ -252,8 +299,15 @@ export async function recomputeDeliveryStatus(dropId: string, linkId: string): P
 // Reused nowhere else in this plan but kept as a named export for symmetry
 // with toDropSummary/toLinkStatusResponse, and to keep GET /api/links's
 // route handler thin.
-export function toLinkSummary(link: Link): LinkSummary {
+//
+// `ownerPublicKey` is the owning account's current publicKey (null if unknown):
+// `recipientIsOwner` is the same structural test isClaimedSenderInitiatedLink
+// uses, inverted — a normal owned link always carries the owner's own key
+// (createDefaultLinkForUser, POST /api/links/custom), while a sender-initiated
+// request link carries null (unclaimed) or its claimant's key.
+export function toLinkSummary(link: Link, ownerPublicKey: string | null): LinkSummary {
   return {
+    linkId: link.id,
     slug: link.slug,
     mode: link.mode as LinkSummary["mode"],
     visibility: link.visibility as LinkSummary["visibility"],
@@ -263,6 +317,8 @@ export function toLinkSummary(link: Link): LinkSummary {
     ...(link.revokedAt ? { revokedAt: link.revokedAt.getTime() } : {}),
     ...(link.lastSenderOpenedAt ? { lastSenderOpenedAt: link.lastSenderOpenedAt.getTime() } : {}),
     retentionDays: link.retentionDays,
+    codewordLocale: resolveLocale(link.codewordLocale),
+    recipientIsOwner: ownerPublicKey !== null && link.recipientPublicKey === ownerPublicKey,
   };
 }
 
@@ -352,6 +408,7 @@ export async function toLinkStatusResponse(
         ? (relevantDrops[0] ?? null)
         : null;
   const base: LinkStatusResponse = {
+    linkId: link.id,
     slug: link.slug,
     mode: link.mode as LinkStatusResponse["mode"],
     recipientPublicKey: link.recipientPublicKey,
@@ -359,8 +416,9 @@ export async function toLinkStatusResponse(
     ...(relevantDrops ? { drops: relevantDrops.map((drop) => toDropSummary(drop, link)) } : {}),
     isAnonymous: link.ownerId === null,
     codewords: link.recipientPublicKey
-      ? deriveCodewords(link.recipientPublicKey, link.id, resolveLocale(link.codewordLocale), env.CODEWORD_WORD_COUNT)
+      ? await deriveCodewords(link.recipientPublicKey, link.id, resolveLocale(link.codewordLocale), env.CODEWORD_WORD_COUNT)
       : [], // unclaimed link (design spec §4.2): no recipientPublicKey yet, nothing to derive from
+    codewordLocale: resolveLocale(link.codewordLocale),
     ownerNote: link.ownerNote ?? undefined,
     retentionDays: link.retentionDays,
     expiresAt: link.expiresAt?.getTime(),

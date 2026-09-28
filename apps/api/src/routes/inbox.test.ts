@@ -3,6 +3,7 @@ import { describe, it, expect } from "vitest";
 import { prisma } from "@e2ee-drop/db";
 import { buildServer } from "../server";
 import { ownerListenerCount } from "../lib/dropEvents";
+import { fakePublicKey } from "../test/fakeKeys";
 
 async function registerAndGetCookie(server: ReturnType<typeof buildServer>, username: string) {
   const response = await server.inject({
@@ -16,7 +17,7 @@ async function registerAndGetCookie(server: ReturnType<typeof buildServer>, user
       passwordSalt: "s",
       passwordWrappedPrivateKey: "w",
       recoveryWrappedPrivateKey: "r",
-      publicKey: `${username}-pubkey`,
+      publicKey: fakePublicKey(username),
     },
   });
   const cookie = response.cookies.find((c: { name: string }) => c.name === "e2ee_drop_session")!;

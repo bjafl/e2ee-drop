@@ -1,18 +1,17 @@
 // apps/api/src/lib/inbox.ts
 import { prisma, type Drop } from "@e2ee-drop/db";
 import type { InboxCounterparty, InboxDrop, InboxResponse } from "@e2ee-drop/shared";
+import { hasEverHadMessage } from "./links";
 
 // A drop's message envelope only counts toward "unresolved" if it ever had a
 // message at all. Drop.messageEnvelopeStatus defaults to "sealed" even for a
 // drop with no message (spec 1's schema has no separate "not applicable"
-// state), so this can't be read off that field directly. Reconstructed
-// instead from the two fields whose combination is unambiguous: a message
-// exists (still sealed) iff encryptedMessage is set; a message existed and
-// was already revealed iff messageRevealedAt is set. Neither implies the
-// other never held a message — this is the one derivation covering both.
-function hadMessage(drop: Pick<Drop, "encryptedMessage" | "messageRevealedAt">): boolean {
-  return drop.encryptedMessage !== null || drop.messageRevealedAt !== null;
-}
+// state), so this can't be read off that field directly. Delegates to
+// lib/links.ts's hasEverHadMessage rather than deriving this a second, subtly
+// different way: this previously checked `messageRevealedAt !== null`, which
+// disagrees with the shared derivation for a shredded-but-never-revealed
+// message (messageRevealedAt stays null even though a message existed).
+const hadMessage = hasEverHadMessage;
 
 function isEnvelopeResolved(status: string): boolean {
   return status === "delivered" || status === "shredded";

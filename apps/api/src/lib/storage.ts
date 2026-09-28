@@ -8,6 +8,7 @@ import {
   HeadBucketCommand,
   CreateBucketCommand,
   PutBucketCorsCommand,
+  ListObjectsV2Command,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { env } from "../env";
@@ -125,6 +126,34 @@ export async function getSignedDownloadUrl(s3Key: string, expiresIn = 600): Prom
 export async function deleteObject(s3Key: string): Promise<void> {
   const s3 = getClient();
   await s3.send(new DeleteObjectCommand({ Bucket: env.MINIO_BUCKET, Key: s3Key }));
+}
+
+export interface StorageObject {
+  key: string;
+  lastModified: Date;
+}
+
+// Lists every object currently in the bucket, paging through MinIO/S3's 1000-key-per-response
+// cap via ContinuationToken/IsTruncated. Nothing else in this codebase enumerates bucket
+// contents — this exists for the cleanup job's orphaned-object sweep (finding F5), which
+// reconciles bucket contents against the Drop table since nothing else does.
+export async function listObjects(): Promise<StorageObject[]> {
+  const s3 = getClient();
+  const objects: StorageObject[] = [];
+  let continuationToken: string | undefined;
+  do {
+    const response = await s3.send(
+      new ListObjectsV2Command({
+        Bucket: env.MINIO_BUCKET,
+        ContinuationToken: continuationToken,
+      })
+    );
+    for (const item of response.Contents ?? []) {
+      if (item.Key && item.LastModified) objects.push({ key: item.Key, lastModified: item.LastModified });
+    }
+    continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+  } while (continuationToken);
+  return objects;
 }
 
 // True iff an object exists at `s3Key` and holds exactly `expectedBytes` bytes.

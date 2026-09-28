@@ -13,7 +13,7 @@ import {
 } from "../lib/links";
 import { getSignedUploadUrl, objectHasSize } from "../lib/storage";
 import { emitDropEvent, emitOwnerDropEvent, type DropEvent } from "../lib/dropEvents";
-import { hasAcceptedContact } from "../lib/contacts";
+import { hasAcceptedContact, hasBlockRelationship } from "../lib/contacts";
 import {
   NACL_BOX_OVERHEAD_BYTES,
   QUOTA_TX_OPTIONS,
@@ -26,6 +26,7 @@ import {
   reservationCutoff,
 } from "../lib/quota";
 import { reservationSenderKey } from "../lib/senderKey";
+import { isValidPublicKeyBase64 } from "../lib/validation";
 import { env } from "../env";
 import { uploadUrlRateLimiter, rateLimitExceededBody } from "../lib/rateLimit";
 import { assertSenderIdentity, SenderIdentityMismatchError } from "../lib/senderIdentity";
@@ -77,9 +78,24 @@ export function registerUploadRoutes(server: FastifyInstance): void {
           properties: {
             senderPublicKey: { type: "string" },
             archiveNonce: { type: "string" },
-            encryptedMessage: { type: ["string", "null"] },
+            // Base64 nacl.box ciphertext of the sender's optional note. The web
+            // client caps the plaintext at 500 characters (UploadPage.tsx's
+            // MAX_MESSAGE_LENGTH); worst-case UTF-8 is 4 bytes/char, so 500 chars
+            // -> 2000 bytes, +16 bytes nacl.box MAC overhead = 2016 bytes ->
+            // base64 (4/3) = 2688 chars. 2800 keeps that with headroom.
+            encryptedMessage: { type: ["string", "null"], maxLength: 2800 },
             messageNonce: { type: ["string", "null"] },
-            encryptedMetadata: { type: "string" },
+            // Base64 nacl.box ciphertext of the JSON-encoded file list
+            // (`{ files: [{ name, size }], mimeType }` — useFileEncryption.ts).
+            // The dropzone (UploadPage.tsx) caps neither file count nor filename
+            // length, so this is sized from the shape rather than any client
+            // cap: assuming up to 1000 files (a large folder drop) with 255-byte
+            // filenames (the common filesystem component limit) gives per-file
+            // JSON of ~285 bytes (`{"name":"<255>","size":<10 digits>},`), i.e.
+            // ~285,000 bytes plaintext for the array, +16 bytes nacl.box
+            // overhead, -> base64 (4/3) ~= 380,000 chars. 500000 keeps that with
+            // headroom while staying well under Fastify's default 1 MiB body limit.
+            encryptedMetadata: { type: "string", maxLength: 500000 },
             metadataNonce: { type: "string" },
             metadata: {
               type: "object",
@@ -105,6 +121,12 @@ export function registerUploadRoutes(server: FastifyInstance): void {
       // (this handler's link.visibility check, above): a contacts-only link
       // must be indistinguishable from a nonexistent one everywhere, not just
       // on GET — a distinguishable 403 here would leak that the link exists.
+      // Also block authenticated callers blocked by the link owner, per the
+      // same masking principle: a blocked caller must see 404 (indistinguishable
+      // from nonexistent), never 403 or any other hint the link exists.
+      if (request.user && link.ownerId && await hasBlockRelationship(link.ownerId, request.user.id)) {
+        return reply.status(404).send({ error: "Link not found" });
+      }
       if (link.visibility === "contacts-only") {
         const allowed = request.user ? await hasAcceptedContact(link.ownerId!, request.user.id) : false;
         if (!allowed) {
@@ -135,6 +157,12 @@ export function registerUploadRoutes(server: FastifyInstance): void {
       }
       if ((encryptedMessage && !messageNonce) || (!encryptedMessage && messageNonce)) {
         return reply.status(400).send({ error: "encryptedMessage and messageNonce must be provided together" });
+      }
+      // A malformed key here would otherwise fail obscurely deep inside a
+      // client's crypto library once the recipient tries to decrypt this
+      // drop — see lib/validation.ts.
+      if (!isValidPublicKeyBase64(senderPublicKey)) {
+        return reply.status(400).send({ error: "Invalid senderPublicKey: must be 32 bytes, base64-encoded" });
       }
       // fileSize determines the signed Content-Length of the upload, so it must be a
       // real byte count — not a string ("10" + 16 would be "1016"), fraction or
@@ -341,10 +369,15 @@ export function registerUploadRoutes(server: FastifyInstance): void {
         // and the idempotent early return means the real sender's own call
         // still succeeds afterwards. Slot-taking and DELETE by a slug holder
         // remain accepted trade-offs (spec §5.1).
-        updated = await transitionFileUploadStatus(dropId, link.id, ["uploading"], "complete");
-        if (updated) {
-          await prisma.drop.update({ where: { id: dropId }, data: { deliveryStatus: "sent" } });
-        }
+        //
+        // Fold deliveryStatus into the same CAS update so both state changes
+        // commit atomically, preventing a race where a concurrent operation could
+        // see intermediate state (spec §6.3, CAS discipline).
+        const { count } = await prisma.drop.updateMany({
+          where: { id: dropId, linkId: link.id, fileUploadStatus: "uploading" },
+          data: { fileUploadStatus: "complete", deliveryStatus: "sent" },
+        });
+        updated = count === 1;
       } else {
         // Owned link: the CAS and the owner's quota charge commit together, and
         // the charge happens only if this call won the CAS — so a drop is charged

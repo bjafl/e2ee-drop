@@ -1,6 +1,6 @@
-// apps/api/src/lib/wordlists.ts
+// packages/shared/src/wordlists.ts
 export type CodewordLocale = "en" | "nb";
-export const DEFAULT_LOCALE: CodewordLocale = "en";
+export const DEFAULT_CODEWORD_LOCALE: CodewordLocale = "en";
 
 const EN: string[] = [
   "fox", "wolf", "bear", "deer", "stoat", "lynx", "mole", "mouse", "otter", "badger", "rabbit", "squirrel", "hedgehog", "raccoon", "beaver", "elk",

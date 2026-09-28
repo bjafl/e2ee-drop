@@ -2,19 +2,25 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { prisma } from "@e2ee-drop/db";
 
-vi.mock("../lib/storage", () => ({ deleteObject: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("../lib/storage", () => ({
+  deleteObject: vi.fn().mockResolvedValue(undefined),
+  listObjects: vi.fn().mockResolvedValue([]),
+}));
 
-import { deleteObject } from "../lib/storage";
+import { deleteObject, listObjects } from "../lib/storage";
 import { UPLOAD_RESERVATION_WINDOW_MS, chargedBytes } from "../lib/quota";
 import {
   runCleanup,
   sweepExpiredDrops,
   sweepAbandonedUploads,
+  sweepOrphanedStorageObjects,
   pruneExpiredPasswordResetTokens,
+  pruneExpiredEmailVerificationTokens,
   purgeAuditExpiredRows,
 } from "./cleanup";
 
 const deleteObjectMock = vi.mocked(deleteObject);
+const listObjectsMock = vi.mocked(listObjects);
 
 describe("runCleanup", () => {
   const dropDefaults = {
@@ -462,6 +468,73 @@ describe("sweepAbandonedUploads", () => {
   });
 });
 
+describe("sweepOrphanedStorageObjects", () => {
+  const dropDefaults = {
+    senderPublicKey: "c2VuZGVy",
+    archiveNonce: "bm9uY2U=",
+    encryptedMetadata: "ZW5jcnlwdGVkLW1ldGFkYXRh",
+    metadataNonce: "bWV0YWRhdGEtbm9uY2U=",
+    fileSize: 1024,
+    contentMD5: "bWQ1",
+  };
+
+  beforeEach(async () => {
+    await prisma.drop.deleteMany();
+    await prisma.link.deleteMany();
+    deleteObjectMock.mockClear();
+    listObjectsMock.mockReset();
+    listObjectsMock.mockResolvedValue([]);
+  });
+
+  async function createLink(slug: string) {
+    return prisma.link.create({
+      data: { slug, mode: "one-time", recipientPublicKey: "x", retentionDays: 7, expiresAt: new Date(Date.now() + 60_000) },
+    });
+  }
+
+  it("deletes an orphaned object (no matching Drop row) once it clears the reservation window", async () => {
+    const link = await createLink("orphan-old");
+    const key = `${link.id}/no-such-drop`;
+    listObjectsMock.mockResolvedValue([{ key, lastModified: new Date(Date.now() - UPLOAD_RESERVATION_WINDOW_MS - 60_000) }]);
+
+    const result = await sweepOrphanedStorageObjects();
+
+    expect(result.deletedObjects).toBe(1);
+    expect(deleteObjectMock).toHaveBeenCalledTimes(1);
+    expect(deleteObjectMock).toHaveBeenCalledWith(key);
+  });
+
+  it("leaves an orphaned object alone while it is still inside the reservation window", async () => {
+    const link = await createLink("orphan-fresh");
+    const key = `${link.id}/no-such-drop`;
+    listObjectsMock.mockResolvedValue([{ key, lastModified: new Date() }]);
+
+    const result = await sweepOrphanedStorageObjects();
+
+    expect(result.deletedObjects).toBe(0);
+    expect(deleteObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("leaves an object with a live matching Drop row alone regardless of age", async () => {
+    const link = await createLink("has-row");
+    // s3Key is derived from the drop's own generated id (the real key format,
+    // `${linkId}/${dropId}` — routes/uploads.ts), so it's only known once the row exists;
+    // create with a placeholder, then set it to the real key on that same row.
+    const drop = await prisma.drop.create({
+      data: { ...dropDefaults, linkId: link.id, s3Key: "placeholder", fileUploadStatus: "uploading" },
+    });
+    const key = `${link.id}/${drop.id}`;
+    await prisma.drop.update({ where: { id: drop.id }, data: { s3Key: key } });
+    listObjectsMock.mockResolvedValue([{ key, lastModified: new Date(Date.now() - UPLOAD_RESERVATION_WINDOW_MS - 60_000) }]);
+
+    const result = await sweepOrphanedStorageObjects();
+
+    expect(result.deletedObjects).toBe(0);
+    expect(deleteObjectMock).not.toHaveBeenCalled();
+    expect(await prisma.drop.findUnique({ where: { id: drop.id } })).not.toBeNull();
+  });
+});
+
 describe("storage quota release", () => {
   // Every owner starts with BASELINE bytes charged for drops that are not part
   // of the test, so an over- or under-release is visible as an exact mismatch.
@@ -770,5 +843,40 @@ describe("pruneExpiredPasswordResetTokens", () => {
     expect(result.deletedTokens).toBe(1);
     expect(await prisma.passwordResetToken.findUnique({ where: { id: expired.id } })).toBeNull();
     expect(await prisma.passwordResetToken.findUnique({ where: { id: fresh.id } })).not.toBeNull();
+  });
+});
+
+describe("pruneExpiredEmailVerificationTokens", () => {
+  beforeEach(async () => {
+    await prisma.emailVerificationToken.deleteMany();
+    await prisma.user.deleteMany({ where: { username: "email-verify-token-owner" } });
+  });
+
+  it("deletes expired email-verification tokens and keeps unexpired ones", async () => {
+    const user = await prisma.user.create({
+      data: {
+        email: "email-verify-token-owner@example.com",
+        username: "email-verify-token-owner",
+        name: "T",
+        passwordHash: "h",
+        passwordSalt: "s",
+        passwordWrappedPrivateKey: "w",
+        recoveryWrappedPrivateKey: "r",
+        publicKey: "k",
+        storageQuotaBytes: 1000,
+      },
+    });
+    const expired = await prisma.emailVerificationToken.create({
+      data: { userId: user.id, tokenHash: "expired-hash", expiresAt: new Date(Date.now() - 1000) },
+    });
+    const fresh = await prisma.emailVerificationToken.create({
+      data: { userId: user.id, tokenHash: "fresh-hash", expiresAt: new Date(Date.now() + 60_000) },
+    });
+
+    const result = await pruneExpiredEmailVerificationTokens();
+
+    expect(result.deletedTokens).toBe(1);
+    expect(await prisma.emailVerificationToken.findUnique({ where: { id: expired.id } })).toBeNull();
+    expect(await prisma.emailVerificationToken.findUnique({ where: { id: fresh.id } })).not.toBeNull();
   });
 });

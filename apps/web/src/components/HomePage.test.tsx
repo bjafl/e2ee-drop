@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+import nacl from "tweetnacl";
+import { encodeBase64 } from "tweetnacl-util";
+import { CODEWORD_WORD_COUNT, deriveCodewords } from "@e2ee-drop/shared";
 
 interface MockUser {
   id: string;
@@ -173,6 +176,122 @@ describe("HomePage dashboard branch", () => {
 
     await waitFor(() => expect(screen.getByTestId("dashboard-pending-receipts")).toBeInTheDocument());
     expect(screen.getByText("You have no pending receipts.")).toBeInTheDocument();
+  });
+});
+
+// Review finding F1: the dashboard is a new owner-facing surface for a
+// link's verification phrase. It must derive the words locally from the
+// account's own key, and only for links whose recipient IS the account —
+// never for a sender-initiated request link, whose recipient key belongs to
+// the claimant (or doesn't exist yet).
+describe("HomePage dashboard verification words", () => {
+  const keyPair = nacl.box.keyPair();
+  const ownKey = encodeBase64(keyPair.publicKey);
+  const baseLink = { mode: "permanent", visibility: "public", createdAt: 1, retentionDays: 7, codewordLocale: "en" };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    authState.user = {
+      id: "u1",
+      username: "owner",
+      emailVerified: true,
+      // Server-reported key deliberately differs from the local key pair:
+      // the locally unwrapped key must be the one used.
+      publicKey: encodeBase64(nacl.box.keyPair().publicKey),
+      keyPair,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url === "/api/inbox") {
+          return Promise.resolve({ ok: true, json: async () => ({ counterparties: [] }) });
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            links: [
+              { ...baseLink, linkId: "default-id", slug: "owner", isDefault: true, recipientIsOwner: true },
+              { ...baseLink, linkId: "custom-id", slug: "owner-custom", isDefault: false, recipientIsOwner: true },
+              { ...baseLink, linkId: "request-id", slug: "req-claimed", isDefault: false, recipientIsOwner: false },
+              { ...baseLink, linkId: "request2-id", slug: "req-unclaimed", isDefault: false, recipientIsOwner: false },
+            ],
+          }),
+        });
+      })
+    );
+  });
+
+  it("shows each owner-recipient link's phrase derived locally from the account's own key pair", async () => {
+    const defaultWords = await deriveCodewords(ownKey, "default-id", "en", CODEWORD_WORD_COUNT);
+    const customWords = await deriveCodewords(ownKey, "custom-id", "en", CODEWORD_WORD_COUNT);
+
+    renderHome();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("codewords-owner")).toHaveTextContent(defaultWords.join(" · "));
+    });
+    expect(screen.getByTestId("codewords-owner-custom")).toHaveTextContent(customWords.join(" · "));
+  });
+
+  it("shows NO phrase for a sender-initiated request link, claimed or not", async () => {
+    // What a naive "derive from the owner's key for every row" would show —
+    // a phrase for the wrong key, since the claimant holds this link's key.
+    const misleading = await deriveCodewords(ownKey, "request-id", "en", CODEWORD_WORD_COUNT);
+
+    renderHome();
+
+    await waitFor(() => expect(screen.getByTestId("codewords-owner")).toBeInTheDocument());
+    expect(screen.getByText("req-claimed")).toBeInTheDocument();
+    expect(screen.queryByTestId("codewords-req-claimed")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("codewords-req-unclaimed")).not.toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(misleading.join(" · ")))).not.toBeInTheDocument();
+  });
+});
+
+// Review finding F1 (fix): a cookie-restored session — every reload, new tab
+// or later visit — has keyPair null. The dashboard must not fall back to the
+// server-reported user.publicKey; it shows a re-login hint and no phrase.
+describe("HomePage dashboard verification words without an unlocked key pair", () => {
+  const serverReportedKey = encodeBase64(nacl.box.keyPair().publicKey);
+  const baseLink = { mode: "permanent", visibility: "public", createdAt: 1, retentionDays: 7, codewordLocale: "en" };
+
+  function stubLinks(links: unknown[]) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url === "/api/inbox") {
+          return Promise.resolve({ ok: true, json: async () => ({ counterparties: [] }) });
+        }
+        return Promise.resolve({ ok: true, json: async () => ({ links }) });
+      })
+    );
+  }
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    authState.user = { id: "u1", username: "owner", emailVerified: true, publicKey: serverReportedKey, keyPair: null };
+  });
+
+  it("shows a re-login hint and no phrase derived from the server-reported publicKey", async () => {
+    stubLinks([{ ...baseLink, linkId: "default-id", slug: "owner", isDefault: true, recipientIsOwner: true }]);
+    const fromServerKey = await deriveCodewords(serverReportedKey, "default-id", "en", CODEWORD_WORD_COUNT);
+
+    renderHome();
+
+    await waitFor(() => expect(screen.getByTestId("codewords-relogin")).toBeInTheDocument());
+    expect(screen.getByRole("link", { name: /log in again/i })).toHaveAttribute("href", "/login");
+    expect(screen.getByText("owner")).toBeInTheDocument();
+    expect(screen.queryByTestId("codewords-owner")).not.toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(fromServerKey.join(" · ")))).not.toBeInTheDocument();
+  });
+
+  it("shows no re-login hint when there are only request links (nothing to show a phrase for anyway)", async () => {
+    stubLinks([{ ...baseLink, linkId: "request-id", slug: "req-claimed", isDefault: false, recipientIsOwner: false }]);
+
+    renderHome();
+
+    await waitFor(() => expect(screen.getByText("req-claimed")).toBeInTheDocument());
+    expect(screen.queryByTestId("codewords-relogin")).not.toBeInTheDocument();
   });
 });
 

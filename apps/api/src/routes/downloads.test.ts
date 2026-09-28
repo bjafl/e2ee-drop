@@ -17,6 +17,7 @@ import { buildServer } from "../server";
 import { prisma } from "@e2ee-drop/db";
 import { chargedBytes } from "../lib/quota";
 import { subscribeToLink, subscribeToOwner, type DropEvent } from "../lib/dropEvents";
+import { fakePublicKey } from "../test/fakeKeys";
 
 // Creates an anonymous link with a single drop against the current schema
 // (mirrors the reveal-message suite's createLinkWithMessage below). Calling
@@ -30,7 +31,7 @@ async function createLinkWithDrop(
   const createRes = await server.inject({
     method: "POST",
     url: "/api/links",
-    payload: { recipientPublicKey: "cmVjaXBpZW50" },
+    payload: { recipientPublicKey: fakePublicKey("cmVjaXBpZW50") },
   });
   const { slug } = createRes.json();
 
@@ -38,7 +39,7 @@ async function createLinkWithDrop(
     method: "POST",
     url: `/api/links/${slug}/upload-url`,
     payload: {
-      senderPublicKey: "c2VuZGVy",
+      senderPublicKey: fakePublicKey("c2VuZGVy"),
       archiveNonce: "YXJjaGl2ZQ==",
       ...(message ?? {}),
       encryptedMetadata: "bWV0YWRhdGE=",
@@ -123,7 +124,7 @@ describe("download-url route", () => {
     const createRes = await server.inject({
       method: "POST",
       url: "/api/links",
-      payload: { recipientPublicKey: "cmVjaXBpZW50" },
+      payload: { recipientPublicKey: fakePublicKey("cmVjaXBpZW50") },
     });
     const { slug } = createRes.json();
 
@@ -146,7 +147,7 @@ describe("download-url route", () => {
       data: {
         slug: "expired-download-test",
         mode: "one-time",
-        recipientPublicKey: "x",
+        recipientPublicKey: fakePublicKey("x"),
         retentionDays: 7,
         expiresAt: new Date(Date.now() - 1000),
       },
@@ -154,7 +155,7 @@ describe("download-url route", () => {
     await prisma.drop.create({
       data: {
         linkId: link.id,
-        senderPublicKey: "c2VuZGVy",
+        senderPublicKey: fakePublicKey("c2VuZGVy"),
         s3Key: `${link.id}/drop1`,
         archiveNonce: "YXJjaGl2ZQ==",
         encryptedMetadata: "bWV0YWRhdGE=",
@@ -190,7 +191,7 @@ async function registerAndGetCookie(server: ReturnType<typeof buildServer>, user
       passwordSalt: "s",
       passwordWrappedPrivateKey: "w",
       recoveryWrappedPrivateKey: "r",
-      publicKey: `${username}-pubkey`,
+      publicKey: fakePublicKey(username),
     },
   });
   const cookie = response.cookies.find((c: { name: string }) => c.name === "e2ee_drop_session")!;
@@ -204,7 +205,7 @@ async function createQueuedDrop(linkId: string, key: string, fileUploadStatus: "
   return prisma.drop.create({
     data: {
       linkId,
-      senderPublicKey: "c2VuZGVy",
+      senderPublicKey: fakePublicKey("c2VuZGVy"),
       s3Key: `${linkId}/${key}`,
       archiveNonce: "YXJjaGl2ZQ==",
       contentMD5: "bWQ1",
@@ -217,8 +218,14 @@ async function createQueuedDrop(linkId: string, key: string, fileUploadStatus: "
 }
 
 // Registration creates the owner's default permanent link with slug === username.
+// isLinkInactive (now wired into download-url/complete-download/download-failed/
+// reveal-message by this fix) treats an unverified owner's links as inactive, so
+// every owned-link test using this helper needs a verified owner or these
+// receive-side routes would 404 for a reason unrelated to what's being tested —
+// same fix-up commit 9f7b591 already applied to upload-url/complete/claim.
 async function ownedLinkWithQueue(server: ReturnType<typeof buildServer>, username: string) {
   const owner = await registerAndGetCookie(server, username);
+  await prisma.user.update({ where: { id: owner.userId }, data: { emailVerified: true } });
   const link = (await prisma.link.findUnique({ where: { slug: username } }))!;
   const first = await createQueuedDrop(link.id, "first");
   const second = await createQueuedDrop(link.id, "second");
@@ -505,7 +512,7 @@ describe("complete-download route", () => {
       data: {
         slug: "expired-complete-download-test",
         mode: "one-time",
-        recipientPublicKey: "x",
+        recipientPublicKey: fakePublicKey("x"),
         retentionDays: 7,
         expiresAt: new Date(Date.now() - 1000),
       },
@@ -513,7 +520,7 @@ describe("complete-download route", () => {
     const drop = await prisma.drop.create({
       data: {
         linkId: link.id,
-        senderPublicKey: "c2VuZGVy",
+        senderPublicKey: fakePublicKey("c2VuZGVy"),
         s3Key: `${link.id}/drop1`,
         archiveNonce: "YXJjaGl2ZQ==",
         encryptedMetadata: "bWV0YWRhdGE=",
@@ -744,7 +751,7 @@ describe("download-failed route", () => {
       data: {
         slug: "expired-download-failed-test",
         mode: "one-time",
-        recipientPublicKey: "x",
+        recipientPublicKey: fakePublicKey("x"),
         retentionDays: 7,
         expiresAt: new Date(Date.now() - 1000),
       },
@@ -893,7 +900,7 @@ describe("reveal-message route", () => {
     const createRes = await server.inject({
       method: "POST",
       url: "/api/links",
-      payload: { recipientPublicKey: "cmVjaXBpZW50" },
+      payload: { recipientPublicKey: fakePublicKey("cmVjaXBpZW50") },
     });
     const { slug } = createRes.json();
 
@@ -901,7 +908,7 @@ describe("reveal-message route", () => {
       method: "POST",
       url: `/api/links/${slug}/upload-url`,
       payload: {
-        senderPublicKey: "c2VuZGVy",
+        senderPublicKey: fakePublicKey("c2VuZGVy"),
         archiveNonce: "YXJjaGl2ZQ==",
         ...(message ?? {}),
         encryptedMetadata: "bWV0YWRhdGE=",
@@ -1017,7 +1024,7 @@ describe("reveal-message route", () => {
       data: {
         slug: "expired-reveal-test",
         mode: "one-time",
-        recipientPublicKey: "x",
+        recipientPublicKey: fakePublicKey("x"),
         retentionDays: 7,
         expiresAt: new Date(Date.now() - 1000),
       },
@@ -1025,7 +1032,7 @@ describe("reveal-message route", () => {
     const drop = await prisma.drop.create({
       data: {
         linkId: link.id,
-        senderPublicKey: "c2VuZGVy",
+        senderPublicKey: fakePublicKey("c2VuZGVy"),
         s3Key: `${link.id}/drop1`,
         archiveNonce: "YXJjaGl2ZQ==",
         encryptedMessage: "c2VjcmV0",
@@ -1050,7 +1057,7 @@ describe("reveal-message route", () => {
     const createRes = await server.inject({
       method: "POST",
       url: "/api/links",
-      payload: { recipientPublicKey: "cmVjaXBpZW50" },
+      payload: { recipientPublicKey: fakePublicKey("cmVjaXBpZW50") },
     });
     const { slug } = createRes.json();
 
@@ -1059,7 +1066,7 @@ describe("reveal-message route", () => {
     const drop = await prisma.drop.create({
       data: {
         linkId: link.id,
-        senderPublicKey: "c2VuZGVy",
+        senderPublicKey: fakePublicKey("c2VuZGVy"),
         s3Key: `${link.id}/with-message`,
         archiveNonce: "YXJjaGl2ZQ==",
         contentMD5: "bWQ1",
@@ -1150,7 +1157,7 @@ describe("owned-link reveal-message route", () => {
     return prisma.drop.create({
       data: {
         linkId,
-        senderPublicKey: "c2VuZGVy",
+        senderPublicKey: fakePublicKey("c2VuZGVy"),
         s3Key: `${linkId}/with-message`,
         archiveNonce: "YXJjaGl2ZQ==",
         contentMD5: "bWQ1",
@@ -1167,6 +1174,10 @@ describe("owned-link reveal-message route", () => {
   it("rejects a non-owner revealing an owned link's message, and never scrubs it", async () => {
     const server = buildServer();
     const owner = await registerAndGetCookie(server, "revealowner");
+    // isLinkInactive treats an unverified owner's link as inactive — verify so
+    // this test's 403s come from the ownership check, not a 404 for an
+    // unrelated reason.
+    await prisma.user.update({ where: { id: owner.userId }, data: { emailVerified: true } });
     const link = (await prisma.link.findUnique({ where: { slug: "revealowner" } }))!;
     const drop = await createQueuedDropWithMessage(link.id);
     const intruder = await registerAndGetCookie(server, "revealintruder");
@@ -1183,6 +1194,7 @@ describe("owned-link reveal-message route", () => {
   it("lets the owner reveal their own link's message", async () => {
     const server = buildServer();
     const owner = await registerAndGetCookie(server, "revealowner2");
+    await prisma.user.update({ where: { id: owner.userId }, data: { emailVerified: true } });
     const link = (await prisma.link.findUnique({ where: { slug: "revealowner2" } }))!;
     const drop = await createQueuedDropWithMessage(link.id);
 
@@ -1194,6 +1206,167 @@ describe("owned-link reveal-message route", () => {
 
     expect(res.statusCode).toBe(200);
     expect((await prisma.drop.findUnique({ where: { id: drop.id } }))?.encryptedMessage).toBeNull();
+  });
+});
+
+// Finding F6: download-url, complete-download, download-failed, and
+// reveal-message must all mask a contacts-only link from a non-contact
+// caller (and any blocked-relationship caller) exactly like GET /:slug and
+// upload-url already do — a distinguishing 403 leaks that a link with this
+// slug exists and is owned. shouldMaskAsNotFound (lib/links.ts) is the
+// shared helper; these tests confirm it's actually wired into all four
+// handlers, and that the resulting 404 is byte-identical to a genuinely
+// nonexistent slug's — not just the same status code.
+describe("contacts-only/blocked-relationship masking (finding F6) on receive-side routes", () => {
+  beforeEach(async () => {
+    deleteObjectMock.mockReset();
+    deleteObjectMock.mockResolvedValue(undefined);
+    await prisma.contact.deleteMany();
+    await prisma.session.deleteMany();
+    await prisma.drop.deleteMany();
+    await prisma.link.deleteMany();
+    await prisma.user.deleteMany();
+  });
+
+  // Registration's default link (slug === username) starts out `visibility:
+  // "public"`; PATCH it to "contacts-only" the same way links.test.ts's PATCH
+  // suite does, rather than reaching around the API into prisma directly.
+  async function contactsOnlyLinkWithQueue(server: ReturnType<typeof buildServer>, username: string) {
+    const owner = await registerAndGetCookie(server, username);
+    await prisma.user.update({ where: { id: owner.userId }, data: { emailVerified: true } });
+    const patch = await server.inject({
+      method: "PATCH",
+      url: `/api/links/${username}`,
+      cookies: owner.cookies,
+      payload: { visibility: "contacts-only" },
+    });
+    expect(patch.statusCode).toBe(200);
+    const link = (await prisma.link.findUnique({ where: { slug: username } }))!;
+    const drop = await createQueuedDrop(link.id, "drop1");
+    const messageDrop = await prisma.drop.create({
+      data: {
+        linkId: link.id,
+        senderPublicKey: fakePublicKey("c2VuZGVy"),
+        s3Key: `${link.id}/with-message`,
+        archiveNonce: "YXJjaGl2ZQ==",
+        contentMD5: "bWQ1",
+        encryptedMetadata: "bWV0YWRhdGE=",
+        metadataNonce: "bWV0YW5vbmNl",
+        fileSize: 1024,
+        fileUploadStatus: "complete",
+        encryptedMessage: "c2VjcmV0",
+        messageNonce: "bm9uY2U=",
+      },
+    });
+    return { owner, link, drop, messageDrop };
+  }
+
+  it("masks download-url from a non-contact caller, byte-identical to a nonexistent slug", async () => {
+    const server = buildServer();
+    const { link } = await contactsOnlyLinkWithQueue(server, "maskdlurl");
+    const stranger = await registerAndGetCookie(server, "maskdlurl-stranger");
+
+    const masked = await server.inject({
+      method: "GET",
+      url: `/api/links/${link.slug}/download-url`,
+      cookies: stranger.cookies,
+    });
+    const nonexistent = await server.inject({
+      method: "GET",
+      url: "/api/links/does-not-exist-maskdlurl/download-url",
+      cookies: stranger.cookies,
+    });
+
+    expect(masked.statusCode).toBe(404);
+    expect(masked.statusCode).toBe(nonexistent.statusCode);
+    expect(masked.json()).toEqual(nonexistent.json());
+  });
+
+  it("masks download-url from a caller with an active block relationship with the owner, even though the link is public", async () => {
+    const server = buildServer();
+    const owner = await registerAndGetCookie(server, "maskdlblockowner");
+    await prisma.user.update({ where: { id: owner.userId }, data: { emailVerified: true } });
+    const link = (await prisma.link.findUnique({ where: { slug: "maskdlblockowner" } }))!;
+    const blocker = await registerAndGetCookie(server, "maskdlblocker");
+    await prisma.contact.create({
+      data: { userId: blocker.userId, contactUserId: owner.userId, status: "blocked", blockedByUserId: blocker.userId },
+    });
+
+    const masked = await server.inject({
+      method: "GET",
+      url: `/api/links/${link.slug}/download-url`,
+      cookies: blocker.cookies,
+    });
+    const nonexistent = await server.inject({
+      method: "GET",
+      url: "/api/links/does-not-exist-maskdlblock/download-url",
+      cookies: blocker.cookies,
+    });
+
+    expect(masked.statusCode).toBe(404);
+    expect(masked.json()).toEqual(nonexistent.json());
+  });
+
+  it("masks complete-download from a non-contact caller, byte-identical to a nonexistent slug", async () => {
+    const server = buildServer();
+    const { link, drop } = await contactsOnlyLinkWithQueue(server, "maskcd");
+    const stranger = await registerAndGetCookie(server, "maskcd-stranger");
+
+    const masked = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/drops/${drop.id}/complete-download`,
+      cookies: stranger.cookies,
+    });
+    const nonexistent = await server.inject({
+      method: "POST",
+      url: `/api/links/does-not-exist-maskcd/drops/${drop.id}/complete-download`,
+      cookies: stranger.cookies,
+    });
+
+    expect(masked.statusCode).toBe(404);
+    expect(masked.json()).toEqual(nonexistent.json());
+    expect(deleteObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("masks download-failed from a non-contact caller, byte-identical to a nonexistent slug", async () => {
+    const server = buildServer();
+    const { link, drop } = await contactsOnlyLinkWithQueue(server, "maskdf");
+    const stranger = await registerAndGetCookie(server, "maskdf-stranger");
+
+    const masked = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/drops/${drop.id}/download-failed`,
+      cookies: stranger.cookies,
+    });
+    const nonexistent = await server.inject({
+      method: "POST",
+      url: `/api/links/does-not-exist-maskdf/drops/${drop.id}/download-failed`,
+      cookies: stranger.cookies,
+    });
+
+    expect(masked.statusCode).toBe(404);
+    expect(masked.json()).toEqual(nonexistent.json());
+  });
+
+  it("masks reveal-message from a non-contact caller, byte-identical to a nonexistent slug, and never scrubs the message", async () => {
+    const server = buildServer();
+    const { link, messageDrop } = await contactsOnlyLinkWithQueue(server, "maskrm");
+    const stranger = await registerAndGetCookie(server, "maskrm-stranger");
+
+    const masked = await server.inject({
+      method: "POST",
+      url: `/api/links/${link.slug}/drops/${messageDrop.id}/reveal-message`,
+      cookies: stranger.cookies,
+    });
+    const nonexistent = await server.inject({
+      method: "POST",
+      url: `/api/links/does-not-exist-maskrm/drops/${messageDrop.id}/reveal-message`,
+      cookies: stranger.cookies,
+    });
+
+    expect(masked.statusCode).toBe(404);
+    expect(masked.json()).toEqual(nonexistent.json());
+    expect((await prisma.drop.findUnique({ where: { id: messageDrop.id } }))?.encryptedMessage).not.toBeNull();
   });
 });
 
@@ -1251,7 +1424,7 @@ describe("owner-cancel route", () => {
     const drop = await prisma.drop.create({
       data: {
         linkId: link.id,
-        senderPublicKey: "c2VuZGVy",
+        senderPublicKey: fakePublicKey("c2VuZGVy"),
         s3Key: `${link.id}/delivered`,
         archiveNonce: "YXJjaGl2ZQ==",
         contentMD5: "bWQ1",
@@ -1335,7 +1508,7 @@ describe("owner-cancel route", () => {
     const drop = await prisma.drop.create({
       data: {
         linkId: link.id,
-        senderPublicKey: "c2VuZGVy",
+        senderPublicKey: fakePublicKey("c2VuZGVy"),
         s3Key: `${link.id}/delivered6`,
         archiveNonce: "YXJjaGl2ZQ==",
         contentMD5: "bWQ1",
@@ -1386,7 +1559,7 @@ describe("sender-initiated link receive access (finding C1)", () => {
   async function createClaimedSenderInitiatedLink(
     server: ReturnType<typeof buildServer>,
     initiatorUsername: string,
-    claimantPublicKey = "claimant-pubkey"
+    claimantPublicKey = fakePublicKey("claimant-pubkey")
   ) {
     const initiator = await registerAndGetCookie(server, initiatorUsername);
     // isLinkInactive (wired into the claim handler by this fix) treats an
@@ -1415,7 +1588,7 @@ describe("sender-initiated link receive access (finding C1)", () => {
     return prisma.drop.create({
       data: {
         linkId,
-        senderPublicKey: "c2VuZGVy",
+        senderPublicKey: fakePublicKey("c2VuZGVy"),
         s3Key: `${linkId}/sender-initiated-drop`,
         archiveNonce: "YXJjaGl2ZQ==",
         contentMD5: "bWQ1",
@@ -1539,12 +1712,16 @@ describe("sender-initiated link receive access (finding C1)", () => {
   it("still denies a stranger on a NORMAL owned link (custom, not sender-initiated) — no regression", async () => {
     const server = buildServer();
     const owner = await registerAndGetCookie(server, "normalowner1");
+    // isLinkInactive treats an unverified owner's link as inactive — verify so
+    // this test's 403s come from the ownership check, not a 404 for an
+    // unrelated reason.
+    await prisma.user.update({ where: { id: owner.userId }, data: { emailVerified: true } });
     const link = await prisma.link.create({
       data: {
         ownerId: owner.userId,
         slug: "normal-owned-link",
         mode: "permanent",
-        recipientPublicKey: `normalowner1-pubkey`,
+        recipientPublicKey: fakePublicKey("normalowner1"),
         retentionDays: 7,
       },
     });

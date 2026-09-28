@@ -23,6 +23,7 @@ import {
 import { decryptTotpSecret, verifyTotpCode } from "../lib/totp";
 import { getUsedCodesForUser } from "../lib/totpReplayGuard";
 import { consumeBackupCodeIfValid } from "../lib/totpBackupCodes";
+import { normalizeEmail } from "../lib/validation";
 
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 
@@ -150,7 +151,7 @@ export function registerPasswordResetRoutes(server: FastifyInstance): void {
     },
     async (request, reply) => {
       const { email } = request.body;
-      const user = email ? await prisma.user.findUnique({ where: { email } }) : null;
+      const user = email ? await prisma.user.findUnique({ where: { email: normalizeEmail(email) } }) : null;
       if (user) {
         const token = randomBytes(32).toString("base64url");
         await prisma.passwordResetToken.create({
@@ -160,7 +161,15 @@ export function registerPasswordResetRoutes(server: FastifyInstance): void {
           // Must point at the token-consuming page (apps/web App.tsx route
           // /reset-password/confirm), not /reset-password, which is the
           // "enter your email" request page.
-          await sendPasswordResetEmail(user.email, `${env.APP_URL}/reset-password/confirm?token=${token}`);
+          // Best-effort, fire-and-forget: an SMTP failure must not fail the
+          // request, and a slow or blackholed SMTP host must not delay this
+          // response either. The promise is kicked off synchronously (so a test
+          // asserting the mock was called observes that immediately), it just
+          // isn't awaited on the response path. Logs the error only — never the
+          // reset URL or token.
+          sendPasswordResetEmail(user.email, `${env.APP_URL}/reset-password/confirm?token=${token}`).catch((err: unknown) => {
+            request.log.warn({ err }, "password reset email send failed");
+          });
         }
       }
       // Always 200 with the same body, regardless of whether the email is

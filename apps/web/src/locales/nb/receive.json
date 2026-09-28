@@ -37,6 +37,7 @@
     "downloadFailed": "Nedlasting feilet. Prøv igjen.",
     "noLocalKey": "Fant ingen privatnøkkel for denne lenken i denne nettleseren.",
     "claimFailed": "Kunne ikke gjøre krav på denne lenken. Den kan allerede ha blitt tatt.",
+    "storageUnavailable": "Denne nettleseren kan ikke lagre dekrypteringsnøkkelen (privat modus, eller lagring er blokkert/full). Å gjøre krav anonymt her ville latt nøkkelen bare ligge i denne fanens minne, og dette kan ikke angres — aktiver lagring eller bruk en annen nettleser, og prøv igjen.",
     "messageAlreadyRevealed": "Denne meldingen er allerede vist og er ikke lenger tilgjengelig.",
     "messageDecryptFailed": "Meldingen kunne ikke dekrypteres — men den er allerede permanent slettet fra serveren og kan ikke gjenopprettes.",
     "revealFailed": "Kunne ikke vise meldingen. Prøv igjen."

@@ -15,6 +15,7 @@ import type { DropSummary } from "@e2ee-drop/shared";
 import { buildServer } from "../server";
 import { emitDropEvent, linkListenerCount } from "../lib/dropEvents";
 import { SSE_HEARTBEAT_INTERVAL_MS } from "./events";
+import { fakePublicKey } from "../test/fakeKeys";
 
 const drop: DropSummary = {
   id: "drop1",
@@ -22,7 +23,7 @@ const drop: DropSummary = {
   deliveryStatus: "sent",
   messageEnvelopeStatus: "sealed",
   fileEnvelopeStatus: "sealed",
-  senderPublicKey: "x",
+  senderPublicKey: fakePublicKey("x"),
   archiveNonce: "x",
   contentMD5: "x",
   encryptedMetadata: "x",
@@ -43,7 +44,7 @@ async function registerAndGetCookie(server: ReturnType<typeof buildServer>, user
       passwordSalt: "s",
       passwordWrappedPrivateKey: "w",
       recoveryWrappedPrivateKey: "r",
-      publicKey: `${username}-pubkey`,
+      publicKey: fakePublicKey(username),
     },
   });
   const cookie = response.cookies.find((c: { name: string }) => c.name === "e2ee_drop_session")!;
@@ -131,14 +132,32 @@ describe("SSE events route", () => {
 
   it("returns 404 for an expired link", async () => {
     await prisma.link.create({
-      data: { slug: "expired-sse", mode: "one-time", recipientPublicKey: "x", retentionDays: 7, expiresAt: new Date(Date.now() - 1000) },
+      data: { slug: "expired-sse", mode: "one-time", recipientPublicKey: fakePublicKey("x"), retentionDays: 7, expiresAt: new Date(Date.now() - 1000) },
     });
     const response = await server.inject({ method: "GET", url: "/api/links/expired-sse/events" });
     expect(response.statusCode).toBe(404);
   });
 
+  // This route previously gated on isLinkExpired only, so a revoked link's
+  // events stream stayed subscribable. isLinkInactive (which covers
+  // revokedAt) now gates it the same way GET /api/links/:slug already does.
+  it("returns 404 for a revoked link", async () => {
+    const createRes = await server.inject({
+      method: "POST",
+      url: "/api/links",
+      payload: { recipientPublicKey: fakePublicKey("cmVjaXBpZW50") },
+    });
+    const { slug } = createRes.json();
+    await prisma.link.updateMany({ where: { slug }, data: { revokedAt: new Date() } });
+
+    const response = await server.inject({ method: "GET", url: `/api/links/${slug}/events` });
+
+    expect(response.statusCode).toBe(404);
+  });
+
   it("rejects an unauthenticated subscriber to an owned link's events", async () => {
     await registerAndGetCookie(server, "sseowner");
+    await prisma.user.update({ where: { username: "sseowner" }, data: { emailVerified: true } });
 
     const response = await server.inject({ method: "GET", url: "/api/links/sseowner/events" });
 
@@ -147,6 +166,7 @@ describe("SSE events route", () => {
 
   it("rejects another authenticated user subscribing to an owned link's events", async () => {
     await registerAndGetCookie(server, "sseowner");
+    await prisma.user.update({ where: { username: "sseowner" }, data: { emailVerified: true } });
     const intruder = await registerAndGetCookie(server, "intruder");
 
     const response = await server.inject({
@@ -156,6 +176,40 @@ describe("SSE events route", () => {
     });
 
     expect(response.statusCode).toBe(403);
+  });
+
+  // Finding F6: /events must mask a contacts-only link from a non-contact
+  // caller the same way GET /:slug and upload-url already do — a
+  // distinguishing 403 leaks that a link with this slug exists and is
+  // owned. shouldMaskAsNotFound (lib/links.ts) already returns false for
+  // the true owner, so this doesn't touch the owner-subscribes-to-their-own-
+  // link tests below.
+  it("masks a contacts-only link's events from a non-contact caller, byte-identical to a nonexistent slug", async () => {
+    const owner = await registerAndGetCookie(server, "sseownerco");
+    await prisma.user.update({ where: { username: "sseownerco" }, data: { emailVerified: true } });
+    const patch = await server.inject({
+      method: "PATCH",
+      url: "/api/links/sseownerco",
+      cookies: owner.cookies,
+      payload: { visibility: "contacts-only" },
+    });
+    expect(patch.statusCode).toBe(200);
+    const stranger = await registerAndGetCookie(server, "sseownerco-stranger");
+
+    const masked = await server.inject({
+      method: "GET",
+      url: "/api/links/sseownerco/events",
+      cookies: stranger.cookies,
+    });
+    const nonexistent = await server.inject({
+      method: "GET",
+      url: "/api/links/does-not-exist-sseco/events",
+      cookies: stranger.cookies,
+    });
+
+    expect(masked.statusCode).toBe(404);
+    expect(masked.statusCode).toBe(nonexistent.statusCode);
+    expect(masked.json()).toEqual(nonexistent.json());
   });
 
   it("allows a claimed sender-initiated request link's non-owner claimant to open the connection", async () => {
@@ -171,7 +225,7 @@ describe("SSE events route", () => {
     await server.inject({
       method: "POST",
       url: `/api/links/${slug}/claim`,
-      payload: { recipientPublicKey: "claimant-pubkey" },
+      payload: { recipientPublicKey: fakePublicKey("claimant-pubkey") },
     });
     const link = (await prisma.link.findUnique({ where: { slug } }))!;
     await server.listen({ port: 0, host: "127.0.0.1" });
@@ -200,7 +254,7 @@ describe("SSE events route", () => {
     await server.inject({
       method: "POST",
       url: `/api/links/${slug}/claim`,
-      payload: { recipientPublicKey: "claimant-pubkey" },
+      payload: { recipientPublicKey: fakePublicKey("claimant-pubkey") },
     });
     const link = (await prisma.link.findUnique({ where: { slug } }))!;
     await server.listen({ port: 0, host: "127.0.0.1" });
@@ -218,7 +272,7 @@ describe("SSE events route", () => {
     const createRes = await server.inject({
       method: "POST",
       url: "/api/links",
-      payload: { recipientPublicKey: "cmVjaXBpZW50" },
+      payload: { recipientPublicKey: fakePublicKey("cmVjaXBpZW50") },
     });
     const { slug } = createRes.json();
     const link = (await prisma.link.findUnique({ where: { slug } }))!;
@@ -240,6 +294,7 @@ describe("SSE events route", () => {
 
   it("streams an owned link's events to its owner, and cleans up each connection independently", async () => {
     const owner = await registerAndGetCookie(server, "sseowner");
+    await prisma.user.update({ where: { username: "sseowner" }, data: { emailVerified: true } });
     const link = (await prisma.link.findUnique({ where: { slug: "sseowner" } }))!;
     await server.listen({ port: 0, host: "127.0.0.1" });
     const { port } = server.server.address() as AddressInfo;
@@ -268,7 +323,7 @@ describe("SSE events route", () => {
     const createRes = await server.inject({
       method: "POST",
       url: "/api/links",
-      payload: { recipientPublicKey: "cmVjaXBpZW50" },
+      payload: { recipientPublicKey: fakePublicKey("cmVjaXBpZW50") },
     });
     const { slug } = createRes.json();
     const link = (await prisma.link.findUnique({ where: { slug } }))!;

@@ -12,6 +12,7 @@ import type {
 } from "@e2ee-drop/shared";
 import { prisma, Prisma } from "@e2ee-drop/db";
 import {
+  abandonDrop,
   createOneTimeLink,
   deleteLinkIfExists,
   generateAnonymousSlug,
@@ -19,16 +20,18 @@ import {
   isLinkExpired,
   isLinkInactive,
   isSenderInitiatedReceiveCapability,
+  shouldMaskAsNotFound,
   toDropSummary,
   toLinkStatusResponse,
   toLinkSummary,
 } from "../lib/links";
 import { hasAcceptedContact, hasBlockRelationship } from "../lib/contacts";
+import { isValidPublicKeyBase64 } from "../lib/validation";
 import { deleteObject } from "../lib/storage";
-import { deleteLinkReleasingQuota } from "../lib/quota";
+import { deleteLinkReleasingQuota, scrubDropContent } from "../lib/quota";
 import { resolveLocale, deriveCodewords } from "../lib/codewords";
 import { resolveRetentionDays } from "../lib/retention";
-import { emitDropEvent } from "../lib/dropEvents";
+import { emitDropEvent, emitOwnerDropEvent, type DropEvent } from "../lib/dropEvents";
 import { env } from "../env";
 
 export function registerLinkRoutes(server: FastifyInstance): void {
@@ -41,7 +44,11 @@ export function registerLinkRoutes(server: FastifyInstance): void {
           properties: {
             recipientPublicKey: { type: "string" },
             locale: { type: ["string", "null"] },
-            ownerNote: { type: ["string", "null"] },
+            // Free-text note the link owner attaches for senders. Not
+            // encrypted client-side, so it's a plain server-visible field —
+            // bounded well above any realistic note (a sentence or two) but
+            // far below arbitrary Postgres-storage growth (finding F4).
+            ownerNote: { type: ["string", "null"], maxLength: 2000 },
             retentionDays: { type: ["integer", "null"] },
           },
         },
@@ -51,6 +58,13 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       const { recipientPublicKey, locale, ownerNote, retentionDays } = request.body;
       if (!recipientPublicKey) {
         return reply.status(400).send({ error: "Missing recipientPublicKey" });
+      }
+      // Caller-supplied (the anonymous CreateLinkPage flow generates this
+      // keypair client-side): a malformed value here would otherwise fail
+      // obscurely deep inside a client's crypto library later — see
+      // lib/validation.ts.
+      if (!isValidPublicKeyBase64(recipientPublicKey)) {
+        return reply.status(400).send({ error: "Invalid recipientPublicKey: must be 32 bytes, base64-encoded" });
       }
       // A one-time link's own expiry is fixed by LINK_EXPIRY_HOURS; resolve retentionDays
       // against that same window before the link is created (createOneTimeLink no longer
@@ -72,8 +86,9 @@ export function registerLinkRoutes(server: FastifyInstance): void {
         linkId: link.id,
         slug: link.slug,
         codewords: link.recipientPublicKey
-          ? deriveCodewords(link.recipientPublicKey, link.id, resolveLocale(link.codewordLocale), env.CODEWORD_WORD_COUNT)
+          ? await deriveCodewords(link.recipientPublicKey, link.id, resolveLocale(link.codewordLocale), env.CODEWORD_WORD_COUNT)
           : [],
+        codewordLocale: resolveLocale(link.codewordLocale),
         expiresAt: link.expiresAt.getTime(),
       };
       return reply.send(body);
@@ -98,7 +113,8 @@ export function registerLinkRoutes(server: FastifyInstance): void {
             mode: { type: "string" },
             visibility: { type: ["string", "null"] },
             retentionDays: { type: ["integer", "null"] },
-            ownerNote: { type: ["string", "null"] },
+            // See POST /api/links above for the sizing rationale.
+            ownerNote: { type: ["string", "null"], maxLength: 2000 },
           },
         },
       },
@@ -173,8 +189,9 @@ export function registerLinkRoutes(server: FastifyInstance): void {
         linkId: link.id,
         slug: link.slug,
         codewords: link.recipientPublicKey
-          ? deriveCodewords(link.recipientPublicKey, link.id, resolveLocale(link.codewordLocale), env.CODEWORD_WORD_COUNT)
+          ? await deriveCodewords(link.recipientPublicKey, link.id, resolveLocale(link.codewordLocale), env.CODEWORD_WORD_COUNT)
           : [],
+        codewordLocale: resolveLocale(link.codewordLocale),
         // Only one-time custom links have a real expiry; a permanent one's
         // expiresAt is null forever, so it's omitted rather than reported as
         // a fake epoch-0 "already expired" timestamp.
@@ -196,7 +213,8 @@ export function registerLinkRoutes(server: FastifyInstance): void {
         body: {
           type: "object",
           properties: {
-            ownerNote: { type: ["string", "null"] },
+            // See POST /api/links above for the sizing rationale.
+            ownerNote: { type: ["string", "null"], maxLength: 2000 },
             retentionDays: { type: ["integer", "null"] },
           },
         },
@@ -258,6 +276,14 @@ export function registerLinkRoutes(server: FastifyInstance): void {
     async (request, reply) => {
       const { recipientPublicKey } = request.body ?? {};
       if (!recipientPublicKey) return reply.status(400).send({ error: "Missing recipientPublicKey" });
+      // Rejecting a malformed key here (rather than letting it commit) matters
+      // more for this route than any other public-key acceptance point: a
+      // claimed request link has no unclaim path, so a griefer claiming it
+      // with e.g. "AAAA" would otherwise permanently brick it — see
+      // lib/validation.ts.
+      if (!isValidPublicKeyBase64(recipientPublicKey)) {
+        return reply.status(400).send({ error: "Invalid recipientPublicKey: must be 32 bytes, base64-encoded" });
+      }
 
       const link = await getLinkBySlug(request.params.slug);
       if (!link || (await isLinkInactive(link))) return reply.status(404).send({ error: "Link not found" });
@@ -285,7 +311,16 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       where: { ownerId: request.user!.id },
       orderBy: { createdAt: "asc" },
     });
-    const body: ListLinksResponse = { links: links.map(toLinkSummary) };
+    // One lookup for the caller's own publicKey, so toLinkSummary can tell a
+    // link the owner receives on (recipientPublicKey === owner.publicKey)
+    // from a sender-initiated request link (see LinkSummary.recipientIsOwner).
+    const owner = await prisma.user.findUnique({
+      where: { id: request.user!.id },
+      select: { publicKey: true },
+    });
+    const body: ListLinksResponse = {
+      links: links.map((link) => toLinkSummary(link, owner?.publicKey ?? null)),
+    };
     return reply.send(body);
   });
 
@@ -330,6 +365,18 @@ export function registerLinkRoutes(server: FastifyInstance): void {
     async (request, reply) => {
       const link = await getLinkBySlug(request.params.slug);
       if (!link) return reply.status(404).send({ error: "Link not found" });
+      // Contacts-only/blocked-relationship masking (finding F6): must return
+      // the same 404 a nonexistent slug gets, never a distinguishing 403,
+      // before the ownership check below runs. See shouldMaskAsNotFound in
+      // lib/links.ts — it already returns false for the true owner, and a
+      // sender-initiated request link's real claimant hits this route as a
+      // non-owner too, but that link is always `visibility: "public"`
+      // (POST /api/links/request), so this never masks the claimant's
+      // existing 403 below, which ReceivePage.tsx relies on to detect "I am
+      // this request link's claimant, not its owner".
+      if (await shouldMaskAsNotFound(link, request.user!.id)) {
+        return reply.status(404).send({ error: "Link not found" });
+      }
       if (link.ownerId !== request.user!.id) return reply.status(403).send({ error: "Forbidden" });
 
       const drops = link.drops
@@ -358,7 +405,24 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       if (!link) return reply.status(404).send({ error: "Link not found" });
       if (isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
       if (link.ownerId === null || (await isSenderInitiatedReceiveCapability(link, request.user?.id))) {
-        const drop = link.drops[0];
+        // link.drops has no ordering guarantee (getLinkBySlug's `include: {
+        // drops: true }` carries no orderBy) — docs/STATUS.md gap 3 already
+        // called this out for toLinkStatusResponse's old `link.drops[0]`, for
+        // the same underlying reason this route has: a claimed sender-
+        // initiated link (mode: "permanent") can accumulate more than one
+        // outstanding drop over its lifetime, so `[0]` there picked an
+        // arbitrary one instead of a meaningful one. An anonymous one-time
+        // link never has more than one drop ever, so this reordering is a
+        // no-op for that shape and only changes behavior for the multi-drop
+        // case. "The recipient opened the page" should advance whichever
+        // drop they'd actually see there — mirrored from the exact same
+        // filter/sort toLinkStatusResponse's `relevantDrops` and this file's
+        // owner-only GET .../drops queue already use: not yet
+        // delivered/shredded, oldest first.
+        const relevantDrops = [...link.drops]
+          .filter((drop) => drop.fileEnvelopeStatus !== "delivered" && drop.fileEnvelopeStatus !== "shredded")
+          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+        const drop = relevantDrops[0];
         if (drop) {
           await prisma.drop.updateMany({
             where: { id: drop.id, linkId: link.id, deliveryStatus: "sent" },
@@ -382,7 +446,11 @@ export function registerLinkRoutes(server: FastifyInstance): void {
     async (request, reply) => {
       const link = await getLinkBySlug(request.params.slug);
       if (!link) return reply.status(404).send({ error: "Link not found" });
-      if (isLinkExpired(link)) return reply.status(404).send({ error: "Link not found" });
+      // isLinkInactive, not isLinkExpired: consistent with /revoke's neighbors
+      // (Task 1) — a revoked or unverified-owner link is just as inactive as
+      // an expired one, and this telemetry field shouldn't keep advancing for
+      // any of those reasons either.
+      if (await isLinkInactive(link)) return reply.status(404).send({ error: "Link not found" });
       await prisma.link.updateMany({ where: { id: link.id }, data: { lastSenderOpenedAt: new Date() } });
       return reply.send({ acknowledged: true });
     }
@@ -391,6 +459,16 @@ export function registerLinkRoutes(server: FastifyInstance): void {
   server.delete<{ Params: { slug: string } }>("/api/links/:slug", async (request, reply) => {
     const link = await getLinkBySlug(request.params.slug);
     if (!link) return reply.status(404).send({ error: "Link not found" });
+    // Contacts-only/blocked-relationship masking (finding F6): must return
+    // the same 404 a nonexistent slug gets, never a distinguishing 403,
+    // before the ownership branch below runs. See shouldMaskAsNotFound in
+    // lib/links.ts — it returns false outright for an anonymous
+    // (ownerId === null) link, so the anonymous-deletion branch below is
+    // unaffected, and false for the true owner, so an owner's own delete is
+    // never masked either.
+    if (await shouldMaskAsNotFound(link, request.user?.id)) {
+      return reply.status(404).send({ error: "Link not found" });
+    }
     // This route is unauthenticated: knowing an anonymous link's random slug is
     // the only capability it checks, which is what Plan 1 designed it for. An
     // owned link's slug is NOT a secret (a user's default link slug is their
@@ -446,6 +524,15 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       reply.status(404).send({ error: "Link not found" });
       return null;
     }
+    // Contacts-only/blocked-relationship masking (finding F6): must return the
+    // same 404 a nonexistent slug gets, never a distinguishing 403, before the
+    // ownership check below runs. See shouldMaskAsNotFound in lib/links.ts —
+    // it returns false outright for the true owner, so the owner's own
+    // revoke/unrevoke/PATCH is never masked.
+    if (await shouldMaskAsNotFound(link, userId)) {
+      reply.status(404).send({ error: "Link not found" });
+      return null;
+    }
     if (link.ownerId !== userId) {
       reply.status(403).send({ error: "Forbidden" });
       return null;
@@ -460,11 +547,31 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       const link = await requireOwnedLink(request.params.slug, request.user!.id, reply);
       if (!link) return;
       await prisma.link.update({ where: { id: link.id }, data: { revokedAt: new Date() } });
-      // NOTE (see plan self-review / spec §3.1): shredding this link's still-
-      // sealed/delivery_failed drops on revoke is spec 2's job (owner-cancel
-      // mechanism) and is intentionally NOT done here — spec 2's plan should
-      // add that call once its shred function exists. Revoke here only makes
-      // the link stop being servable; it does not touch existing drops.
+      // Spec §3.1/§7: revoke immediately shreds any of this link's drops that
+      // are still sealed/delivery_failed — same distinction, and the same
+      // scrubDropContent/abandonDrop pair, as owner-cancel's per-drop handling
+      // (downloads.ts). Iterated the same way DELETE /:slug's owned-link
+      // branch already iterates link.drops above, for consistency with this
+      // file's own style.
+      for (const drop of link.drops) {
+        if (drop.fileUploadStatus !== "complete") {
+          // Nothing sealed yet — same outcome as the sender abandoning their own upload.
+          await abandonDrop(drop.id, link.id);
+          continue;
+        }
+        const result = await scrubDropContent(drop.id);
+        if (result) {
+          await deleteObject(result.s3Key);
+          const updated = await prisma.drop.findUnique({ where: { id: drop.id } });
+          if (updated) {
+            const event: DropEvent = { type: "drop-updated", drop: toDropSummary(updated, link) };
+            emitDropEvent(link.id, event);
+            if (link.ownerId) {
+              emitOwnerDropEvent(link.ownerId, event);
+            }
+          }
+        }
+      }
       return reply.send({ revoked: true });
     }
   );

@@ -1,8 +1,12 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import type { CreateLinkResponse } from "@e2ee-drop/shared";
+import { useAuth } from "@/hooks/useAuth";
+import { accountPublicKey, useCodewords } from "@/hooks/useCodewords";
 import i18n from "@/i18n";
 import newLinkEn from "@/locales/en/newLink.json";
 import newLinkNb from "@/locales/nb/newLink.json";
@@ -23,8 +27,20 @@ export function NewLinkPage() {
   const [visibility, setVisibility] = useState<"public" | "contacts-only">("public");
   const [ownerNote, setOwnerNote] = useState("");
   const [retentionDays, setRetentionDays] = useState<number | "">(DEFAULT_RETENTION_DAYS_PLACEHOLDER);
-  const [createdSlug, setCreatedSlug] = useState<string | null>(null);
+  const [created, setCreated] = useState<CreateLinkResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { user } = useAuth();
+  // Review finding F1: POST /api/links/custom always creates a link whose
+  // recipient IS this account (recipientPublicKey = owner.publicKey,
+  // server-side) — it never creates a sender-initiated request link — so the
+  // phrase the sender will see is derived from this account's own public
+  // key. Derived here from the key pair unwrapped at login (accountPublicKey),
+  // never from the response's `codewords` field nor the server-reported
+  // user.publicKey. Without an unwrapped key pair in this tab (a restored
+  // session) there is nothing trustworthy to derive from, so a re-login hint
+  // is shown instead.
+  const ownPublicKey = accountPublicKey(user);
+  const codewords = useCodewords(ownPublicKey, created?.linkId, created?.codewordLocale);
 
   const submit = async () => {
     setError(null);
@@ -43,8 +59,8 @@ export function NewLinkPage() {
       setError(t("errors.createFailed"));
       return;
     }
-    const body = await res.json();
-    setCreatedSlug(body.slug);
+    const body = (await res.json()) as CreateLinkResponse;
+    setCreated(body);
   };
 
   return (
@@ -54,10 +70,26 @@ export function NewLinkPage() {
       </CardHeader>
       <CardContent className="space-y-4">
         {error && <p role="alert">{error}</p>}
-        {createdSlug && (
+        {created && (
           <p>
-            {t("success")} <code>{createdSlug}</code>
+            {t("success")} <code>{created.slug}</code>
           </p>
+        )}
+        {created && !ownPublicKey && (
+          <p className="text-sm text-muted-foreground" data-testid="codewords-relogin">
+            {t("codewordsReloginRequired")}{" "}
+            <Link to="/login" state={{ returnTo: "/" }} className="underline">
+              {t("reloginLink")}
+            </Link>
+          </p>
+        )}
+        {created && codewords && (
+          <div>
+            <p className="text-sm text-muted-foreground">{t("codewordsLabel")}</p>
+            <p className="font-mono text-lg" data-testid="codewords">
+              {codewords.join(" · ")}
+            </p>
+          </div>
         )}
         <div>
           <label htmlFor="slug">{t("slugLabel")}</label>

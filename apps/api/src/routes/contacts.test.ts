@@ -11,6 +11,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { buildServer } from "../server";
 import { prisma } from "@e2ee-drop/db";
+import { fakePublicKey } from "../test/fakeKeys";
 
 async function registerAndGetCookie(server: ReturnType<typeof buildServer>, username: string) {
   const response = await server.inject({
@@ -24,7 +25,7 @@ async function registerAndGetCookie(server: ReturnType<typeof buildServer>, user
       passwordSalt: "s",
       passwordWrappedPrivateKey: "w",
       recoveryWrappedPrivateKey: "r",
-      publicKey: `${username}-pubkey`,
+      publicKey: fakePublicKey(username),
     },
   });
   const cookie = response.cookies.find((c: { name: string }) => c.name === "e2ee_drop_session")!;
@@ -465,5 +466,49 @@ describe("contact routes", () => {
     });
     expect(retry.statusCode).toBe(400);
     expect(retry.json()).toEqual({ error: "A contact relationship already exists" });
+  });
+
+  it("an /accept racing a /block on the same row can't un-block it — whichever CAS wins, wins cleanly", async () => {
+    // Regression test for the CAS fix in acceptContactRequest/blockContact
+    // (lib/contacts.ts): both used to do a plain findUnique-then-update, so a
+    // caller who read the row while it was still "pending" could blindly
+    // overwrite whatever a concurrent call had just written. The critical
+    // property under test here is specifically that if /block's CAS wins the
+    // race, a /accept that read stale "pending" data can never un-block the
+    // row (accept's write is now narrowed to `status: "pending"` in its own
+    // where clause, so a miss there just 404s instead of clobbering).
+    const server = buildServer();
+    const alice = await registerAndGetCookie(server, "alice-cas-race");
+    const bob = await registerAndGetCookie(server, "bob-cas-race");
+    const req = await server.inject({
+      method: "POST",
+      url: "/api/contacts",
+      cookies: alice.cookies,
+      payload: { username: "bob-cas-race" },
+    });
+    const contactId = req.json().id;
+
+    // Alice (sender) races to block the row at the same moment bob (the
+    // recipient) races to accept it.
+    const [acceptRes, blockRes] = await Promise.all([
+      server.inject({ method: "POST", url: `/api/contacts/${contactId}/accept`, cookies: bob.cookies }),
+      server.inject({ method: "POST", url: `/api/contacts/${contactId}/block`, cookies: alice.cookies }),
+    ]);
+
+    // block always wins the FINAL state here: blockContact's CAS has no
+    // pending-status requirement (blocking a pending OR an accepted row is
+    // equally valid), so its write can never be the one that misses — even
+    // if accept happened to run first and briefly flip the row to
+    // "accepted" (200), block's own CAS (membership + "not blocked by
+    // someone else") still matches and overwrites it to "blocked" right
+    // after. What must never happen is the reverse: accept clobbering a
+    // block that already landed. acceptContactRequest's CAS requires
+    // `status: "pending"` in its own where clause, so once block wins,
+    // accept's write always misses (404) instead of overwriting.
+    expect(blockRes.statusCode).toBe(200);
+    expect([200, 404]).toContain(acceptRes.statusCode);
+    const row = await prisma.contact.findUniqueOrThrow({ where: { id: contactId } });
+    expect(row.status).toBe("blocked");
+    expect(row.blockedByUserId).toBe(alice.userId);
   });
 });

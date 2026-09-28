@@ -1,13 +1,84 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render as rtlRender, screen, fireEvent, waitFor } from "@testing-library/react";
+import type { ReactElement } from "react";
+import { MemoryRouter } from "react-router-dom";
+import nacl from "tweetnacl";
+import { encodeBase64 } from "tweetnacl-util";
+import { CODEWORD_WORD_COUNT, deriveCodewords } from "@e2ee-drop/shared";
+
+const { authState } = vi.hoisted(() => ({
+  authState: { user: null as null | { publicKey: string; keyPair: unknown } },
+}));
+
+vi.mock("@/hooks/useAuth", () => ({
+  useAuth: () => ({ user: authState.user, loading: false }),
+}));
+
 import { NewLinkPage } from "./NewLinkPage";
+
+// NewLinkPage now renders a router <Link> (the re-login hint).
+function render(ui: ReactElement) {
+  return rtlRender(<MemoryRouter>{ui}</MemoryRouter>);
+}
+
+// Deliberately unrelated to any key: the page must never display this
+// server-supplied field (finding F1).
+const API_CODEWORDS = ["fox", "river", "lamp", "otter"];
 
 describe("NewLinkPage", () => {
   beforeEach(() => {
+    authState.user = null;
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ linkId: "l1", slug: "team-drop" }) })
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ linkId: "l1", slug: "team-drop", codewords: API_CODEWORDS, codewordLocale: "en" }),
+      })
     );
+  });
+
+  // Review finding F1: new owner-facing surface. /api/links/custom always
+  // makes a link whose recipient is this account, so its phrase is derived
+  // from the account's own locally unwrapped key pair — not the API's words.
+  it("shows the new link's verification words, derived locally from the account's own key pair", async () => {
+    const keyPair = nacl.box.keyPair();
+    // user.publicKey (server-reported) deliberately differs from the local
+    // key pair: the local key must win.
+    authState.user = { publicKey: encodeBase64(nacl.box.keyPair().publicKey), keyPair };
+    const expected = await deriveCodewords(encodeBase64(keyPair.publicKey), "l1", "en", CODEWORD_WORD_COUNT);
+    expect(expected).not.toEqual(API_CODEWORDS);
+
+    render(<NewLinkPage />);
+    fireEvent.change(screen.getByLabelText(/link name/i), { target: { value: "team-drop" } });
+    fireEvent.click(screen.getByText(/create link/i));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("codewords")).toHaveTextContent(expected.join(" · "));
+    });
+    expect(screen.getByTestId("codewords").textContent!.split(" · ")).toHaveLength(CODEWORD_WORD_COUNT);
+    expect(screen.queryByText(/fox · river/)).not.toBeInTheDocument();
+  });
+
+  // A restored session (reload, new tab) has no unwrapped key pair. The
+  // server-reported user.publicKey must NOT be used as a substitute: a DB
+  // attacker who rewrote it and the link's key together would otherwise get
+  // matching wrong words on both sides (finding F1). Show a re-login hint.
+  it("shows a re-login hint and NO phrase when this tab has no unlocked key pair", async () => {
+    const publicKey = encodeBase64(nacl.box.keyPair().publicKey);
+    authState.user = { publicKey, keyPair: null };
+    const fromServerKey = await deriveCodewords(publicKey, "l1", "en", CODEWORD_WORD_COUNT);
+
+    render(<NewLinkPage />);
+    fireEvent.change(screen.getByLabelText(/link name/i), { target: { value: "team-drop" } });
+    fireEvent.click(screen.getByText(/create link/i));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("codewords-relogin")).toBeInTheDocument();
+    });
+    expect(screen.getByRole("link", { name: /log in again/i })).toHaveAttribute("href", "/login");
+    expect(screen.queryByTestId("codewords")).not.toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(fromServerKey.join(" · ")))).not.toBeInTheDocument();
+    expect(screen.queryByText(/fox · river/)).not.toBeInTheDocument();
   });
 
   it("submits the form and shows the created link", async () => {

@@ -26,9 +26,11 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useLocalLinks } from "@/hooks/useLocalLinks";
+import { isLocalStorageWritable } from "@/lib/storageProbe";
 import { useFileEncryption, type DecryptedMetadata } from "@/hooks/useFileEncryption";
 import { downloadWithProgress } from "@/hooks/useStreamedDownload";
 import { useAuth } from "@/hooks/useAuth";
+import { useCodewords } from "@/hooks/useCodewords";
 import i18n from "@/i18n";
 import receiveEn from "@/locales/en/receive.json";
 import receiveNb from "@/locales/nb/receive.json";
@@ -134,9 +136,19 @@ function ReceivePageForLink() {
   // just what removes it from the list *within this session*, before the
   // next snapshot/SSE event would otherwise do the same.
   const [downloadedIds, setDownloadedIds] = useState<Set<string>>(new Set());
-  const [autoSave, setAutoSave] = useState(
-    () => window.localStorage.getItem(AUTO_SAVE_STORAGE_KEY) !== "false"
-  );
+  const [autoSave, setAutoSave] = useState(() => {
+    // Task 9 / F9 (step 2): not routed through useLocalLinks.ts, so it needs
+    // its own try/catch — same discipline as that hook's own storage
+    // reads/writes. A throw here (private browsing, blocked storage) would
+    // otherwise happen during render with no error boundary in place,
+    // blank-screening the whole page. Falls back to the same default as an
+    // absent key (auto-save on) when storage can't be read at all.
+    try {
+      return window.localStorage.getItem(AUTO_SAVE_STORAGE_KEY) !== "false";
+    } catch {
+      return true;
+    }
+  });
   // C1 (final review): a sender-initiated request link's real claimant is
   // never `link.ownerId` (that's always the initiator who created the
   // request link — see design spec §4.1/§4.2), even after they claim it with
@@ -146,6 +158,10 @@ function ReceivePageForLink() {
   // logic below falls back to the single-drop claimant view instead of
   // treating the 403 as "link not found" and permanently stranding the drop.
   const [ownedAccessDenied, setOwnedAccessDenied] = useState(false);
+  // Public half of the locally stored anonymous key for this slug, once
+  // unlocked (below) — the source of this browser's verification phrase in
+  // "anonymous" mode.
+  const [localPublicKey, setLocalPublicKey] = useState<string | null>(null);
 
   const stored = slug ? links[slug] : undefined;
   // A stored entry (PIN-protected or not — see useLocalLinks.ts's StoredLink)
@@ -175,7 +191,11 @@ function ReceivePageForLink() {
     if (!stored) return;
     if (!stored.pinProtected) {
       unlockLink(slug!)
-        .then((raw) => setKeyPair(nacl.box.keyPair.fromSecretKey(decodeBase64(raw))))
+        .then((raw) => {
+          const keyPair = nacl.box.keyPair.fromSecretKey(decodeBase64(raw));
+          setKeyPair(keyPair);
+          setLocalPublicKey(encodeBase64(keyPair.publicKey));
+        })
         .catch(() => {
           // I6 (final review): a corrupted/malformed local key (bad storage
           // format, tampering, etc.) must not crash the whole page over it —
@@ -206,7 +226,9 @@ function ReceivePageForLink() {
   const submitPin = async () => {
     try {
       const raw = await unlockLink(slug!, pinInput);
-      setKeyPair(nacl.box.keyPair.fromSecretKey(decodeBase64(raw)));
+      const keyPair = nacl.box.keyPair.fromSecretKey(decodeBase64(raw));
+      setKeyPair(keyPair);
+      setLocalPublicKey(encodeBase64(keyPair.publicKey));
       setPinPrompt(false);
       setPinError(false);
     } catch {
@@ -217,7 +239,7 @@ function ReceivePageForLink() {
   // Plain status fetch — this same GET also serves the sender's page, so it
   // has no side effect of its own. It runs regardless of mode: it's the only
   // source of the claim gate (recipientPublicKey === null) and of
-  // ownerNote/codewords, and every mode needs linkNotFound to come from
+  // ownerNote/linkId/codewordLocale, and every mode needs linkNotFound to come from
   // somewhere. Advancing deliveryStatus to receiver_opened is a separate,
   // dedicated action (a shared query param on this GET was spoofable — a
   // sender could pass ?role=receiver on their own request — so it was
@@ -304,7 +326,7 @@ function ReceivePageForLink() {
         }
         const data = (await res.json()) as LinkStatusResponse;
         if (cancelled) return;
-        // Keep ownerNote/codewords fresh from the same response the live
+        // Keep ownerNote (and the rest of the link) fresh from the same response the live
         // drop comes from, in addition to the one-off fetch above.
         setLink(data);
         // Fix 3 (docs/STATUS.md gap 3): a claimed sender-initiated link's
@@ -368,6 +390,39 @@ function ReceivePageForLink() {
       source.close();
     };
   }, [slug, mode]);
+
+  // Review finding F1: this page's verification phrase is derived locally
+  // from the private key THIS recipient actually holds — never from the
+  // status response's `codewords` field (server-derived from whatever key the
+  // DB holds, so a swapped key would produce matching words on both sides):
+  // - "anonymous": the public half of this browser's own stored key for this
+  //   slug (localPublicKey, set once it's unlocked above).
+  // - "owned" (both the owner's queue view and a request link's
+  //   account-claimant view, after GET /drops 403s): the public half of the
+  //   account key pair unwrapped at login (userKeyPair) — genuinely local
+  //   key material, not the server-reported user.publicKey. Both views only
+  //   render the phrase when !needsRelogin, i.e. exactly when userKeyPair is
+  //   present. In either "owned" case the account IS this link's recipient:
+  //   "owned" requires link.recipientPublicKey === user.publicKey, and the
+  //   queue view additionally requires GET /drops to have succeeded (true
+  //   ownerId only), so it is never a request link's initiator.
+  // If the server handed the sender a different key than the one held here,
+  // the sender's phrase (derived from that key) won't match this one.
+  const codewordPublicKey =
+    mode === "anonymous"
+      ? localPublicKey
+      : mode === "owned" && userKeyPair
+        ? encodeBase64(userKeyPair.publicKey)
+        : null;
+  const codewords = useCodewords(codewordPublicKey, link?.linkId, link?.codewordLocale);
+  const codewordsBlock = codewords && (
+    <div>
+      <p className="text-sm text-muted-foreground">{t("codewordsLabel")}</p>
+      <p className="font-mono text-lg" data-testid="codewords">
+        {codewords.join(" · ")}
+      </p>
+    </div>
+  );
 
   const handleDropDownloaded = useCallback((dropId: string) => {
     setDownloadedIds((prev) => new Set(prev).add(dropId));
@@ -436,6 +491,7 @@ function ReceivePageForLink() {
               </AlertDescription>
             </Alert>
           )}
+          {!needsRelogin && codewordsBlock}
           {!needsRelogin && queued.length === 0 && <p>{t("queueEmpty")}</p>}
           {!needsRelogin &&
             queued.map((drop) => (
@@ -495,12 +551,7 @@ function ReceivePageForLink() {
         )}
         {!needsRelogin && (
           <>
-            {link.codewords.length > 0 && (
-              <div>
-                <p className="text-sm text-muted-foreground">{t("codewordsLabel")}</p>
-                <p className="font-mono text-lg">{link.codewords.join(" · ")}</p>
-              </div>
-            )}
+            {codewordsBlock}
             {link.ownerNote && (
               <Alert>
                 <AlertDescription>
@@ -543,7 +594,17 @@ function ReceivePageForLink() {
                     autoSave={autoSave}
                     onAutoSaveChange={(value) => {
                       setAutoSave(value);
-                      window.localStorage.setItem(AUTO_SAVE_STORAGE_KEY, String(value));
+                      // Task 9 / F9 (step 2): same rationale as the useState
+                      // initializer above — this write isn't routed through
+                      // useLocalLinks.ts either, so it needs its own
+                      // try/catch. The toggle still works for this tab
+                      // (setAutoSave above already updated it); only the
+                      // cross-reload persistence is lost on failure.
+                      try {
+                        window.localStorage.setItem(AUTO_SAVE_STORAGE_KEY, String(value));
+                      } catch {
+                        // localStorage unavailable — the preference just won't survive a reload.
+                      }
                     }}
                     t={t}
                   />
@@ -578,6 +639,19 @@ function ClaimView({
 
   const claimAnonymously = async () => {
     setError(null);
+    // Task 9 / F9 (step 1, strategy a): the claim below is irreversible
+    // (there's no unclaim route) and its whole point is a private key that
+    // only survives via saveLink -> useLocalLinks' localStorage write.
+    // Awaiting saveLink can't itself surface a storage failure — its actual
+    // localStorage.setItem happens later, decoupled, inside useLocalLinks'
+    // own useEffect (wrapped in a try/catch with no re-throw) — so probe
+    // storage directly first and refuse to claim rather than leave the user
+    // with a permanently claimed link whose key exists only in this tab's
+    // memory.
+    if (!isLocalStorageWritable()) {
+      setError(t("errors.storageUnavailable"));
+      return;
+    }
     const keyPair = nacl.box.keyPair();
     const res = await fetch(`/api/links/${slug}/claim`, {
       method: "POST",

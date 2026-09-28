@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { buildServer } from "../server";
 import { prisma } from "@e2ee-drop/db";
 import { clearAllRateLimiters } from "../lib/rateLimit";
+import { fakePublicKey } from "../test/fakeKeys";
 
 vi.mock("../lib/mailer", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/mailer")>();
@@ -21,7 +22,7 @@ async function registerAndGetCookie(server: ReturnType<typeof buildServer>, emai
       passwordSalt: "s",
       passwordWrappedPrivateKey: "w",
       recoveryWrappedPrivateKey: "r",
-      publicKey: "k",
+      publicKey: fakePublicKey("k"),
     },
   });
   const cookie = response.cookies.find((c: { name: string }) => c.name === "e2ee_drop_session")!;
