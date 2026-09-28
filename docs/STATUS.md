@@ -116,10 +116,16 @@ From plan 3's final review:
 - `apps/web`: retention-days default pre-fill (`CreateLinkPage.tsx`, `NewLinkPage.tsx`, `RequestLinkPage.tsx`) is a hardcoded `1` matching `DROP_RETENTION_DAYS_DEFAULT`'s current value, disclosed in a comment as a stand-in since no API response exposes the real default before link creation. If that env var's default ever changes, these three hardcoded values need updating too, or a small backend endpoint should expose it.
 - `ReceivePage.tsx` (I8's fix): a sender's in-progress file selection is not preserved across the `/login` round-trip (would need e.g. IndexedDB caching of `File` objects — a materially larger change than the `returnTo` navigation fix that was in scope).
 
-## Remaining plans (not started)
+## Remaining plans
 
-`account-verification-2fa` and `verified-profile-contacts` have since been implemented and
-merged to `main` (concurrently with this fix session). Two plans remain:
-- `delivery-lifecycle-retention` — depends only on the (already-merged) e2ee-flow schema.
-- `dashboard-inbox-implementation` — explicitly requires the other three (now all merged)
-  first, so this is next in the dependency order.
+All four plans this section was tracking (`account-verification-2fa`,
+`verified-profile-contacts`, `delivery-lifecycle-retention`, and
+`dashboard-inbox-implementation`) have since been implemented and merged to
+`main`. None remain outstanding.
+
+A follow-up punch-list plan (`2026-09-27-review-fixes`, generated from a
+full-codebase review after all four merged) has since closed out every
+"important"/"moderate" finding from that review — see its own plan file
+(`docs/superpowers/plans/2026-09-27-review-fixes.md`) and its SDD workspace
+under `.superpowers/sdd/2026-09-27-review-fixes/` for the full task-by-task
+record, including the rulings made along the way.
