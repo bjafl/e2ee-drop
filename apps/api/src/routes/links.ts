@@ -26,6 +26,7 @@ import {
   toLinkSummary,
 } from "../lib/links";
 import { hasAcceptedContact, hasBlockRelationship } from "../lib/contacts";
+import { isValidPublicKeyBase64 } from "../lib/validation";
 import { deleteObject } from "../lib/storage";
 import { deleteLinkReleasingQuota, scrubDropContent } from "../lib/quota";
 import { resolveLocale, deriveCodewords } from "../lib/codewords";
@@ -57,6 +58,13 @@ export function registerLinkRoutes(server: FastifyInstance): void {
       const { recipientPublicKey, locale, ownerNote, retentionDays } = request.body;
       if (!recipientPublicKey) {
         return reply.status(400).send({ error: "Missing recipientPublicKey" });
+      }
+      // Caller-supplied (the anonymous CreateLinkPage flow generates this
+      // keypair client-side): a malformed value here would otherwise fail
+      // obscurely deep inside a client's crypto library later — see
+      // lib/validation.ts.
+      if (!isValidPublicKeyBase64(recipientPublicKey)) {
+        return reply.status(400).send({ error: "Invalid recipientPublicKey: must be 32 bytes, base64-encoded" });
       }
       // A one-time link's own expiry is fixed by LINK_EXPIRY_HOURS; resolve retentionDays
       // against that same window before the link is created (createOneTimeLink no longer
@@ -268,6 +276,14 @@ export function registerLinkRoutes(server: FastifyInstance): void {
     async (request, reply) => {
       const { recipientPublicKey } = request.body ?? {};
       if (!recipientPublicKey) return reply.status(400).send({ error: "Missing recipientPublicKey" });
+      // Rejecting a malformed key here (rather than letting it commit) matters
+      // more for this route than any other public-key acceptance point: a
+      // claimed request link has no unclaim path, so a griefer claiming it
+      // with e.g. "AAAA" would otherwise permanently brick it — see
+      // lib/validation.ts.
+      if (!isValidPublicKeyBase64(recipientPublicKey)) {
+        return reply.status(400).send({ error: "Invalid recipientPublicKey: must be 32 bytes, base64-encoded" });
+      }
 
       const link = await getLinkBySlug(request.params.slug);
       if (!link || (await isLinkInactive(link))) return reply.status(404).send({ error: "Link not found" });

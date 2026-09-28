@@ -17,6 +17,7 @@ import { buildServer } from "../server";
 import { ensureBucket, deleteObject } from "../lib/storage";
 import { env } from "../env";
 import { subscribeToLink, type DropEvent } from "../lib/dropEvents";
+import { fakePublicKey } from "../test/fakeKeys";
 
 const OVERHEAD = 16;
 const FILE_SIZE = 100;
@@ -41,7 +42,7 @@ async function createOwnedLink(slug: string) {
       passwordSalt: "s",
       passwordWrappedPrivateKey: "w",
       recoveryWrappedPrivateKey: "r",
-      publicKey: "pk",
+      publicKey: fakePublicKey("pk"),
       storageQuotaBytes: 10_000,
       // isLinkInactive (wired into upload-url/complete by this fix) treats an
       // unverified owner's links as inactive; these tests are about
@@ -49,12 +50,12 @@ async function createOwnedLink(slug: string) {
       emailVerified: true,
     },
   });
-  await prisma.link.create({ data: { ownerId: owner.id, slug, mode: "permanent", recipientPublicKey: "pk", retentionDays: 7 } });
+  await prisma.link.create({ data: { ownerId: owner.id, slug, mode: "permanent", recipientPublicKey: fakePublicKey("pk"), retentionDays: 7 } });
   return owner;
 }
 
 async function createAnonymousLink(server: Server): Promise<string> {
-  const res = await server.inject({ method: "POST", url: "/api/links", payload: { recipientPublicKey: "cmVjaXBpZW50" } });
+  const res = await server.inject({ method: "POST", url: "/api/links", payload: { recipientPublicKey: fakePublicKey("cmVjaXBpZW50") } });
   return res.json().slug as string;
 }
 
@@ -65,7 +66,7 @@ async function requestUpload(server: Server, slug: string) {
     method: "POST",
     url: `/api/links/${slug}/upload-url`,
     payload: {
-      senderPublicKey: "c2VuZGVy",
+      senderPublicKey: fakePublicKey("c2VuZGVy"),
       archiveNonce: "YXJjaGl2ZS1ub25jZQ==",
       encryptedMetadata: "ZW5jcnlwdGVkLW1ldGFkYXRh",
       metadataNonce: "bWV0YWRhdGEtbm9uY2U=",

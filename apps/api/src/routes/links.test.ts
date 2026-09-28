@@ -14,6 +14,7 @@ import { env } from "../env";
 import { chargedBytes } from "../lib/quota";
 import { subscribeToLink, type DropEvent } from "../lib/dropEvents";
 import { deriveCodewords } from "../lib/codewords";
+import { fakePublicKey } from "../test/fakeKeys";
 
 // The brief this suite was drafted from used a placeholder `x-test-user-id`
 // header to fake `request.user` in .inject() calls; that header doesn't exist
@@ -34,13 +35,13 @@ async function registerAndGetCookie(server: ReturnType<typeof buildServer>, user
       passwordSalt: "s",
       passwordWrappedPrivateKey: "w",
       recoveryWrappedPrivateKey: "r",
-      publicKey: `${username}-pubkey`,
+      publicKey: fakePublicKey(username),
     },
   });
   const cookie = response.cookies.find((c: { name: string }) => c.name === "e2ee_drop_session")!;
   return {
     userId: response.json().userId as string,
-    publicKey: `${username}-pubkey`,
+    publicKey: fakePublicKey(username),
     cookies: { e2ee_drop_session: cookie.value },
   };
 }
@@ -51,12 +52,12 @@ async function registerAndGetCookie(server: ReturnType<typeof buildServer>, user
 // full upload-url + complete round trip just to reach that state.
 async function createLinkWithDrop(slug: string, expiresAt: Date) {
   const link = await prisma.link.create({
-    data: { slug, mode: "one-time", recipientPublicKey: "x", retentionDays: 7, expiresAt },
+    data: { slug, mode: "one-time", recipientPublicKey: fakePublicKey("x"), retentionDays: 7, expiresAt },
   });
   const drop = await prisma.drop.create({
     data: {
       linkId: link.id,
-      senderPublicKey: "c2VuZGVy",
+      senderPublicKey: fakePublicKey("c2VuZGVy"),
       s3Key: `${link.id}/drop1`,
       archiveNonce: "YXJjaGl2ZQ==",
       contentMD5: "bWQ1",
@@ -77,7 +78,7 @@ async function createSentDrop(linkId: string) {
   return prisma.drop.create({
     data: {
       linkId,
-      senderPublicKey: "c2VuZGVy",
+      senderPublicKey: fakePublicKey("c2VuZGVy"),
       s3Key: `${linkId}/sent-drop`,
       archiveNonce: "bm9uY2U=",
       contentMD5: "bWQ1",
@@ -109,7 +110,7 @@ describe("link routes", () => {
     const createResponse = await server.inject({
       method: "POST",
       url: "/api/links",
-      payload: { recipientPublicKey: "cmVjaXBpZW50a2V5" },
+      payload: { recipientPublicKey: fakePublicKey("cmVjaXBpZW50a2V5") },
     });
     expect(createResponse.statusCode).toBe(200);
     const { slug } = createResponse.json();
@@ -118,7 +119,7 @@ describe("link routes", () => {
     const getResponse = await server.inject({ method: "GET", url: `/api/links/${slug}` });
     expect(getResponse.statusCode).toBe(200);
     const body = getResponse.json();
-    expect(body.recipientPublicKey).toBe("cmVjaXBpZW50a2V5");
+    expect(body.recipientPublicKey).toBe(fakePublicKey("cmVjaXBpZW50a2V5"));
     expect(body.isAnonymous).toBe(true);
     expect(body.drop).toBeNull();
   });
@@ -139,12 +140,24 @@ describe("link routes", () => {
     expect(response.statusCode).toBe(400);
   });
 
+  it("rejects a recipientPublicKey that doesn't base64-decode to 32 bytes, instead of failing obscurely later", async () => {
+    const server = buildServer();
+    // "AAAA" base64-decodes to 3 bytes, not 32.
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/links",
+      payload: { recipientPublicKey: "AAAA" },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(await prisma.link.count()).toBe(0);
+  });
+
   it("rejects retentionDays above the anonymous one-time link's own expiry", async () => {
     const server = buildServer();
     const res = await server.inject({
       method: "POST",
       url: "/api/links",
-      payload: { recipientPublicKey: "pk", retentionDays: 999 },
+      payload: { recipientPublicKey: fakePublicKey("pk"), retentionDays: 999 },
     });
     expect(res.statusCode).toBe(400);
   });
@@ -154,7 +167,7 @@ describe("link routes", () => {
     const create = await server.inject({
       method: "POST",
       url: "/api/links",
-      payload: { recipientPublicKey: "pk", ownerNote: "please send the invoice" },
+      payload: { recipientPublicKey: fakePublicKey("pk"), ownerNote: "please send the invoice" },
     });
     expect(create.statusCode).toBe(200);
     const { slug } = create.json();
@@ -167,7 +180,7 @@ describe("link routes", () => {
     const response = await server.inject({
       method: "POST",
       url: "/api/links",
-      payload: { recipientPublicKey: "pk", ownerNote: "a".repeat(2001) },
+      payload: { recipientPublicKey: fakePublicKey("pk"), ownerNote: "a".repeat(2001) },
     });
     expect(response.statusCode).toBe(400);
   });
@@ -177,7 +190,7 @@ describe("link routes", () => {
     const response = await server.inject({
       method: "POST",
       url: "/api/links",
-      payload: { recipientPublicKey: "pk", ownerNote: "a".repeat(2000) },
+      payload: { recipientPublicKey: fakePublicKey("pk"), ownerNote: "a".repeat(2000) },
     });
     expect(response.statusCode).toBe(200);
     const { slug } = response.json();
@@ -190,7 +203,7 @@ describe("link routes", () => {
     const createResponse = await server.inject({
       method: "POST",
       url: "/api/links",
-      payload: { recipientPublicKey: "cmVjaXBpZW50a2V5" },
+      payload: { recipientPublicKey: fakePublicKey("cmVjaXBpZW50a2V5") },
     });
     const { slug } = createResponse.json();
 
@@ -206,7 +219,7 @@ describe("link routes", () => {
     const createResponse = await server.inject({
       method: "POST",
       url: "/api/links",
-      payload: { recipientPublicKey: "cmVjaXBpZW50a2V5", locale: "nb" },
+      payload: { recipientPublicKey: fakePublicKey("cmVjaXBpZW50a2V5"), locale: "nb" },
     });
     const createBody = createResponse.json();
     expect(Array.isArray(createBody.codewords)).toBe(true);
@@ -227,7 +240,7 @@ describe("link routes", () => {
     const createResponse = await server.inject({
       method: "POST",
       url: "/api/links",
-      payload: { recipientPublicKey: "cmVjaXBpZW50a2V5", locale: "nb" },
+      payload: { recipientPublicKey: fakePublicKey("cmVjaXBpZW50a2V5"), locale: "nb" },
     });
     const createBody = createResponse.json();
     expect(createBody.codewordLocale).toBe("nb");
@@ -236,7 +249,7 @@ describe("link routes", () => {
     expect(body.linkId).toBe(createBody.linkId);
     expect(body.codewordLocale).toBe("nb");
     expect(body.codewords).toEqual(
-      await deriveCodewords("cmVjaXBpZW50a2V5", createBody.linkId, "nb", env.CODEWORD_WORD_COUNT)
+      await deriveCodewords(fakePublicKey("cmVjaXBpZW50a2V5"), createBody.linkId, "nb", env.CODEWORD_WORD_COUNT)
     );
   });
 
@@ -246,7 +259,7 @@ describe("link routes", () => {
     const createResponse = await server.inject({
       method: "POST",
       url: "/api/links",
-      payload: { recipientPublicKey: "cmVjaXBpZW50a2V5" },
+      payload: { recipientPublicKey: fakePublicKey("cmVjaXBpZW50a2V5") },
     });
     const body = createResponse.json();
 
@@ -307,7 +320,7 @@ describe("link routes", () => {
         passwordSalt: "s",
         passwordWrappedPrivateKey: "w",
         recoveryWrappedPrivateKey: "r",
-        publicKey: "cHVia2V5",
+        publicKey: fakePublicKey("cHVia2V5"),
       },
     });
     expect(register.statusCode).toBe(200);
@@ -329,7 +342,7 @@ describe("link routes", () => {
       return prisma.drop.create({
         data: {
           linkId,
-          senderPublicKey: "c2VuZGVy",
+          senderPublicKey: fakePublicKey("c2VuZGVy"),
           s3Key: `${linkId}/${key}`,
           archiveNonce: "bm9uY2U=",
           contentMD5: "bWQ1",
@@ -529,7 +542,7 @@ describe("link routes", () => {
         passwordSalt: "x",
         passwordWrappedPrivateKey: "x",
         recoveryWrappedPrivateKey: "x",
-        publicKey: "b3duZXJrZXk=",
+        publicKey: fakePublicKey("b3duZXJrZXk="),
         storageQuotaBytes: BigInt(1024 * 1024 * 1024), // 1GB
       },
     });
@@ -546,7 +559,7 @@ describe("link routes", () => {
     const anonCreate = await server.inject({
       method: "POST",
       url: "/api/links",
-      payload: { recipientPublicKey: "YW5vbg==" },
+      payload: { recipientPublicKey: fakePublicKey("YW5vbg==") },
     });
     const { slug: anonSlug } = anonCreate.json();
     const anonResponse = await server.inject({ method: "GET", url: `/api/links/${anonSlug}` });
@@ -625,7 +638,7 @@ describe("link routes", () => {
     const older = await prisma.drop.create({
       data: {
         linkId: link.id,
-        senderPublicKey: "a",
+        senderPublicKey: fakePublicKey("a"),
         s3Key: "k1",
         archiveNonce: "bg==",
         contentMD5: "m",
@@ -638,7 +651,7 @@ describe("link routes", () => {
     await prisma.drop.create({
       data: {
         linkId: link.id,
-        senderPublicKey: "b",
+        senderPublicKey: fakePublicKey("b"),
         s3Key: "k2",
         archiveNonce: "bg==",
         contentMD5: "m",
@@ -650,7 +663,7 @@ describe("link routes", () => {
     const gone = await prisma.drop.create({
       data: {
         linkId: link.id,
-        senderPublicKey: "c",
+        senderPublicKey: fakePublicKey("c"),
         s3Key: "k3",
         archiveNonce: "bg==",
         contentMD5: "m",
@@ -787,7 +800,7 @@ describe("link routes", () => {
     await server.inject({
       method: "POST",
       url: `/api/links/${slug}/claim`,
-      payload: { recipientPublicKey: "claimant-pubkey" },
+      payload: { recipientPublicKey: fakePublicKey("claimant-pubkey") },
     });
     const link = await prisma.link.findUniqueOrThrow({ where: { slug } });
     expect(link.visibility).toBe("public");
@@ -946,7 +959,7 @@ describe("link routes", () => {
       const drop = await prisma.drop.create({
         data: {
           linkId: link.id,
-          senderPublicKey: "c2VuZGVy",
+          senderPublicKey: fakePublicKey("c2VuZGVy"),
           s3Key: `${link.id}/secret-drop`,
           archiveNonce: "bm9uY2U=",
           contentMD5: "bWQ1",
@@ -1019,7 +1032,7 @@ describe("link routes", () => {
       const drop = await prisma.drop.create({
         data: {
           linkId: link.id,
-          senderPublicKey: "c2VuZGVy",
+          senderPublicKey: fakePublicKey("c2VuZGVy"),
           s3Key: `${link.id}/secret-drop`,
           archiveNonce: "bm9uY2U=",
           contentMD5: "bWQ1",
@@ -1078,7 +1091,7 @@ describe("link routes", () => {
         data: {
           slug: "mark-opened-anon",
           mode: "one-time",
-          recipientPublicKey: "x",
+          recipientPublicKey: fakePublicKey("x"),
           retentionDays: 7,
           expiresAt: new Date(Date.now() + 60_000),
         },
@@ -1101,7 +1114,7 @@ describe("link routes", () => {
         data: {
           slug: "no-side-effect-get",
           mode: "one-time",
-          recipientPublicKey: "x",
+          recipientPublicKey: fakePublicKey("x"),
           retentionDays: 7,
           expiresAt: new Date(Date.now() + 60_000),
         },
@@ -1166,7 +1179,7 @@ describe("link routes", () => {
       await server.inject({
         method: "POST",
         url: `/api/links/${slug}/claim`,
-        payload: { recipientPublicKey: "claimant-pubkey" },
+        payload: { recipientPublicKey: fakePublicKey("claimant-pubkey") },
       });
       const link = await prisma.link.findUniqueOrThrow({ where: { slug } });
       await createSentDrop(link.id);
@@ -1192,7 +1205,7 @@ describe("link routes", () => {
       await server.inject({
         method: "POST",
         url: `/api/links/${slug}/claim`,
-        payload: { recipientPublicKey: "claimant-pubkey" },
+        payload: { recipientPublicKey: fakePublicKey("claimant-pubkey") },
       });
       const link = await prisma.link.findUniqueOrThrow({ where: { slug } });
       await createSentDrop(link.id);
@@ -1235,13 +1248,13 @@ describe("link routes", () => {
       await server.inject({
         method: "POST",
         url: `/api/links/${slug}/claim`,
-        payload: { recipientPublicKey: "claimant-pubkey" },
+        payload: { recipientPublicKey: fakePublicKey("claimant-pubkey") },
       });
       const link = await prisma.link.findUniqueOrThrow({ where: { slug } });
 
       const dropDefaults = {
         linkId: link.id,
-        senderPublicKey: "c2VuZGVy",
+        senderPublicKey: fakePublicKey("c2VuZGVy"),
         archiveNonce: "bm9uY2U=",
         contentMD5: "bWQ1",
         encryptedMetadata: "ZW5jcnlwdGVkLW1ldGFkYXRh",
@@ -1476,11 +1489,43 @@ describe("link routes", () => {
       const res = await server.inject({
         method: "POST",
         url: `/api/links/${slug}/claim`,
-        payload: { recipientPublicKey: "recipient-pk" },
+        payload: { recipientPublicKey: fakePublicKey("recipient-pk") },
       });
       expect(res.statusCode).toBe(200);
       const status = await server.inject({ method: "GET", url: `/api/links/${slug}` });
-      expect(status.json().recipientPublicKey).toBe("recipient-pk");
+      expect(status.json().recipientPublicKey).toBe(fakePublicKey("recipient-pk"));
+    });
+
+    it("rejects a griefer claiming a request link with a malformed recipientPublicKey, leaving it unclaimed", async () => {
+      const server = buildServer();
+      const owner = await registerAndGetCookie(server, "claimowner1b");
+      await prisma.user.update({ where: { username: "claimowner1b" }, data: { emailVerified: true } });
+      const requestRes = await server.inject({
+        method: "POST",
+        url: "/api/links/request",
+        payload: {},
+        cookies: owner.cookies,
+      });
+      const { slug } = requestRes.json();
+
+      // "AAAA" base64-decodes to 3 bytes, not 32 — without validation this
+      // would permanently brick the link, since a request link has no
+      // unclaim path.
+      const res = await server.inject({
+        method: "POST",
+        url: `/api/links/${slug}/claim`,
+        payload: { recipientPublicKey: "AAAA" },
+      });
+      expect(res.statusCode).toBe(400);
+
+      // The link must still be claimable afterward — proving the rejected
+      // attempt never won the CAS.
+      const claim = await server.inject({
+        method: "POST",
+        url: `/api/links/${slug}/claim`,
+        payload: { recipientPublicKey: fakePublicKey("real-claimant") },
+      });
+      expect(claim.statusCode).toBe(200);
     });
 
     it("rejects claiming an already-claimed link", async () => {
@@ -1498,16 +1543,16 @@ describe("link routes", () => {
       await server.inject({
         method: "POST",
         url: `/api/links/${slug}/claim`,
-        payload: { recipientPublicKey: "first" },
+        payload: { recipientPublicKey: fakePublicKey("first") },
       });
       const second = await server.inject({
         method: "POST",
         url: `/api/links/${slug}/claim`,
-        payload: { recipientPublicKey: "second" },
+        payload: { recipientPublicKey: fakePublicKey("second") },
       });
       expect(second.statusCode).toBe(409);
       const link = await prisma.link.findUniqueOrThrow({ where: { slug } });
-      expect(link.recipientPublicKey).toBe("first");
+      expect(link.recipientPublicKey).toBe(fakePublicKey("first"));
     });
 
     it("rejects claiming a link that already had a recipient key (recipient-initiated flow)", async () => {
@@ -1515,14 +1560,14 @@ describe("link routes", () => {
       const createRes = await server.inject({
         method: "POST",
         url: "/api/links",
-        payload: { recipientPublicKey: "already-set" },
+        payload: { recipientPublicKey: fakePublicKey("already-set") },
       });
       const { slug } = createRes.json();
 
       const res = await server.inject({
         method: "POST",
         url: `/api/links/${slug}/claim`,
-        payload: { recipientPublicKey: "x" },
+        payload: { recipientPublicKey: fakePublicKey("x") },
       });
       expect(res.statusCode).toBe(409);
     });
@@ -1547,7 +1592,7 @@ describe("link routes", () => {
       const res = await server.inject({
         method: "POST",
         url: "/api/links/does-not-exist/claim",
-        payload: { recipientPublicKey: "x" },
+        payload: { recipientPublicKey: fakePublicKey("x") },
       });
       expect(res.statusCode).toBe(404);
     });
@@ -1573,7 +1618,7 @@ describe("link routes", () => {
       const res = await server.inject({
         method: "POST",
         url: `/api/links/${slug}/claim`,
-        payload: { recipientPublicKey: "x" },
+        payload: { recipientPublicKey: fakePublicKey("x") },
       });
       expect(res.statusCode).toBe(404);
       const link = await prisma.link.findUniqueOrThrow({ where: { slug } });
@@ -1594,14 +1639,14 @@ describe("link routes", () => {
       const url = `/api/links/${slug}/claim`;
 
       const [a, b] = await Promise.all([
-        server.inject({ method: "POST", url, payload: { recipientPublicKey: "racer-a" } }),
-        server.inject({ method: "POST", url, payload: { recipientPublicKey: "racer-b" } }),
+        server.inject({ method: "POST", url, payload: { recipientPublicKey: fakePublicKey("racer-a") } }),
+        server.inject({ method: "POST", url, payload: { recipientPublicKey: fakePublicKey("racer-b") } }),
       ]);
 
       const statusCodes = [a.statusCode, b.statusCode].sort();
       expect(statusCodes).toEqual([200, 409]);
       const link = await prisma.link.findUniqueOrThrow({ where: { slug } });
-      expect(["racer-a", "racer-b"]).toContain(link.recipientPublicKey);
+      expect([fakePublicKey("racer-a"), fakePublicKey("racer-b")]).toContain(link.recipientPublicKey);
     });
 
     // Finding I6: design spec §4.2 — /send/:slug detects a claim over the
@@ -1625,18 +1670,18 @@ describe("link routes", () => {
       const first = await server.inject({
         method: "POST",
         url: `/api/links/${slug}/claim`,
-        payload: { recipientPublicKey: "claimant-pubkey" },
+        payload: { recipientPublicKey: fakePublicKey("claimant-pubkey") },
       });
       const second = await server.inject({
         method: "POST",
         url: `/api/links/${slug}/claim`,
-        payload: { recipientPublicKey: "someone-elses-key" },
+        payload: { recipientPublicKey: fakePublicKey("someone-elses-key") },
       });
       unsubscribe();
 
       expect(first.statusCode).toBe(200);
       expect(second.statusCode).toBe(409);
-      expect(events).toEqual([{ type: "link-claimed", recipientPublicKey: "claimant-pubkey" }]);
+      expect(events).toEqual([{ type: "link-claimed", recipientPublicKey: fakePublicKey("claimant-pubkey") }]);
     });
   });
 
@@ -1657,7 +1702,7 @@ describe("link routes", () => {
       await server.inject({
         method: "POST",
         url: `/api/links/${slug}/claim`,
-        payload: { recipientPublicKey: "claimant-pubkey" },
+        payload: { recipientPublicKey: fakePublicKey("claimant-pubkey") },
       });
       const link = await prisma.link.findUniqueOrThrow({ where: { slug } });
       return { initiator, slug, link };
@@ -1752,7 +1797,7 @@ describe("link routes", () => {
 
     it("rejects an unowned (anonymous) link revoke with 403, never a silent success", async () => {
       const server = buildServer();
-      const anon = await server.inject({ method: "POST", url: "/api/links", payload: { recipientPublicKey: "anon-pk" } });
+      const anon = await server.inject({ method: "POST", url: "/api/links", payload: { recipientPublicKey: fakePublicKey("anon-pk") } });
       const slug = anon.json().slug as string;
       const { cookies } = await registerAndGetCookie(server, "someuser");
       const revoke = await server.inject({ method: "POST", url: `/api/links/${slug}/revoke`, cookies });
@@ -1777,7 +1822,7 @@ describe("link routes", () => {
       const drop = await prisma.drop.create({
         data: {
           linkId: link.id,
-          senderPublicKey: "c2VuZGVy",
+          senderPublicKey: fakePublicKey("c2VuZGVy"),
           s3Key: `${link.id}/revoke-shred-drop`,
           archiveNonce: "YXJjaGl2ZQ==",
           contentMD5: "bWQ1",
@@ -2179,7 +2224,7 @@ describe("link routes", () => {
         data: { ownerId: bob.userId, slug: "bobs-custom-link", mode: "permanent", recipientPublicKey: bob.publicKey, retentionDays: 7 },
       });
       await prisma.link.create({
-        data: { slug: "anon-link-not-mine", mode: "one-time", recipientPublicKey: "x", expiresAt: new Date(Date.now() + 3600_000), retentionDays: 1 },
+        data: { slug: "anon-link-not-mine", mode: "one-time", recipientPublicKey: fakePublicKey("x"), expiresAt: new Date(Date.now() + 3600_000), retentionDays: 1 },
       });
 
       const response = await server.inject({
@@ -2226,7 +2271,7 @@ describe("link routes", () => {
         data: { ownerId: dave.userId, slug: "daves-request-unclaimed", mode: "permanent", recipientPublicKey: null, retentionDays: 7 },
       });
       await prisma.link.create({
-        data: { ownerId: dave.userId, slug: "daves-request-claimed", mode: "permanent", recipientPublicKey: "claimant-pk", retentionDays: 7 },
+        data: { ownerId: dave.userId, slug: "daves-request-claimed", mode: "permanent", recipientPublicKey: fakePublicKey("claimant-pk"), retentionDays: 7 },
       });
 
       const response = await server.inject({ method: "GET", url: "/api/links", cookies: dave.cookies });

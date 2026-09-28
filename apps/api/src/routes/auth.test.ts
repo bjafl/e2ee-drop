@@ -6,6 +6,7 @@ import { encryptTotpSecret, generateTotpSecret } from "../lib/totp";
 import { TOTP, Secret } from "otpauth";
 import { loginRateLimiter } from "../lib/rateLimit";
 import { env } from "../env";
+import { fakePublicKey } from "../test/fakeKeys";
 
 // Registration sends a best-effort verification email (routes/auth.ts); mock
 // the mailer for the whole file so every register() call in every describe
@@ -55,7 +56,7 @@ describe("POST /api/auth/register", () => {
         passwordSalt: "c2FsdA==",
         passwordWrappedPrivateKey: "d3JhcHBlZA==",
         recoveryWrappedPrivateKey: "cmVjb3Zlcnk=",
-        publicKey: "cHVia2V5",
+        publicKey: fakePublicKey("cHVia2V5"),
       },
     });
 
@@ -84,7 +85,7 @@ describe("POST /api/auth/register", () => {
         passwordSalt: "s",
         passwordWrappedPrivateKey: "w",
         recoveryWrappedPrivateKey: "r",
-        publicKey: "k",
+        publicKey: fakePublicKey("k"),
       },
     });
 
@@ -106,7 +107,7 @@ describe("POST /api/auth/register", () => {
         passwordSalt: "s",
         passwordWrappedPrivateKey: "w",
         recoveryWrappedPrivateKey: "r",
-        publicKey: "k",
+        publicKey: fakePublicKey("k"),
       },
     });
 
@@ -127,7 +128,7 @@ describe("POST /api/auth/register", () => {
         passwordSalt: "s",
         passwordWrappedPrivateKey: "w",
         recoveryWrappedPrivateKey: "r",
-        publicKey: "k",
+        publicKey: fakePublicKey("k"),
       },
     });
 
@@ -150,7 +151,7 @@ describe("POST /api/auth/register", () => {
         passwordSalt: "s",
         passwordWrappedPrivateKey: "w",
         recoveryWrappedPrivateKey: "r",
-        publicKey: "k",
+        publicKey: fakePublicKey("k"),
       },
     });
 
@@ -167,7 +168,7 @@ describe("POST /api/auth/register", () => {
     const created = await server.inject({
       method: "POST",
       url: "/api/links",
-      payload: { recipientPublicKey: "YW5vbi1rZXk=" },
+      payload: { recipientPublicKey: fakePublicKey("YW5vbi1rZXk=") },
     });
     const anonSlug: string = created.json().slug;
     const anonLink = await prisma.link.findUniqueOrThrow({ where: { slug: anonSlug } });
@@ -183,7 +184,7 @@ describe("POST /api/auth/register", () => {
         passwordSalt: "s",
         passwordWrappedPrivateKey: "w",
         recoveryWrappedPrivateKey: "r",
-        publicKey: "k",
+        publicKey: fakePublicKey("k"),
       },
     });
 
@@ -209,16 +210,67 @@ describe("POST /api/auth/register", () => {
       passwordSalt: "s",
       passwordWrappedPrivateKey: "w",
       recoveryWrappedPrivateKey: "r",
-      publicKey: "k1",
+      publicKey: fakePublicKey("k1"),
     };
     await server.inject({ method: "POST", url: "/api/auth/register", payload });
     const second = await server.inject({
       method: "POST",
       url: "/api/auth/register",
-      payload: { ...payload, username: "bob2", publicKey: "k2" },
+      payload: { ...payload, username: "bob2", publicKey: fakePublicKey("k2") },
     });
 
     expect(second.statusCode).toBe(409);
+  });
+
+  it("normalizes email to lowercase/trimmed on write, so a mixed-case duplicate 409s", async () => {
+    const server = buildServer();
+    const payload = {
+      email: "  Dana@Example.com  ",
+      username: "dana",
+      name: "Dana",
+      authKey: "p",
+      passwordSalt: "s",
+      passwordWrappedPrivateKey: "w",
+      recoveryWrappedPrivateKey: "r",
+      publicKey: fakePublicKey("k1"),
+    };
+    const first = await server.inject({ method: "POST", url: "/api/auth/register", payload });
+    expect(first.statusCode).toBe(200);
+    const stored = await prisma.user.findUnique({ where: { username: "dana" } });
+    expect(stored?.email).toBe("dana@example.com");
+
+    // A second registration with a different case/whitespace variant of the
+    // SAME address must collide (409), not create a second account — proving
+    // normalization happens at write time, not just at lookup time.
+    const second = await server.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: { ...payload, email: "DANA@EXAMPLE.COM", username: "dana2", publicKey: fakePublicKey("k2") },
+    });
+    expect(second.statusCode).toBe(409);
+  });
+
+  it("rejects a publicKey that isn't 32 bytes of base64 with a clear 400", async () => {
+    const server = buildServer();
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: {
+        email: "grief@example.com",
+        username: "griefer",
+        name: "Griefer",
+        authKey: "p",
+        passwordSalt: "s",
+        passwordWrappedPrivateKey: "w",
+        recoveryWrappedPrivateKey: "r",
+        // The griefer case from the plan's review: "AAAA" base64-decodes to 3
+        // bytes, not 32.
+        publicKey: "AAAA",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(await prisma.user.findUnique({ where: { username: "griefer" } })).toBeNull();
   });
 
   it("returns 409 when the username is already registered (different email)", async () => {
@@ -231,13 +283,13 @@ describe("POST /api/auth/register", () => {
       passwordSalt: "s",
       passwordWrappedPrivateKey: "w",
       recoveryWrappedPrivateKey: "r",
-      publicKey: "k1",
+      publicKey: fakePublicKey("k1"),
     };
     await server.inject({ method: "POST", url: "/api/auth/register", payload });
     const second = await server.inject({
       method: "POST",
       url: "/api/auth/register",
-      payload: { ...payload, email: "carol2@example.com", publicKey: "k2" },
+      payload: { ...payload, email: "carol2@example.com", publicKey: fakePublicKey("k2") },
     });
 
     expect(second.statusCode).toBe(409);
@@ -265,7 +317,7 @@ describe("POST /api/auth/register", () => {
         passwordSalt: "s",
         passwordWrappedPrivateKey: "w",
         recoveryWrappedPrivateKey: "r",
-        publicKey: "k",
+        publicKey: fakePublicKey("k"),
       },
     });
 
@@ -287,7 +339,7 @@ describe("POST /api/auth/register", () => {
         passwordSalt: "s",
         passwordWrappedPrivateKey: "w",
         recoveryWrappedPrivateKey: "r",
-        publicKey: "k",
+        publicKey: fakePublicKey("k"),
       },
     });
 
@@ -309,7 +361,7 @@ describe("POST /api/auth/register", () => {
         passwordSalt: "s",
         passwordWrappedPrivateKey: "w",
         recoveryWrappedPrivateKey: "r",
-        publicKey: "k",
+        publicKey: fakePublicKey("k"),
       },
     });
 
@@ -337,7 +389,7 @@ describe("POST /api/auth/register", () => {
         passwordSalt: "s",
         passwordWrappedPrivateKey: "w",
         recoveryWrappedPrivateKey: "r",
-        publicKey: "k",
+        publicKey: fakePublicKey("k"),
       },
     });
 
@@ -370,7 +422,7 @@ describe("POST /api/auth/register — email verification", () => {
         passwordSalt: "s",
         passwordWrappedPrivateKey: "w",
         recoveryWrappedPrivateKey: "r",
-        publicKey: "k",
+        publicKey: fakePublicKey("k"),
       },
     });
 
@@ -414,7 +466,7 @@ describe("POST /api/auth/register — email verification", () => {
         passwordSalt: "s",
         passwordWrappedPrivateKey: "w",
         recoveryWrappedPrivateKey: "r",
-        publicKey: "k",
+        publicKey: fakePublicKey("k"),
       },
     });
     expect(response.statusCode).toBe(200);
@@ -455,7 +507,7 @@ describe("POST /api/auth/register — email verification", () => {
         passwordSalt: "s",
         passwordWrappedPrivateKey: "w",
         recoveryWrappedPrivateKey: "r",
-        publicKey: "k",
+        publicKey: fakePublicKey("k"),
       },
     });
     const elapsedMs = Date.now() - start;
@@ -497,7 +549,7 @@ describe("POST /api/auth/register rate limiting (registerRateLimiter: 10 per 15 
         passwordSalt: "c2FsdA==",
         passwordWrappedPrivateKey: "d3JhcHBlZA==",
         recoveryWrappedPrivateKey: "cmVjb3Zlcnk=",
-        publicKey: "cHVia2V5",
+        publicKey: fakePublicKey("cHVia2V5"),
       },
     });
 
@@ -535,7 +587,7 @@ describe("POST /api/auth/login, /api/auth/logout, GET /api/auth/me", () => {
         passwordSalt: "c2FsdA==",
         passwordWrappedPrivateKey: "d3JhcHBlZA==",
         recoveryWrappedPrivateKey: "cmVjb3Zlcnk=",
-        publicKey: "cHVia2V5",
+        publicKey: fakePublicKey("cHVia2V5"),
         ...overrides,
       },
     });
@@ -568,6 +620,19 @@ describe("POST /api/auth/login, /api/auth/logout, GET /api/auth/me", () => {
     });
 
     expect(response.statusCode).toBe(401);
+  });
+
+  it("logs in with a different case/whitespace variant of the registered email", async () => {
+    const server = buildServer();
+    await register(server);
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { email: "  Carol@Example.COM  ", authKey: "correct horse battery staple" },
+    });
+
+    expect(response.statusCode).toBe(200);
   });
 
   it("rejects an email over the 254-char maxLength on /api/auth/login with 400 (not 500) via JSON-schema body validation", async () => {
@@ -905,11 +970,33 @@ describe("POST /api/auth/prelogin", () => {
         passwordSalt: REAL_SALT,
         passwordWrappedPrivateKey: "w",
         recoveryWrappedPrivateKey: "r",
-        publicKey: "pk",
+        publicKey: fakePublicKey("pk"),
       },
     });
 
     const response = await prelogin(server, "gina@example.com");
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ passwordSalt: REAL_SALT });
+  });
+
+  it("returns the same real salt for a different case/whitespace variant of a registered email", async () => {
+    const server = buildServer();
+    await server.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: {
+        email: "gina2@example.com",
+        username: "gina2",
+        name: "Gina2",
+        authKey: "k",
+        passwordSalt: REAL_SALT,
+        passwordWrappedPrivateKey: "w",
+        recoveryWrappedPrivateKey: "r",
+        publicKey: fakePublicKey("pk2"),
+      },
+    });
+
+    const response = await prelogin(server, "  GINA2@Example.com  ");
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ passwordSalt: REAL_SALT });
   });

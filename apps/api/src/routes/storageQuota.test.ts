@@ -25,6 +25,7 @@ import { cascadeDeleteUserLinks } from "../lib/accountDeletion";
 import { env } from "../env";
 import { chargedBytes, senderReservationCap } from "../lib/quota";
 import { reservationSenderKey } from "../lib/senderKey";
+import { fakePublicKey } from "../test/fakeKeys";
 
 const OVERHEAD = 16;
 const FILE_SIZE = 100;
@@ -38,7 +39,7 @@ const metadata = (fileSize = FILE_SIZE) => ({
 // Body for POST /api/links/:slug/upload-url (RequestUploadUrlRequest, three-envelope
 // shape — see packages/shared/src/api.ts and uploads.test.ts's established pattern).
 const uploadPayload = (fileSize = FILE_SIZE) => ({
-  senderPublicKey: "c2VuZGVy",
+  senderPublicKey: fakePublicKey("c2VuZGVy"),
   archiveNonce: "YXJjaGl2ZS1ub25jZQ==",
   encryptedMetadata: "ZW5jcnlwdGVkLW1ldGFkYXRh",
   metadataNonce: "bWV0YWRhdGEtbm9uY2U=",
@@ -59,7 +60,7 @@ async function createOwner(quota: number, used = 0) {
       passwordSalt: "s",
       passwordWrappedPrivateKey: "w",
       recoveryWrappedPrivateKey: "r",
-      publicKey: "pk",
+      publicKey: fakePublicKey("pk"),
       storageQuotaBytes: quota,
       storageUsedBytes: used,
       // isLinkInactive (lib/links.ts, wired into upload-url/complete by this
@@ -77,7 +78,7 @@ async function createOwnedLink(ownerId: string, slug: string, mode: "permanent" 
       ownerId,
       slug,
       mode,
-      recipientPublicKey: "pk",
+      recipientPublicKey: fakePublicKey("pk"),
       retentionDays: 7,
       expiresAt: mode === "one-time" ? new Date(Date.now() + 60 * 60 * 1000) : null,
     },
@@ -193,7 +194,7 @@ describe("storage quota", () => {
       await prisma.drop.create({
         data: {
           linkId: link.id,
-          senderPublicKey: "s",
+          senderPublicKey: fakePublicKey("s"),
           s3Key: `${link.id}/stale`,
           archiveNonce: "bg==",
           contentMD5: "m",
@@ -259,7 +260,7 @@ describe("storage quota", () => {
           passwordSalt: "s",
           passwordWrappedPrivateKey: "w",
           recoveryWrappedPrivateKey: "r",
-          publicKey: "pk",
+          publicKey: fakePublicKey("pk"),
           storageQuotaBytes: big,
           storageUsedBytes: big - BigInt(CHARGE),
           emailVerified: true,
@@ -362,7 +363,7 @@ describe("storage quota", () => {
       const created = await server.inject({
         method: "POST",
         url: "/api/links",
-        payload: { recipientPublicKey: "cmVjaXBpZW50" },
+        payload: { recipientPublicKey: fakePublicKey("cmVjaXBpZW50") },
       });
       const slug = created.json().slug as string;
 

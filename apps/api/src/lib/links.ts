@@ -233,6 +233,24 @@ const DELIVERY_STATUS_RANK: Record<string, number> = {
   delivered: 4,
 };
 
+// Whether this drop ever had a message attached, resolved or not — distinct
+// from "is there still something to reveal right now" (see toDropSummary's
+// own, deliberately different, `hasMessage` field below). `messageEnvelopeStatus`
+// can reach a terminal "shredded" state (cleanup's scrub) when a message
+// existed but was scrubbed WITHOUT ever being delivered/revealed; at that
+// point `encryptedMessage` is already null, so checking only that field would
+// misclassify "had a message, now gone" as "never had one". Checking
+// `!== "sealed"` still correctly treats a genuinely message-less drop (whose
+// messageEnvelopeStatus stays at its schema default "sealed" forever) as
+// having no message, while treating "delivered" and "shredded" alike as "a
+// message existed and is now resolved one way or the other". Exported so
+// lib/inbox.ts's `hadMessage` can share this exact derivation instead of
+// deriving it a third way (it previously used `messageRevealedAt !== null`,
+// which disagreed with this for a shredded-but-never-revealed message).
+export function hasEverHadMessage(drop: Pick<Drop, "encryptedMessage" | "messageEnvelopeStatus">): boolean {
+  return drop.encryptedMessage !== null || drop.messageEnvelopeStatus !== "sealed";
+}
+
 // Re-derives Drop.deliveryStatus from both envelope statuses and writes it if — and only if — the
 // derived value is strictly ahead of the row's CURRENT value at write time. Always re-reads the
 // row itself rather than trusting a caller's snapshot: this is what makes it safe to call from two
@@ -250,16 +268,10 @@ export async function recomputeDeliveryStatus(dropId: string, linkId: string): P
     });
     if (!drop) return;
 
-    // `messageEnvelopeStatus` can also reach a terminal "shredded" state (spec 1's Task 6/7/8
-    // cleanup scrub, once merged) when a message existed but was scrubbed WITHOUT ever being
-    // delivered. Checking only `=== "delivered"` here would misclassify that case as "no message
-    // ever existed", letting deliveryStatus reach "delivered" from file-delivery alone even though
-    // the message was lost unretrieved — it must cap at "partial_delivery" instead (see the
-    // messageDone check below). Checking `!== "sealed"` still correctly treats a genuinely
-    // message-less drop (whose messageEnvelopeStatus stays at its schema default "sealed" forever)
-    // as having no message, while treating both "delivered" and "shredded" as "a message existed
-    // and is now resolved one way or the other".
-    const hasMessage = drop.encryptedMessage !== null || drop.messageEnvelopeStatus !== "sealed";
+    // See hasEverHadMessage above for the full reasoning (shredded-but-never-
+    // delivered must still count as "had a message", so deliveryStatus caps at
+    // "partial_delivery" rather than reaching "delivered" from file-delivery alone).
+    const hasMessage = hasEverHadMessage(drop);
     const messageDone = !hasMessage || drop.messageEnvelopeStatus === "delivered";
     const fileDone = drop.fileEnvelopeStatus === "delivered";
 

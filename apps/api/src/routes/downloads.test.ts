@@ -17,6 +17,7 @@ import { buildServer } from "../server";
 import { prisma } from "@e2ee-drop/db";
 import { chargedBytes } from "../lib/quota";
 import { subscribeToLink, subscribeToOwner, type DropEvent } from "../lib/dropEvents";
+import { fakePublicKey } from "../test/fakeKeys";
 
 // Creates an anonymous link with a single drop against the current schema
 // (mirrors the reveal-message suite's createLinkWithMessage below). Calling
@@ -30,7 +31,7 @@ async function createLinkWithDrop(
   const createRes = await server.inject({
     method: "POST",
     url: "/api/links",
-    payload: { recipientPublicKey: "cmVjaXBpZW50" },
+    payload: { recipientPublicKey: fakePublicKey("cmVjaXBpZW50") },
   });
   const { slug } = createRes.json();
 
@@ -38,7 +39,7 @@ async function createLinkWithDrop(
     method: "POST",
     url: `/api/links/${slug}/upload-url`,
     payload: {
-      senderPublicKey: "c2VuZGVy",
+      senderPublicKey: fakePublicKey("c2VuZGVy"),
       archiveNonce: "YXJjaGl2ZQ==",
       ...(message ?? {}),
       encryptedMetadata: "bWV0YWRhdGE=",
@@ -123,7 +124,7 @@ describe("download-url route", () => {
     const createRes = await server.inject({
       method: "POST",
       url: "/api/links",
-      payload: { recipientPublicKey: "cmVjaXBpZW50" },
+      payload: { recipientPublicKey: fakePublicKey("cmVjaXBpZW50") },
     });
     const { slug } = createRes.json();
 
@@ -146,7 +147,7 @@ describe("download-url route", () => {
       data: {
         slug: "expired-download-test",
         mode: "one-time",
-        recipientPublicKey: "x",
+        recipientPublicKey: fakePublicKey("x"),
         retentionDays: 7,
         expiresAt: new Date(Date.now() - 1000),
       },
@@ -154,7 +155,7 @@ describe("download-url route", () => {
     await prisma.drop.create({
       data: {
         linkId: link.id,
-        senderPublicKey: "c2VuZGVy",
+        senderPublicKey: fakePublicKey("c2VuZGVy"),
         s3Key: `${link.id}/drop1`,
         archiveNonce: "YXJjaGl2ZQ==",
         encryptedMetadata: "bWV0YWRhdGE=",
@@ -190,7 +191,7 @@ async function registerAndGetCookie(server: ReturnType<typeof buildServer>, user
       passwordSalt: "s",
       passwordWrappedPrivateKey: "w",
       recoveryWrappedPrivateKey: "r",
-      publicKey: `${username}-pubkey`,
+      publicKey: fakePublicKey(username),
     },
   });
   const cookie = response.cookies.find((c: { name: string }) => c.name === "e2ee_drop_session")!;
@@ -204,7 +205,7 @@ async function createQueuedDrop(linkId: string, key: string, fileUploadStatus: "
   return prisma.drop.create({
     data: {
       linkId,
-      senderPublicKey: "c2VuZGVy",
+      senderPublicKey: fakePublicKey("c2VuZGVy"),
       s3Key: `${linkId}/${key}`,
       archiveNonce: "YXJjaGl2ZQ==",
       contentMD5: "bWQ1",
@@ -511,7 +512,7 @@ describe("complete-download route", () => {
       data: {
         slug: "expired-complete-download-test",
         mode: "one-time",
-        recipientPublicKey: "x",
+        recipientPublicKey: fakePublicKey("x"),
         retentionDays: 7,
         expiresAt: new Date(Date.now() - 1000),
       },
@@ -519,7 +520,7 @@ describe("complete-download route", () => {
     const drop = await prisma.drop.create({
       data: {
         linkId: link.id,
-        senderPublicKey: "c2VuZGVy",
+        senderPublicKey: fakePublicKey("c2VuZGVy"),
         s3Key: `${link.id}/drop1`,
         archiveNonce: "YXJjaGl2ZQ==",
         encryptedMetadata: "bWV0YWRhdGE=",
@@ -750,7 +751,7 @@ describe("download-failed route", () => {
       data: {
         slug: "expired-download-failed-test",
         mode: "one-time",
-        recipientPublicKey: "x",
+        recipientPublicKey: fakePublicKey("x"),
         retentionDays: 7,
         expiresAt: new Date(Date.now() - 1000),
       },
@@ -899,7 +900,7 @@ describe("reveal-message route", () => {
     const createRes = await server.inject({
       method: "POST",
       url: "/api/links",
-      payload: { recipientPublicKey: "cmVjaXBpZW50" },
+      payload: { recipientPublicKey: fakePublicKey("cmVjaXBpZW50") },
     });
     const { slug } = createRes.json();
 
@@ -907,7 +908,7 @@ describe("reveal-message route", () => {
       method: "POST",
       url: `/api/links/${slug}/upload-url`,
       payload: {
-        senderPublicKey: "c2VuZGVy",
+        senderPublicKey: fakePublicKey("c2VuZGVy"),
         archiveNonce: "YXJjaGl2ZQ==",
         ...(message ?? {}),
         encryptedMetadata: "bWV0YWRhdGE=",
@@ -1023,7 +1024,7 @@ describe("reveal-message route", () => {
       data: {
         slug: "expired-reveal-test",
         mode: "one-time",
-        recipientPublicKey: "x",
+        recipientPublicKey: fakePublicKey("x"),
         retentionDays: 7,
         expiresAt: new Date(Date.now() - 1000),
       },
@@ -1031,7 +1032,7 @@ describe("reveal-message route", () => {
     const drop = await prisma.drop.create({
       data: {
         linkId: link.id,
-        senderPublicKey: "c2VuZGVy",
+        senderPublicKey: fakePublicKey("c2VuZGVy"),
         s3Key: `${link.id}/drop1`,
         archiveNonce: "YXJjaGl2ZQ==",
         encryptedMessage: "c2VjcmV0",
@@ -1056,7 +1057,7 @@ describe("reveal-message route", () => {
     const createRes = await server.inject({
       method: "POST",
       url: "/api/links",
-      payload: { recipientPublicKey: "cmVjaXBpZW50" },
+      payload: { recipientPublicKey: fakePublicKey("cmVjaXBpZW50") },
     });
     const { slug } = createRes.json();
 
@@ -1065,7 +1066,7 @@ describe("reveal-message route", () => {
     const drop = await prisma.drop.create({
       data: {
         linkId: link.id,
-        senderPublicKey: "c2VuZGVy",
+        senderPublicKey: fakePublicKey("c2VuZGVy"),
         s3Key: `${link.id}/with-message`,
         archiveNonce: "YXJjaGl2ZQ==",
         contentMD5: "bWQ1",
@@ -1156,7 +1157,7 @@ describe("owned-link reveal-message route", () => {
     return prisma.drop.create({
       data: {
         linkId,
-        senderPublicKey: "c2VuZGVy",
+        senderPublicKey: fakePublicKey("c2VuZGVy"),
         s3Key: `${linkId}/with-message`,
         archiveNonce: "YXJjaGl2ZQ==",
         contentMD5: "bWQ1",
@@ -1245,7 +1246,7 @@ describe("contacts-only/blocked-relationship masking (finding F6) on receive-sid
     const messageDrop = await prisma.drop.create({
       data: {
         linkId: link.id,
-        senderPublicKey: "c2VuZGVy",
+        senderPublicKey: fakePublicKey("c2VuZGVy"),
         s3Key: `${link.id}/with-message`,
         archiveNonce: "YXJjaGl2ZQ==",
         contentMD5: "bWQ1",
@@ -1423,7 +1424,7 @@ describe("owner-cancel route", () => {
     const drop = await prisma.drop.create({
       data: {
         linkId: link.id,
-        senderPublicKey: "c2VuZGVy",
+        senderPublicKey: fakePublicKey("c2VuZGVy"),
         s3Key: `${link.id}/delivered`,
         archiveNonce: "YXJjaGl2ZQ==",
         contentMD5: "bWQ1",
@@ -1507,7 +1508,7 @@ describe("owner-cancel route", () => {
     const drop = await prisma.drop.create({
       data: {
         linkId: link.id,
-        senderPublicKey: "c2VuZGVy",
+        senderPublicKey: fakePublicKey("c2VuZGVy"),
         s3Key: `${link.id}/delivered6`,
         archiveNonce: "YXJjaGl2ZQ==",
         contentMD5: "bWQ1",
@@ -1558,7 +1559,7 @@ describe("sender-initiated link receive access (finding C1)", () => {
   async function createClaimedSenderInitiatedLink(
     server: ReturnType<typeof buildServer>,
     initiatorUsername: string,
-    claimantPublicKey = "claimant-pubkey"
+    claimantPublicKey = fakePublicKey("claimant-pubkey")
   ) {
     const initiator = await registerAndGetCookie(server, initiatorUsername);
     // isLinkInactive (wired into the claim handler by this fix) treats an
@@ -1587,7 +1588,7 @@ describe("sender-initiated link receive access (finding C1)", () => {
     return prisma.drop.create({
       data: {
         linkId,
-        senderPublicKey: "c2VuZGVy",
+        senderPublicKey: fakePublicKey("c2VuZGVy"),
         s3Key: `${linkId}/sender-initiated-drop`,
         archiveNonce: "YXJjaGl2ZQ==",
         contentMD5: "bWQ1",
@@ -1720,7 +1721,7 @@ describe("sender-initiated link receive access (finding C1)", () => {
         ownerId: owner.userId,
         slug: "normal-owned-link",
         mode: "permanent",
-        recipientPublicKey: `normalowner1-pubkey`,
+        recipientPublicKey: fakePublicKey("normalowner1"),
         retentionDays: 7,
       },
     });

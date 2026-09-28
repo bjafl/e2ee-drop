@@ -4,6 +4,7 @@ import { buildServer } from "../server";
 import { prisma } from "@e2ee-drop/db";
 import { TOTP, Secret } from "otpauth";
 import { decryptTotpSecret, encryptTotpSecret, generateTotpSecret } from "../lib/totp";
+import { fakePublicKey } from "../test/fakeKeys";
 
 async function registerAndGetCookie(server: ReturnType<typeof buildServer>) {
   const response = await server.inject({
@@ -17,7 +18,7 @@ async function registerAndGetCookie(server: ReturnType<typeof buildServer>) {
       passwordSalt: "s",
       passwordWrappedPrivateKey: "w",
       recoveryWrappedPrivateKey: "r",
-      publicKey: "k",
+      publicKey: fakePublicKey("k"),
     },
   });
   const cookie = response.cookies.find((c: { name: string }) => c.name === "e2ee_drop_session")!;
@@ -560,7 +561,7 @@ describe("2FA routes", () => {
           passwordSalt: "s",
           passwordWrappedPrivateKey: "w",
           recoveryWrappedPrivateKey: "r",
-          publicKey: "k",
+          publicKey: fakePublicKey("k"),
         },
       });
       const cookie = response.cookies.find((c: { name: string }) => c.name === "e2ee_drop_session")!;

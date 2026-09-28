@@ -27,6 +27,7 @@ vi.mock("../lib/storage", async (importOriginal) => {
 
 import { buildServer } from "../server";
 import { subscribeToLink, subscribeToOwner, type DropEvent } from "../lib/dropEvents";
+import { fakePublicKey } from "../test/fakeKeys";
 
 // The brief this suite was drafted from used a placeholder `x-test-user-id`
 // header to fake `request.user` in .inject() calls; that header doesn't exist
@@ -48,7 +49,7 @@ async function registerAndGetCookie(server: ReturnType<typeof buildServer>, user
       passwordSalt: "s",
       passwordWrappedPrivateKey: "w",
       recoveryWrappedPrivateKey: "r",
-      publicKey: `${username}-pubkey`,
+      publicKey: fakePublicKey(username),
     },
   });
   const cookie = response.cookies.find((c: { name: string }) => c.name === "e2ee_drop_session")!;
@@ -64,7 +65,7 @@ const validMetadata = {
 // see packages/shared/src/api.ts). A test overrides only the field(s) it cares about.
 function uploadPayload(overrides: Record<string, unknown> = {}) {
   return {
-    senderPublicKey: "c2VuZGVy",
+    senderPublicKey: fakePublicKey("c2VuZGVy"),
     archiveNonce: "YXJjaGl2ZS1ub25jZQ==",
     encryptedMetadata: "ZW5jcnlwdGVkLW1ldGFkYXRh",
     metadataNonce: "bWV0YWRhdGEtbm9uY2U=",
@@ -77,7 +78,7 @@ async function createLink(server: ReturnType<typeof buildServer>) {
   const res = await server.inject({
     method: "POST",
     url: "/api/links",
-    payload: { recipientPublicKey: "cmVjaXBpZW50" },
+    payload: { recipientPublicKey: fakePublicKey("cmVjaXBpZW50") },
   });
   return res.json().slug as string;
 }
@@ -121,6 +122,21 @@ describe("upload routes", () => {
       method: "POST",
       url: `/api/links/${slug}/upload-url`,
       payload: uploadPayload({ senderPublicKey: 12345 }),
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(await prisma.drop.count({ where: { link: { slug } } })).toBe(0);
+  });
+
+  it("rejects a senderPublicKey that doesn't base64-decode to 32 bytes, instead of failing obscurely later", async () => {
+    const server = buildServer();
+    const slug = await createLink(server);
+
+    // "AAAA" base64-decodes to 3 bytes, not 32.
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/links/${slug}/upload-url`,
+      payload: uploadPayload({ senderPublicKey: "AAAA" }),
     });
 
     expect(response.statusCode).toBe(400);
@@ -188,7 +204,7 @@ describe("upload routes", () => {
     const second = await server.inject({
       method: "POST",
       url: `/api/links/${slug}/upload-url`,
-      payload: uploadPayload({ senderPublicKey: "c2VuZGVyMg==" }),
+      payload: uploadPayload({ senderPublicKey: fakePublicKey("c2VuZGVyMg==") }),
     });
     expect(second.statusCode).toBe(409);
 
@@ -199,7 +215,7 @@ describe("upload routes", () => {
   it("allows a second upload-url request on a permanent link (queueing)", async () => {
     const server = buildServer();
     const link = await prisma.link.create({
-      data: { slug: "permanent-queue-test", mode: "permanent", recipientPublicKey: "cmVjaXBpZW50", retentionDays: 7 },
+      data: { slug: "permanent-queue-test", mode: "permanent", recipientPublicKey: fakePublicKey("cmVjaXBpZW50"), retentionDays: 7 },
     });
 
     const first = await server.inject({
@@ -212,7 +228,7 @@ describe("upload routes", () => {
     const second = await server.inject({
       method: "POST",
       url: `/api/links/${link.slug}/upload-url`,
-      payload: uploadPayload({ senderPublicKey: "c2VuZGVyMg==" }),
+      payload: uploadPayload({ senderPublicKey: fakePublicKey("c2VuZGVyMg==") }),
     });
     expect(second.statusCode).toBe(200);
 
@@ -234,7 +250,7 @@ describe("upload routes", () => {
     const second = await server.inject({
       method: "POST",
       url: `/api/links/${slug}/upload-url`,
-      payload: uploadPayload({ senderPublicKey: "c2VuZGVyMg==" }),
+      payload: uploadPayload({ senderPublicKey: fakePublicKey("c2VuZGVyMg==") }),
     });
     expect(second.statusCode).toBe(409);
   });
@@ -292,7 +308,7 @@ describe("upload routes", () => {
 
     try {
       const link = await prisma.link.create({
-        data: { slug: "permanent-burst-test", mode: "permanent", recipientPublicKey: "cmVjaXBpZW50", retentionDays: 7 },
+        data: { slug: "permanent-burst-test", mode: "permanent", recipientPublicKey: fakePublicKey("cmVjaXBpZW50"), retentionDays: 7 },
       });
 
       const fire = () =>
@@ -359,7 +375,7 @@ describe("upload routes", () => {
       data: {
         slug: "expired-upload-test",
         mode: "one-time",
-        recipientPublicKey: "x",
+        recipientPublicKey: fakePublicKey("x"),
         retentionDays: 7,
         expiresAt: new Date(Date.now() - 1000),
       },
@@ -843,7 +859,7 @@ describe("upload routes", () => {
     const link = await prisma.link.create({
       data: {
         ownerId: owner.userId, slug: "owner-channel-test", mode: "permanent",
-        recipientPublicKey: "ownerchannelowner-pubkey", retentionDays: 7,
+        recipientPublicKey: fakePublicKey("ownerchannelowner-pubkey"), retentionDays: 7,
       },
     });
 
@@ -886,7 +902,7 @@ describe("upload routes", () => {
     const ownedLink = await prisma.link.create({
       data: {
         ownerId: owner.userId, slug: "owner-scope-owned-test", mode: "permanent",
-        recipientPublicKey: "ownerscopeowner-pubkey", retentionDays: 7,
+        recipientPublicKey: fakePublicKey("ownerscopeowner-pubkey"), retentionDays: 7,
       },
     });
     const anonymousSlug = await createLink(server);
@@ -910,7 +926,7 @@ describe("upload routes", () => {
     const ownedUpload = await server.inject({
       method: "POST",
       url: `/api/links/${ownedLink.slug}/upload-url`,
-      payload: uploadPayload({ senderPublicKey: "c2VuZGVyMg==" }),
+      payload: uploadPayload({ senderPublicKey: fakePublicKey("c2VuZGVyMg==") }),
     });
     expect(ownedUpload.statusCode).toBe(200);
     const ownedDropId = ownedUpload.json().dropId;
@@ -931,7 +947,7 @@ describe("upload routes", () => {
     const link = await prisma.link.create({
       data: {
         ownerId: owner.userId, slug: "contacts-only-test", mode: "permanent",
-        visibility: "contacts-only", recipientPublicKey: "coowner-pubkey", retentionDays: 7,
+        visibility: "contacts-only", recipientPublicKey: fakePublicKey("coowner-pubkey"), retentionDays: 7,
       },
     });
 
@@ -955,7 +971,7 @@ describe("upload routes", () => {
     const link = await prisma.link.create({
       data: {
         ownerId: owner.userId, slug: "contacts-only-test2", mode: "permanent",
-        visibility: "contacts-only", recipientPublicKey: "coowner2-pubkey", retentionDays: 7,
+        visibility: "contacts-only", recipientPublicKey: fakePublicKey("coowner2-pubkey"), retentionDays: 7,
       },
     });
 
@@ -980,7 +996,7 @@ describe("upload routes", () => {
     const link = await prisma.link.create({
       data: {
         ownerId: owner.userId, slug: "contacts-only-pending-test", mode: "permanent",
-        visibility: "contacts-only", recipientPublicKey: "coowner2b-pubkey", retentionDays: 7,
+        visibility: "contacts-only", recipientPublicKey: fakePublicKey("coowner2b-pubkey"), retentionDays: 7,
       },
     });
 
@@ -1003,7 +1019,7 @@ describe("upload routes", () => {
     const link = await prisma.link.create({
       data: {
         ownerId: owner.userId, slug: "contacts-only-test3", mode: "permanent",
-        visibility: "contacts-only", recipientPublicKey: "coowner3-pubkey", retentionDays: 7,
+        visibility: "contacts-only", recipientPublicKey: fakePublicKey("coowner3-pubkey"), retentionDays: 7,
       },
     });
 
@@ -1012,8 +1028,8 @@ describe("upload routes", () => {
       url: `/api/links/${link.slug}/upload-url`,
       // senderPublicKey must match the authenticated account's own public key
       // (assertSenderIdentity, lib/senderIdentity.ts) — see registerAndGetCookie's
-      // `${username}-pubkey` convention.
-      payload: uploadPayload({ senderPublicKey: "friend-pubkey" }),
+      // fakePublicKey(username) convention.
+      payload: uploadPayload({ senderPublicKey: fakePublicKey("friend") }),
       cookies: friend.cookies,
     });
 
@@ -1029,14 +1045,14 @@ describe("upload routes", () => {
     const link = await prisma.link.create({
       data: {
         ownerId: owner.userId, slug: "hijack-test", mode: "permanent",
-        visibility: "contacts-only", recipientPublicKey: "hijackvictim-pubkey", retentionDays: 7,
+        visibility: "contacts-only", recipientPublicKey: fakePublicKey("hijackvictim-pubkey"), retentionDays: 7,
       },
     });
 
     const upload = await server.inject({
       method: "POST",
       url: `/api/links/${link.slug}/upload-url`,
-      payload: uploadPayload({ senderPublicKey: "hijackfriend-pubkey" }),
+      payload: uploadPayload({ senderPublicKey: fakePublicKey("hijackfriend") }),
       cookies: friend.cookies,
     });
     expect(upload.statusCode).toBe(200);
@@ -1077,14 +1093,14 @@ describe("upload routes", () => {
     const link = await prisma.link.create({
       data: {
         ownerId: owner.userId, slug: "block-test", mode: "permanent",
-        recipientPublicKey: "blockowner-pubkey", retentionDays: 7,
+        recipientPublicKey: fakePublicKey("blockowner-pubkey"), retentionDays: 7,
       },
     });
 
     const response = await server.inject({
       method: "POST",
       url: `/api/links/${link.slug}/upload-url`,
-      payload: uploadPayload({ senderPublicKey: "blockblocker-pubkey" }),
+      payload: uploadPayload({ senderPublicKey: fakePublicKey("blockblocker-pubkey") }),
       cookies: blocker.cookies,
     });
 
@@ -1109,7 +1125,7 @@ describe("upload routes", () => {
     const link = await prisma.link.create({
       data: {
         ownerId: owner.userId, slug: "anon-unaffected-test", mode: "permanent",
-        recipientPublicKey: "anonblockowner-pubkey", retentionDays: 7,
+        recipientPublicKey: fakePublicKey("anonblockowner-pubkey"), retentionDays: 7,
       },
     });
 
@@ -1130,7 +1146,7 @@ describe("upload routes", () => {
     const owner = await registerAndGetCookie(server, "coowner4");
     await prisma.user.update({ where: { username: "coowner4" }, data: { emailVerified: true } });
     const link = await prisma.link.create({
-      data: { ownerId: owner.userId, slug: "public-permanent-test", mode: "permanent", recipientPublicKey: "coowner4-pubkey", retentionDays: 7 },
+      data: { ownerId: owner.userId, slug: "public-permanent-test", mode: "permanent", recipientPublicKey: fakePublicKey("coowner4-pubkey"), retentionDays: 7 },
     });
 
     const response = await server.inject({
@@ -1164,7 +1180,7 @@ describe("upload routes", () => {
       method: "POST",
       url: `/api/links/${slug}/upload-url`,
       cookies: sender.cookies,
-      payload: uploadPayload({ senderPublicKey: "not-the-users-key" }),
+      payload: uploadPayload({ senderPublicKey: fakePublicKey("not-the-users-key") }),
     });
 
     expect(response.statusCode).toBe(400);
@@ -1179,7 +1195,7 @@ describe("upload routes", () => {
       method: "POST",
       url: `/api/links/${slug}/upload-url`,
       cookies: sender.cookies,
-      payload: uploadPayload({ senderPublicKey: "identitymatch-pubkey" }),
+      payload: uploadPayload({ senderPublicKey: fakePublicKey("identitymatch") }),
     });
 
     expect(response.statusCode).toBe(200);

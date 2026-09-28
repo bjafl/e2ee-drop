@@ -10,6 +10,7 @@ import { env } from "../env";
 import { encryptTotpSecret, generateTotpSecret } from "../lib/totp";
 import { generateAndStoreBackupCodes } from "../lib/totpBackupCodes";
 import { TOTP, Secret } from "otpauth";
+import { fakePublicKey } from "../test/fakeKeys";
 
 // registerUser() (below) now exercises routes/auth.ts's own best-effort
 // verification-email side effect too, so sendVerificationEmail needs a stub
@@ -57,7 +58,7 @@ async function registerUser(server: ReturnType<typeof buildServer>) {
       passwordSalt: "b3JpZ2luYWwtc2FsdA==",
       passwordWrappedPrivateKey: "b3JpZ2luYWwtd3JhcHBlZA==",
       recoveryWrappedPrivateKey: "b3JpZ2luYWwtcmVjb3Zlcnk=",
-      publicKey: "b3JpZ2luYWwtcHVia2V5",
+      publicKey: fakePublicKey("b3JpZ2luYWwtcHVia2V5"),
     },
   });
   const body = response.json();
@@ -109,6 +110,20 @@ describe("password reset routes", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(await prisma.passwordResetToken.count()).toBe(0);
+  });
+
+  it("finds the registered user and issues a token for a different case/whitespace variant of their email", async () => {
+    const server = buildServer();
+    const { userId } = await registerUser(server);
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/auth/password-reset/request",
+      payload: { email: "  Dana@Example.COM  " },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(await prisma.passwordResetToken.count({ where: { userId } })).toBe(1);
   });
 
   it("reports emailDeliveryAvailable from server config only, identically for registered and unregistered emails", async () => {
@@ -261,7 +276,7 @@ describe("password reset routes", () => {
         passwordSalt: "b3JpZ2luYWwtc2FsdA==",
         passwordWrappedPrivateKey: "b3JpZ2luYWwtd3JhcHBlZA==",
         recoveryWrappedPrivateKey: "b3JpZ2luYWwtcmVjb3Zlcnk=",
-        publicKey: "b3JpZ2luYWwtcHVia2V5",
+        publicKey: fakePublicKey("b3JpZ2luYWwtcHVia2V5"),
       },
     });
 
@@ -323,7 +338,7 @@ describe("password reset routes", () => {
     await prisma.drop.create({
       data: {
         linkId: link.id,
-        senderPublicKey: "s",
+        senderPublicKey: fakePublicKey("s"),
         s3Key: `${link.id}/drop1`,
         archiveNonce: "n",
         encryptedMetadata: "e",
@@ -351,7 +366,7 @@ describe("password reset routes", () => {
     const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
     expect(user.passwordWrappedPrivateKey).toBe("bmV3LXdyYXBwZWQ=");
     expect(await verifyPassword("a brand new password", user.passwordHash)).toBe(true);
-    expect(user.publicKey).toBe("b3JpZ2luYWwtcHVia2V5");
+    expect(user.publicKey).toBe(fakePublicKey("b3JpZ2luYWwtcHVia2V5"));
     expect(await prisma.link.count({ where: { id: link.id } })).toBe(1);
     expect(await prisma.drop.count({ where: { linkId: link.id } })).toBe(1);
     expect(await prisma.session.count({ where: { userId } })).toBe(0);
@@ -379,6 +394,9 @@ describe("password reset routes", () => {
     expect(response.statusCode).toBe(200);
     expect(await prisma.link.count({ where: { id: oldLink.id } })).toBe(0);
     const newDefaultLink = await prisma.link.findFirstOrThrow({ where: { ownerId: userId, isDefault: true } });
+    // newPublicKey (unlike register's publicKey) is not currently validated by
+    // lib/validation.ts (out of scope for this fix — see task report), so this
+    // stays a plain placeholder rather than a real 32-byte key.
     expect(newDefaultLink.recipientPublicKey).toBe("bmV3LXB1YmtleQ==");
     const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
     expect(user.publicKey).toBe("bmV3LXB1YmtleQ==");
@@ -586,7 +604,7 @@ describe("password reset routes", () => {
       await prisma.drop.create({
         data: {
           linkId: link.id,
-          senderPublicKey: "s",
+          senderPublicKey: fakePublicKey("s"),
           s3Key: `${link.id}/drop1`,
           archiveNonce: "n",
           encryptedMetadata: "e",

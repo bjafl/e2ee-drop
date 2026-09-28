@@ -11,9 +11,14 @@ export const env = {
   PORT: int("PORT", 3000, { min: 1, max: 65535 }),
   MAX_FILE_SIZE_BYTES: int("MAX_FILE_SIZE_BYTES", 500 * 1024 * 1024, { min: 1 }),
   LINK_EXPIRY_HOURS: int("LINK_EXPIRY_HOURS", 24, { min: 1 }),
-  DROP_RETENTION_DAYS_DEFAULT: int("DROP_RETENTION_DAYS_DEFAULT", 1),
-  DROP_RETENTION_DAYS_MAX: int("DROP_RETENTION_DAYS_MAX", 7),
-  AUDIT_RETENTION_DAYS: int("AUDIT_RETENTION_DAYS", 30),
+  // Floored at 1: a value of 0 (or a negative/typo value, also rejected by
+  // this same bound) would make every drop/audit row retention-expire on the
+  // very next cleanup sweep, which is destructive enough that int()'s
+  // fail-closed startup check (envParsers.ts) should refuse to boot rather
+  // than silently accept it.
+  DROP_RETENTION_DAYS_DEFAULT: int("DROP_RETENTION_DAYS_DEFAULT", 1, { min: 1 }),
+  DROP_RETENTION_DAYS_MAX: int("DROP_RETENTION_DAYS_MAX", 7, { min: 1 }),
+  AUDIT_RETENTION_DAYS: int("AUDIT_RETENTION_DAYS", 30, { min: 1 }),
   // Number of words in a link's verification phrase (packages/shared/src/codewords.ts). Each
   // word is one byte of a SHA-256 hash indexed into a 256-word list, so N
   // words give 256^N possible phrases (4 words = ~4.3 billion). Floored at 4:

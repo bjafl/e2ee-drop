@@ -26,6 +26,7 @@ import {
   reservationCutoff,
 } from "../lib/quota";
 import { reservationSenderKey } from "../lib/senderKey";
+import { isValidPublicKeyBase64 } from "../lib/validation";
 import { env } from "../env";
 import { uploadUrlRateLimiter, rateLimitExceededBody } from "../lib/rateLimit";
 import { assertSenderIdentity, SenderIdentityMismatchError } from "../lib/senderIdentity";
@@ -156,6 +157,12 @@ export function registerUploadRoutes(server: FastifyInstance): void {
       }
       if ((encryptedMessage && !messageNonce) || (!encryptedMessage && messageNonce)) {
         return reply.status(400).send({ error: "encryptedMessage and messageNonce must be provided together" });
+      }
+      // A malformed key here would otherwise fail obscurely deep inside a
+      // client's crypto library once the recipient tries to decrypt this
+      // drop — see lib/validation.ts.
+      if (!isValidPublicKeyBase64(senderPublicKey)) {
+        return reply.status(400).send({ error: "Invalid senderPublicKey: must be 32 bytes, base64-encoded" });
       }
       // fileSize determines the signed Content-Length of the upload, so it must be a
       // real byte count — not a string ("10" + 16 would be "1016"), fraction or

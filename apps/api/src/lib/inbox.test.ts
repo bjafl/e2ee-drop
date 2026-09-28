@@ -201,6 +201,34 @@ describe("getInboxForUser", () => {
     expect(inbox.counterparties).toHaveLength(0);
   });
 
+  it("reports hasMessage: true for a shredded-but-never-revealed message (Fix 4 regression)", async () => {
+    // A message that was scrubbed (cleanup's shred) WITHOUT ever being
+    // revealed: encryptedMessage and messageRevealedAt are both null at this
+    // point (scrubbing clears encryptedMessage; messageRevealedAt is only set
+    // by an actual reveal, which never happened here), but messageEnvelopeStatus
+    // is "shredded", not the schema default "sealed" — proof a message DID
+    // exist. Before the fix, hadMessage's own
+    // `encryptedMessage !== null || messageRevealedAt !== null` derivation
+    // disagreed with lib/links.ts's `messageEnvelopeStatus !== "sealed"` one and
+    // reported hasMessage: false here.
+    const owner = await makeUser("inbox-owner-shred");
+    const link = await prisma.link.create({
+      data: { ownerId: owner.id, slug: "inbox-owner-shred", mode: "permanent", recipientPublicKey: owner.publicKey, retentionDays: 7 },
+    });
+    await makeDrop({
+      linkId: link.id,
+      senderPublicKey: "s-shred",
+      fileEnvelopeStatus: "sealed", // file side still pending, so the drop stays unresolved and visible
+      messageEnvelopeStatus: "shredded",
+      encryptedMessage: null,
+      messageRevealedAt: null,
+    });
+
+    const inbox = await getInboxForUser(owner.id);
+    expect(inbox.counterparties).toHaveLength(1);
+    expect(inbox.counterparties[0]!.drops[0]!.hasMessage).toBe(true);
+  });
+
   it("gives incoming and outgoing counterparties for the same person structurally different keys", async () => {
     const owner = await makeUser("inbox-owner-11");
     const other = await makeUser("inbox-other-11");

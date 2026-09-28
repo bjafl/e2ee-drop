@@ -22,6 +22,7 @@ vi.mock("./codewords", async (importOriginal) => {
 import {
   canReceive,
   deleteLinkIfExists,
+  hasEverHadMessage,
   isLinkInactive,
   recomputeDeliveryStatus,
   shouldMaskAsNotFound,
@@ -604,6 +605,26 @@ describe("shouldMaskAsNotFound", () => {
     const link = makeLink({ ownerId: owner.id, visibility: "contacts-only" });
 
     expect(await shouldMaskAsNotFound(link, friend.id)).toBe(true);
+  });
+});
+
+describe("hasEverHadMessage", () => {
+  it("is false only for a drop that never had a message (default sealed status, no ciphertext)", () => {
+    expect(hasEverHadMessage({ encryptedMessage: null, messageEnvelopeStatus: "sealed" })).toBe(false);
+  });
+
+  it("is true while a message is still sealed and its ciphertext is present", () => {
+    expect(hasEverHadMessage({ encryptedMessage: "ciphertext", messageEnvelopeStatus: "sealed" })).toBe(true);
+  });
+
+  it("is true once a message has been delivered (ciphertext scrubbed)", () => {
+    expect(hasEverHadMessage({ encryptedMessage: null, messageEnvelopeStatus: "delivered" })).toBe(true);
+  });
+
+  // The case lib/inbox.test.ts's Fix-4 regression test guards from the other
+  // side (getInboxForUser's hadMessage, now delegating to this same helper).
+  it("is true for a message that was shredded without ever being revealed (ciphertext scrubbed, never delivered)", () => {
+    expect(hasEverHadMessage({ encryptedMessage: null, messageEnvelopeStatus: "shredded" })).toBe(true);
   });
 });
 

@@ -15,6 +15,7 @@ import type { DropSummary } from "@e2ee-drop/shared";
 import { buildServer } from "../server";
 import { emitDropEvent, linkListenerCount } from "../lib/dropEvents";
 import { SSE_HEARTBEAT_INTERVAL_MS } from "./events";
+import { fakePublicKey } from "../test/fakeKeys";
 
 const drop: DropSummary = {
   id: "drop1",
@@ -22,7 +23,7 @@ const drop: DropSummary = {
   deliveryStatus: "sent",
   messageEnvelopeStatus: "sealed",
   fileEnvelopeStatus: "sealed",
-  senderPublicKey: "x",
+  senderPublicKey: fakePublicKey("x"),
   archiveNonce: "x",
   contentMD5: "x",
   encryptedMetadata: "x",
@@ -43,7 +44,7 @@ async function registerAndGetCookie(server: ReturnType<typeof buildServer>, user
       passwordSalt: "s",
       passwordWrappedPrivateKey: "w",
       recoveryWrappedPrivateKey: "r",
-      publicKey: `${username}-pubkey`,
+      publicKey: fakePublicKey(username),
     },
   });
   const cookie = response.cookies.find((c: { name: string }) => c.name === "e2ee_drop_session")!;
@@ -131,7 +132,7 @@ describe("SSE events route", () => {
 
   it("returns 404 for an expired link", async () => {
     await prisma.link.create({
-      data: { slug: "expired-sse", mode: "one-time", recipientPublicKey: "x", retentionDays: 7, expiresAt: new Date(Date.now() - 1000) },
+      data: { slug: "expired-sse", mode: "one-time", recipientPublicKey: fakePublicKey("x"), retentionDays: 7, expiresAt: new Date(Date.now() - 1000) },
     });
     const response = await server.inject({ method: "GET", url: "/api/links/expired-sse/events" });
     expect(response.statusCode).toBe(404);
@@ -144,7 +145,7 @@ describe("SSE events route", () => {
     const createRes = await server.inject({
       method: "POST",
       url: "/api/links",
-      payload: { recipientPublicKey: "cmVjaXBpZW50" },
+      payload: { recipientPublicKey: fakePublicKey("cmVjaXBpZW50") },
     });
     const { slug } = createRes.json();
     await prisma.link.updateMany({ where: { slug }, data: { revokedAt: new Date() } });
@@ -224,7 +225,7 @@ describe("SSE events route", () => {
     await server.inject({
       method: "POST",
       url: `/api/links/${slug}/claim`,
-      payload: { recipientPublicKey: "claimant-pubkey" },
+      payload: { recipientPublicKey: fakePublicKey("claimant-pubkey") },
     });
     const link = (await prisma.link.findUnique({ where: { slug } }))!;
     await server.listen({ port: 0, host: "127.0.0.1" });
@@ -253,7 +254,7 @@ describe("SSE events route", () => {
     await server.inject({
       method: "POST",
       url: `/api/links/${slug}/claim`,
-      payload: { recipientPublicKey: "claimant-pubkey" },
+      payload: { recipientPublicKey: fakePublicKey("claimant-pubkey") },
     });
     const link = (await prisma.link.findUnique({ where: { slug } }))!;
     await server.listen({ port: 0, host: "127.0.0.1" });
@@ -271,7 +272,7 @@ describe("SSE events route", () => {
     const createRes = await server.inject({
       method: "POST",
       url: "/api/links",
-      payload: { recipientPublicKey: "cmVjaXBpZW50" },
+      payload: { recipientPublicKey: fakePublicKey("cmVjaXBpZW50") },
     });
     const { slug } = createRes.json();
     const link = (await prisma.link.findUnique({ where: { slug } }))!;
@@ -322,7 +323,7 @@ describe("SSE events route", () => {
     const createRes = await server.inject({
       method: "POST",
       url: "/api/links",
-      payload: { recipientPublicKey: "cmVjaXBpZW50" },
+      payload: { recipientPublicKey: fakePublicKey("cmVjaXBpZW50") },
     });
     const { slug } = createRes.json();
     const link = (await prisma.link.findUnique({ where: { slug } }))!;

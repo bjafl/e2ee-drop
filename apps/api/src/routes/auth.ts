@@ -12,6 +12,7 @@ import type {
   PreloginResponse,
 } from "@e2ee-drop/shared";
 import { hashPassword, verifyPassword } from "../lib/passwordAuth";
+import { isValidPublicKeyBase64, normalizeEmail } from "../lib/validation";
 import { decryptTotpSecret, verifyTotpCode } from "../lib/totp";
 import { createDefaultLinkForUser } from "../lib/links";
 import { createSession, deleteSession } from "../lib/sessions";
@@ -170,7 +171,7 @@ export function registerAuthRoutes(server: FastifyInstance): void {
       }
 
       const {
-        email,
+        email: rawEmail,
         username,
         name,
         authKey,
@@ -179,6 +180,10 @@ export function registerAuthRoutes(server: FastifyInstance): void {
         recoveryWrappedPrivateKey,
         publicKey,
       } = request.body;
+      // Normalized before the missing-fields check below: an email that is
+      // only whitespace is truthy pre-normalization but must still 400 as
+      // "missing", not register as an empty-string address.
+      const email = rawEmail ? normalizeEmail(rawEmail) : rawEmail;
       if (
         !email ||
         !username ||
@@ -197,6 +202,13 @@ export function registerAuthRoutes(server: FastifyInstance): void {
           error:
             "Username must be 3-32 characters, lowercase letters/numbers/hyphens/underscores only, and not a reserved name",
         });
+      }
+
+      // Malformed key here would otherwise fail obscurely deep inside a
+      // client's crypto library once this account's key is later used to
+      // encrypt to it — see lib/validation.ts.
+      if (!isValidPublicKeyBase64(publicKey)) {
+        return reply.status(400).send({ error: "Invalid publicKey: must be 32 bytes, base64-encoded" });
       }
 
       // authKey (not the password) is what gets Argon2id-hashed and stored —
@@ -302,8 +314,9 @@ export function registerAuthRoutes(server: FastifyInstance): void {
       },
     },
     async (request, reply) => {
-      const email = request.body?.email;
-      if (!email || typeof email !== "string") return reply.status(400).send({ error: "Missing email" });
+      const rawEmail = request.body?.email;
+      if (!rawEmail || typeof rawEmail !== "string") return reply.status(400).send({ error: "Missing email" });
+      const email = normalizeEmail(rawEmail);
       const user = await prisma.user.findUnique({ where: { email }, select: { passwordSalt: true } });
       const body: PreloginResponse = { passwordSalt: user?.passwordSalt ?? fakePasswordSaltForEmail(email) };
       return reply.send(body);
@@ -327,8 +340,9 @@ export function registerAuthRoutes(server: FastifyInstance): void {
       },
     },
     async (request, reply) => {
-      const { email, authKey, totpCode } = request.body;
-      if (!email || !authKey) return reply.status(400).send({ error: "Missing email or authKey" });
+      const { email: rawEmail, authKey, totpCode } = request.body;
+      if (!rawEmail || !authKey) return reply.status(400).send({ error: "Missing email or authKey" });
+      const email = normalizeEmail(rawEmail);
 
       const user = await prisma.user.findUnique({ where: { email } });
       // Always run a credential (authKey) verification, even when no user was found —

@@ -23,6 +23,7 @@ import {
 import { decryptTotpSecret, verifyTotpCode } from "../lib/totp";
 import { getUsedCodesForUser } from "../lib/totpReplayGuard";
 import { consumeBackupCodeIfValid } from "../lib/totpBackupCodes";
+import { normalizeEmail } from "../lib/validation";
 
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 
@@ -150,7 +151,7 @@ export function registerPasswordResetRoutes(server: FastifyInstance): void {
     },
     async (request, reply) => {
       const { email } = request.body;
-      const user = email ? await prisma.user.findUnique({ where: { email } }) : null;
+      const user = email ? await prisma.user.findUnique({ where: { email: normalizeEmail(email) } }) : null;
       if (user) {
         const token = randomBytes(32).toString("base64url");
         await prisma.passwordResetToken.create({
