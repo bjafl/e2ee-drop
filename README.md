@@ -8,6 +8,12 @@ download URLs against its own MinIO storage and never sees plaintext
 file bytes, the file's ciphertext, or anyone's private key — only the
 recipient's browser can decrypt what was sent to them.
 
+This is a ground-up rewrite of
+[e2ee-file-drop](https://github.com/bjafl/e2ee-file-drop), a 2025
+serverless prototype (Netlify Functions + Backblaze B2, tweetnacl) of the
+same idea. e2ee-drop replaces it with a self-hosted stack, accounts with
+key management and recovery, and permanent links.
+
 ## Quickstart
 
 ```bash
@@ -144,3 +150,7 @@ Each workspace package has its own `dev`/`test` scripts; see
 `packages/db`, `packages/shared`. Run `pnpm -r test` to run every
 package's test suite, and `pnpm lint:i18n` to verify the `en`/`nb`
 locale files stay in sync.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
