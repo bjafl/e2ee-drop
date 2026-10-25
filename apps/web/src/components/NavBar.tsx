@@ -53,7 +53,7 @@ const desktopLinkClass = ({ isActive }: { isActive: boolean }) =>
   cn(
     "inline-flex h-14 items-center px-3 text-sm font-medium no-underline transition-colors duration-150",
     isActive
-      ? "text-foreground shadow-[inset_0_-2px_0_var(--primary)] hover:text-foreground"
+      ? "text-foreground shadow-[inset_0_-2px_0_var(--primary-text)] hover:text-foreground"
       : "text-muted-foreground hover:text-foreground"
   );
 
@@ -421,7 +421,7 @@ export function NavBar() {
                 <Button
                   asChild
                   variant="ghost"
-                  className="size-11 px-0 text-primary md:h-9 md:w-auto md:bg-primary md:px-3 md:text-primary-foreground md:shadow-sm md:hover:bg-primary-hover md:hover:text-primary-foreground"
+                  className="size-11 px-0 text-primary-text md:h-9 md:w-auto md:bg-primary md:px-3 md:text-primary-foreground md:shadow-sm md:hover:bg-primary-hover md:hover:text-primary-foreground"
                 >
                   <Link to="/links/new">
                     <Plus className="size-5 md:size-4" aria-hidden="true" />

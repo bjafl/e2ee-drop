@@ -8,8 +8,9 @@
 
 /*
  * Theme: the Flode design system (forest green on neutral, slightly green-tinted
- * surfaces). Token names follow shadcn's so every ui/ component picks them up;
- * the extra semantic tokens (primary-hover, brand-tint, info, success, warning,
+ * surfaces). Green text uses `text-primary-text`, never `text-primary`, so it
+ * keeps 4.5:1 in dark mode where `primary` is a deep fill colour. Token names follow shadcn's so every ui/ component picks them up;
+ * the extra semantic tokens (primary-hover, primary-text, brand-tint, info, success, warning,
  * destructive-foreground) are registered below as --color-<name>. Use the
  * semantic classes (bg-primary, text-muted-foreground, text-warning …), never raw
  * Tailwind palette colors.
@@ -44,6 +45,7 @@
     --color-secondary: var(--secondary);
     --color-primary-foreground: var(--primary-foreground);
     --color-primary-hover: var(--primary-hover);
+    --color-primary-text: var(--primary-text);
     --color-primary: var(--primary);
     --color-brand-tint: var(--brand-tint);
     --color-info: var(--info);
@@ -77,6 +79,8 @@
     --primary: #1f5a3d;
     --primary-hover: #17462f;
     --primary-foreground: #ffffff;
+    /* Green text (links, active tabs, link buttons): equals primary in light mode. */
+    --primary-text: #1f5a3d;
     --secondary: #e8ede7;
     --secondary-foreground: #121a15;
     --muted: #eef1ed;
@@ -111,44 +115,47 @@
 }
 
 .dark {
+    /* Flode dark: near-neutral surfaces; primary stays a deep forest-green fill
+       with light text, and green *text* uses the lighter --primary-text. */
     color-scheme: dark;
-    --background: #0d120f;
-    --foreground: #e5ebe6;
-    --card: #131a16;
-    --card-foreground: #e5ebe6;
-    --popover: #17201b;
-    --popover-foreground: #e5ebe6;
-    --primary: #5fb383;
-    --primary-hover: #7cc79a;
-    --primary-foreground: #0a1f13;
-    --secondary: #1d2822;
-    --secondary-foreground: #e5ebe6;
-    --muted: #19221d;
-    --muted-foreground: #94a199;
-    --accent: #17301f;
-    --accent-foreground: #a9dcb9;
-    --brand-tint: #2a5a3d;
+    --background: #0f110f;
+    --foreground: #e7ebe7;
+    --card: #151815;
+    --card-foreground: #e7ebe7;
+    --popover: #1a1d1a;
+    --popover-foreground: #e7ebe7;
+    --primary: #3a7b55;
+    --primary-hover: #2f6c49;
+    --primary-foreground: #f2f6f3;
+    --primary-text: #74b68d;
+    --secondary: #222622;
+    --secondary-foreground: #e7ebe7;
+    --muted: #1d201d;
+    --muted-foreground: #9da49d;
+    --accent: #202c24;
+    --accent-foreground: #b8dbc3;
+    --brand-tint: #294433;
     --info: #7cb6ec;
-    --success: #62cf7e;
+    --success: #78bf7b;
     --warning: #f2a54a;
     --destructive: #f07a6a;
     --destructive-foreground: #2a0a06;
-    --border: #253029;
-    --input: #5c6b61;
-    --ring: #7cc79a;
-    --chart-1: #5fb383;
+    --border: #2b2f2b;
+    --input: #656b65;
+    --ring: #74b68d;
+    --chart-1: #65a27c;
     --chart-2: #6fa8dc;
     --chart-3: #e0a640;
     --chart-4: #e07b5d;
-    --chart-5: #a3b097;
-    --sidebar: #101713;
-    --sidebar-foreground: #e5ebe6;
-    --sidebar-primary: #5fb383;
-    --sidebar-primary-foreground: #0a1f13;
-    --sidebar-accent: #1a2a20;
-    --sidebar-accent-foreground: #a9dcb9;
-    --sidebar-border: #253029;
-    --sidebar-ring: #7cc79a;
+    --chart-5: #9da996;
+    --sidebar: #121512;
+    --sidebar-foreground: #e7ebe7;
+    --sidebar-primary: #3a7b55;
+    --sidebar-primary-foreground: #f2f6f3;
+    --sidebar-accent: #1f2822;
+    --sidebar-accent-foreground: #b8dbc3;
+    --sidebar-border: #2b2f2b;
+    --sidebar-ring: #74b68d;
     --flode-shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.4);
     --flode-shadow-lg: 0 8px 24px -6px rgba(0, 0, 0, 0.6), 0 2px 6px -2px rgba(0, 0, 0, 0.4);
 }

@@ -134,7 +134,7 @@ function LinkRow({ slug, kind, storage, mode, status, expires, expiresWarn, revo
     <li className={cn(ROW_GRID, "border-t px-4 py-3 transition-colors duration-150 hover:bg-accent/60 lg:px-6")}>
       <div className="col-start-1 row-start-1 flex min-w-0 flex-col lg:col-auto lg:row-auto">
         {href ? (
-          <Link to={href} className="self-start text-foreground no-underline hover:text-primary">
+          <Link to={href} className="self-start text-foreground no-underline hover:text-primary-text">
             {slugText}
           </Link>
         ) : (
@@ -295,7 +295,7 @@ function Dashboard({
       <section data-testid="dashboard-pending-receipts" aria-labelledby="pending-heading" className="mb-8 flex flex-col gap-3">
         <div className="flex items-baseline justify-between gap-4">
           <SectionTitle id="pending-heading">{t("pendingReceiptsHeading")}</SectionTitle>
-          <Link to="/inbox" className="inline-flex min-h-11 items-center font-medium text-primary hover:text-primary-hover sm:min-h-0">
+          <Link to="/inbox" className="inline-flex min-h-11 items-center font-medium text-primary-text hover:text-primary-text hover:underline sm:min-h-0">
             {t("toInbox")}
           </Link>
         </div>
@@ -395,7 +395,7 @@ function Dashboard({
             <Info className="mt-0.5 size-4 shrink-0 text-info" aria-hidden="true" />
             <span>
               {t("codewordsReloginRequired")}{" "}
-              <Link to="/login" state={{ returnTo: "/" }} className="font-medium text-primary hover:text-primary-hover">
+              <Link to="/login" state={{ returnTo: "/" }} className="font-medium text-primary-text hover:text-primary-text hover:underline">
                 {t("reloginLink")}
               </Link>
             </span>
@@ -504,7 +504,7 @@ function Landing({
             </p>
             {user && (
               <p>
-                <Link to="/account" className="inline-flex min-h-11 items-center font-medium text-primary hover:text-primary-hover sm:min-h-0">
+                <Link to="/account" className="inline-flex min-h-11 items-center font-medium text-primary-text hover:text-primary-text hover:underline sm:min-h-0">
                   {t("accountLink")}
                 </Link>
               </p>
@@ -575,7 +575,7 @@ function Landing({
                       </span>
                     </span>
                     {stored.pinProtected && <Badge variant="muted">{t("pinProtected")}</Badge>}
-                    <span className="hidden text-sm font-medium text-primary sm:inline">{t("open")}</span>
+                    <span className="hidden text-sm font-medium text-primary-text sm:inline">{t("open")}</span>
                     <ChevronRight className="size-4 text-muted-foreground" aria-hidden="true" />
                   </Link>
                 </li>
