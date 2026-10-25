@@ -11,10 +11,32 @@ import type {
   ListDropsResponse,
   RevealMessageResponse,
 } from "@e2ee-drop/shared";
+import type { ReactNode } from "react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Clock,
+  Download,
+  File as FileIcon,
+  Info,
+  Inbox,
+  KeyRound,
+  Lock,
+  Monitor,
+  UserRound,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Card, CardContent } from "@/components/ui/card";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Progress } from "@/components/ui/progress";
+import { Input } from "@/components/ui/input";
+import { Label, FieldHint } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Codewords } from "@/components/common/Codewords";
+import { LifetimeBadge, StorageBadge, type LinkStorage } from "@/components/common/LinkBadges";
+import { EmptyState, PageContainer, PageHeader } from "@/components/common/Page";
+import { formatBytes, formatDateTime, formatTimeLeft } from "@/lib/format";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -416,41 +438,93 @@ function ReceivePageForLink() {
         : null;
   const codewords = useCodewords(codewordPublicKey, link?.linkId, link?.codewordLocale);
   const codewordsBlock = codewords && (
-    <div>
-      <p className="text-sm text-muted-foreground">{t("codewordsLabel")}</p>
-      <p className="font-mono text-lg" data-testid="codewords">
-        {codewords.join(" · ")}
-      </p>
-    </div>
+    <Card aria-labelledby="receive-words-heading">
+      <CardContent className="flex flex-col gap-3">
+        <h2 id="receive-words-heading" className="text-base leading-6 font-semibold">
+          {t("codewordsHeading")}
+        </h2>
+        <p className="text-muted-foreground">{t("codewordsLabel")}</p>
+        <Codewords words={codewords} />
+      </CardContent>
+    </Card>
   );
 
   const handleDropDownloaded = useCallback((dropId: string) => {
     setDownloadedIds((prev) => new Set(prev).add(dropId));
   }, []);
 
-  if (linkNotFound) return <p role="alert">{t("errors.linkNotFound")}</p>;
-  if (!link) return <p>{t("loading")}</p>;
+  if (linkNotFound) {
+    return (
+      <PageContainer width="form">
+        <Alert variant="destructive">
+          <AlertTriangle aria-hidden="true" />
+          <AlertDescription>{t("errors.linkNotFound")}</AlertDescription>
+        </Alert>
+      </PageContainer>
+    );
+  }
+  if (!link) {
+    return (
+      <PageContainer width="narrow" aria-busy="true">
+        <p className="sr-only">{t("loading")}</p>
+        <div className="flex flex-col gap-4">
+          <Skeleton className="h-9 w-56" />
+          <Skeleton className="h-4 w-80 max-w-full" />
+          <Skeleton className="mt-4 h-40" />
+          <Skeleton className="h-32" />
+        </div>
+      </PageContainer>
+    );
+  }
 
   if (pinPrompt) {
     return (
-      <Card className="mx-auto mt-12 max-w-md">
-        <CardContent className="space-y-4 pt-6">
-          <p>{t("enterPin")}</p>
-          <input
-            type="password"
-            inputMode="numeric"
-            value={pinInput}
-            onChange={(e) => setPinInput(e.target.value)}
-            className="w-full rounded border p-2 text-sm"
-          />
-          {pinError && (
-            <Alert variant="destructive">
-              <AlertDescription>{t("wrongPin")}</AlertDescription>
-            </Alert>
-          )}
-          <Button onClick={submitPin}>{t("unlock")}</Button>
-        </CardContent>
-      </Card>
+      <PageContainer width="form">
+        <Card>
+          <CardContent>
+            <form
+              className="flex flex-col gap-4"
+              onSubmit={(e) => {
+                e.preventDefault();
+                submitPin();
+              }}
+            >
+              <div className="flex gap-3">
+                <KeyRound aria-hidden="true" className="mt-0.5 size-5 shrink-0 text-primary" />
+                <div className="flex flex-col gap-1">
+                  <h1 className="text-base leading-6 font-semibold">{t("unlockTitle")}</h1>
+                  <p className="text-muted-foreground">{t("enterPin")}</p>
+                </div>
+              </div>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="receive-pin" className="sr-only">
+                  {t("unlockTitle")}
+                </Label>
+                <Input
+                  id="receive-pin"
+                  type="password"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  autoFocus
+                  value={pinInput}
+                  onChange={(e) => setPinInput(e.target.value)}
+                  aria-invalid={pinError || undefined}
+                  className="max-w-48 tabular-nums"
+                />
+              </div>
+              {pinError && (
+                <Alert variant="destructive">
+                  <AlertTriangle aria-hidden="true" />
+                  <AlertDescription>{t("wrongPin")}</AlertDescription>
+                </Alert>
+              )}
+              <Button type="submit" className="self-start">
+                {t("unlock")}
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
+      </PageContainer>
     );
   }
 
@@ -458,7 +532,21 @@ function ReceivePageForLink() {
     return <ClaimView slug={slug!} saveLink={saveLink} onClaimed={setLink} t={t} />;
   }
 
-  if (mode === "none") return <p>{t("errors.noLocalKey")}</p>;
+  if (mode === "none") {
+    return (
+      <PageContainer width="form">
+        <Card>
+          <CardContent className="flex gap-3">
+            <Lock aria-hidden="true" className="mt-0.5 size-5 shrink-0 text-warning" />
+            <div className="flex flex-col gap-1">
+              <h1 className="text-base leading-6 font-semibold">{t("noKeyTitle")}</h1>
+              <p className="text-muted-foreground">{t("errors.noLocalKey")}</p>
+            </div>
+          </CardContent>
+        </Card>
+      </PageContainer>
+    );
+  }
 
   // Same server-side rule as GET /drops (which already excludes
   // delivered/shredded drops on the next reload) — plus anything this tab
@@ -473,44 +561,95 @@ function ReceivePageForLink() {
       !downloadedIds.has(drop.id)
   );
 
+  // Where this view's private key lives — the one fact a recipient must not
+  // miss, shown as a badge in the header and (for a browser-held key) a
+  // persistent banner: "anonymous" mode means the key is in this browser's
+  // localStorage only; every "owned" variant uses the account key.
+  const storage: LinkStorage = mode === "anonymous" ? "browser" : "account";
+  const header = (title: string, description: string) => (
+    <PageHeader title={title} description={description}>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <StorageBadge storage={storage} />
+        <LifetimeBadge mode={link.mode} />
+        {link.expiresAt !== undefined && (
+          <span className="text-xs font-medium text-muted-foreground tabular-nums">
+            {t("linkExpiresIn", { time: formatTimeLeft(link.expiresAt) })}
+          </span>
+        )}
+      </div>
+    </PageHeader>
+  );
+  const browserKeyBanner = storage === "browser" && (
+    <Alert variant="warning" role="note" data-testid="browser-key-banner" className="mb-6">
+      <Monitor aria-hidden="true" />
+      <AlertTitle>{t("browserKeyTitle")}</AlertTitle>
+      <AlertDescription>{t("browserKeyBody")}</AlertDescription>
+    </Alert>
+  );
+  const reloginAlert = (
+    <Alert variant="warning" role="note">
+      <KeyRound aria-hidden="true" />
+      <AlertDescription className="text-foreground">
+        {t("reloginRequired")}{" "}
+        <Link to="/login" state={{ returnTo: `/receive/${slug}` }} className="font-medium text-primary">
+          {t("reloginLink")}
+        </Link>
+      </AlertDescription>
+    </Alert>
+  );
+  const ownerNoteBlock = link.ownerNote && (
+    <Alert variant="info" role="note">
+      <Info aria-hidden="true" />
+      <AlertTitle>{t("ownerNoteTitle")}</AlertTitle>
+      <AlertDescription>
+        <p className="whitespace-pre-line text-foreground">{link.ownerNote}</p>
+        <span className="text-xs">{t("ownerNoteWarning")}</span>
+      </AlertDescription>
+    </Alert>
+  );
+  const waitingState = (
+    <EmptyState icon={<Inbox aria-hidden="true" />} title={t("waitingForFile")}>
+      <p>{storage === "browser" ? t("waitingHintBrowser") : t("waitingHintAccount")}</p>
+    </EmptyState>
+  );
+  const renderDrop = (drop: DropSummary, extra?: { onAutoSaveChange?: (value: boolean) => void; onDownloaded?: (id: string) => void }) => (
+    <DropDetail
+      key={drop.id}
+      slug={slug!}
+      drop={drop}
+      decryptMetadata={decryptMetadata}
+      decryptMessage={decryptMessage}
+      decryptArchive={decryptArchive}
+      decryptPercent={decryptPercent}
+      autoSave={autoSave}
+      onAutoSaveChange={extra?.onAutoSaveChange}
+      onDownloaded={extra?.onDownloaded}
+      t={t}
+    />
+  );
+
   if (mode === "owned" && !ownedAccessDenied) {
     const needsRelogin = !userKeyPair;
     return (
-      <Card className="mx-auto mt-12 max-w-md">
-        <CardHeader>
-          <CardTitle>{t("queueTitle")}</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {needsRelogin && (
-            <Alert>
-              <AlertDescription>
-                {t("reloginRequired")}{" "}
-                <Link to="/login" state={{ returnTo: `/receive/${slug}` }}>
-                  {t("reloginLink")}
-                </Link>
-              </AlertDescription>
-            </Alert>
-          )}
+      <PageContainer width="narrow">
+        {header(t("queueTitle"), t("queueSubtitle"))}
+        <div className="flex flex-col gap-6">
+          {needsRelogin && reloginAlert}
           {!needsRelogin && codewordsBlock}
-          {!needsRelogin && queued.length === 0 && <p>{t("queueEmpty")}</p>}
-          {!needsRelogin &&
-            queued.map((drop) => (
-              <div key={drop.id} className="space-y-2 border-b pb-4 last:border-0">
-                <DropDetail
-                  slug={slug!}
-                  drop={drop}
-                  decryptMetadata={decryptMetadata}
-                  decryptMessage={decryptMessage}
-                  decryptArchive={decryptArchive}
-                  decryptPercent={decryptPercent}
-                  autoSave={autoSave}
-                  onDownloaded={handleDropDownloaded}
-                  t={t}
-                />
-              </div>
-            ))}
-        </CardContent>
-      </Card>
+          {!needsRelogin && queued.length === 0 && (
+            <EmptyState icon={<Inbox aria-hidden="true" />} title={t("queueEmpty")}>
+              <p>{t("waitingHintAccount")}</p>
+            </EmptyState>
+          )}
+          {!needsRelogin && queued.length > 0 && (
+            <ul className="flex flex-col gap-4">
+              {queued.map((drop) => (
+                <li key={drop.id}>{renderDrop(drop, { onDownloaded: handleDropDownloaded })}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </PageContainer>
     );
   }
 
@@ -534,65 +673,32 @@ function ReceivePageForLink() {
   const singleDrop: DropSummary | null = drops[0] ?? link.drop ?? null;
 
   return (
-    <Card className="mx-auto mt-12 max-w-md">
-      <CardHeader>
-        <CardTitle>{t("title")}</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {needsRelogin && (
-          <Alert>
-            <AlertDescription>
-              {t("reloginRequired")}{" "}
-              <Link to="/login" state={{ returnTo: `/receive/${slug}` }}>
-                {t("reloginLink")}
-              </Link>
-            </AlertDescription>
-          </Alert>
-        )}
+    <PageContainer width="narrow">
+      {header(t("title"), storage === "browser" ? t("subtitleBrowser") : t("subtitleAccount"))}
+      {browserKeyBanner}
+      <div className="flex flex-col gap-6">
+        {needsRelogin && reloginAlert}
         {!needsRelogin && (
           <>
             {codewordsBlock}
-            {link.ownerNote && (
-              <Alert>
-                <AlertDescription>
-                  {link.ownerNote}
-                  <br />
-                  <span className="text-xs">{t("ownerNoteWarning")}</span>
-                </AlertDescription>
-              </Alert>
-            )}
+            {ownerNoteBlock}
             {isMultiDrop ? (
               <>
-                {queued.length === 0 && <p>{t("waitingForFile")}</p>}
-                {queued.map((drop) => (
-                  <div key={drop.id} className="space-y-2 border-b pb-4 last:border-0">
-                    <DropDetail
-                      slug={slug!}
-                      drop={drop}
-                      decryptMetadata={decryptMetadata}
-                      decryptMessage={decryptMessage}
-                      decryptArchive={decryptArchive}
-                      decryptPercent={decryptPercent}
-                      autoSave={autoSave}
-                      onDownloaded={handleDropDownloaded}
-                      t={t}
-                    />
-                  </div>
-                ))}
+                {queued.length === 0 && waitingState}
+                {queued.length > 0 && (
+                  <ul className="flex flex-col gap-4">
+                    {queued.map((drop) => (
+                      <li key={drop.id}>{renderDrop(drop, { onDownloaded: handleDropDownloaded })}</li>
+                    ))}
+                  </ul>
+                )}
               </>
             ) : (
               <>
-                {!singleDrop && <p>{t("waitingForFile")}</p>}
-                {singleDrop && (
-                  <DropDetail
-                    slug={slug!}
-                    drop={singleDrop}
-                    decryptMetadata={decryptMetadata}
-                    decryptMessage={decryptMessage}
-                    decryptArchive={decryptArchive}
-                    decryptPercent={decryptPercent}
-                    autoSave={autoSave}
-                    onAutoSaveChange={(value) => {
+                {!singleDrop && waitingState}
+                {singleDrop &&
+                  renderDrop(singleDrop, {
+                    onAutoSaveChange: (value) => {
                       setAutoSave(value);
                       // Task 9 / F9 (step 2): same rationale as the useState
                       // initializer above — this write isn't routed through
@@ -605,16 +711,14 @@ function ReceivePageForLink() {
                       } catch {
                         // localStorage unavailable — the preference just won't survive a reload.
                       }
-                    }}
-                    t={t}
-                  />
-                )}
+                    },
+                  })}
               </>
             )}
           </>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </PageContainer>
   );
 }
 
@@ -699,42 +803,98 @@ function ClaimView({
   };
 
   return (
-    <Card className="mx-auto mt-12 max-w-md">
-      <CardHeader>
-        <CardTitle>{t("claimTitle")}</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
+    <PageContainer width="narrow">
+      <PageHeader title={t("claimTitle")} description={t("claimSubtitle")} />
+      <div className="flex flex-col gap-4">
         {error && (
           <Alert variant="destructive">
+            <AlertTriangle aria-hidden="true" />
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
-        {user ? (
-          <Button onClick={claimWithAccount}>{t("claimWithAccount")}</Button>
-        ) : (
-          <p className="text-sm">
-            <Link to="/login" state={{ returnTo: `/receive/${slug}` }} className="underline">
-              {t("logInToClaimWithAccount")}
-            </Link>
-          </p>
-        )}
-        <div className="space-y-2 border-t pt-4">
-          <Alert>
-            <AlertDescription>{t("anonymousClaimWarning")}</AlertDescription>
-          </Alert>
-          <input
-            type="password"
-            inputMode="numeric"
-            value={pin}
-            onChange={(e) => setPin(e.target.value)}
-            placeholder={t("pinPlaceholder")}
-            className="w-full rounded border p-2 text-sm"
-          />
-          <p className="text-xs text-muted-foreground">{t("pinWarning")}</p>
-          <Button variant="secondary" onClick={claimAnonymously}>
-            {t("claimAnonymously")}
-          </Button>
+        <div className="grid gap-4 md:grid-cols-2">
+          <ChoiceCard
+            icon={<UserRound aria-hidden="true" />}
+            title={t("claimAccountTitle")}
+            badge={<Badge variant="outline">{t("recommended")}</Badge>}
+            points={[t("claimAccountPoint1"), t("claimAccountPoint2")]}
+          >
+            {user ? (
+              <Button className="h-11 w-full sm:h-9" onClick={claimWithAccount}>
+                {t("claimWithAccount")}
+              </Button>
+            ) : (
+              <Link
+                to="/login"
+                state={{ returnTo: `/receive/${slug}` }}
+                className="inline-flex min-h-11 items-center font-medium text-primary hover:text-primary-hover sm:min-h-0"
+              >
+                {t("logInToClaimWithAccount")}
+              </Link>
+            )}
+          </ChoiceCard>
+          <ChoiceCard
+            icon={<Monitor aria-hidden="true" />}
+            title={t("claimBrowserTitle")}
+            points={[t("claimBrowserPoint1"), t("claimBrowserPoint2")]}
+          >
+            <p className="text-xs leading-4 text-muted-foreground">{t("anonymousClaimWarning")}</p>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="claim-pin">
+                {t("pinLabel")}
+                <span className="font-normal text-muted-foreground">{t("optional")}</span>
+              </Label>
+              <Input
+                id="claim-pin"
+                type="password"
+                inputMode="numeric"
+                autoComplete="off"
+                value={pin}
+                onChange={(e) => setPin(e.target.value)}
+                placeholder={t("pinPlaceholder")}
+                className="max-w-48 tabular-nums"
+              />
+              <FieldHint>{t("pinWarning")}</FieldHint>
+            </div>
+            <Button variant="secondary" className="h-11 w-full sm:h-9" onClick={claimAnonymously}>
+              {t("claimAnonymously")}
+            </Button>
+          </ChoiceCard>
         </div>
+      </div>
+    </PageContainer>
+  );
+}
+
+function ChoiceCard({
+  icon,
+  title,
+  badge,
+  points,
+  children,
+}: {
+  icon: ReactNode;
+  title: string;
+  badge?: ReactNode;
+  points: string[];
+  children: ReactNode;
+}) {
+  return (
+    <Card>
+      <CardContent className="flex h-full flex-col gap-4">
+        <div className="flex items-center gap-3">
+          <span className="inline-flex size-8 items-center justify-center rounded-md bg-accent text-accent-foreground [&_svg]:size-4">
+            {icon}
+          </span>
+          <h2 className="flex-1 text-base leading-6 font-semibold">{title}</h2>
+          {badge}
+        </div>
+        <ul className="flex list-disc flex-col gap-1 pl-5 text-muted-foreground">
+          {points.map((point) => (
+            <li key={point}>{point}</li>
+          ))}
+        </ul>
+        <div className="mt-auto flex flex-col gap-3">{children}</div>
       </CardContent>
     </Card>
   );
@@ -863,73 +1023,149 @@ function DropDetail({
     }
   }, [slug, drop, decryptArchive, autoSave, onDownloaded]);
 
+  const uploading = drop.fileUploadStatus !== "complete";
+  const totalSize = metadata?.files.reduce((sum, f) => sum + f.size, 0) ?? 0;
+
   return (
-    <>
-      {metadata && (
-        <ul className="text-sm">
-          {metadata.files.map((f) => (
-            <li key={f.name}>
-              {f.name} — {f.size} {t("bytes")}
-            </li>
-          ))}
-        </ul>
-      )}
-      {drop.hasMessage && revealedMessage === null && metadata !== null && (
-        <Button variant="secondary" onClick={() => setConfirmReveal(true)}>
-          {t("decryptMessageButton")}
-        </Button>
-      )}
-      {revealedMessage !== null && <p className="italic">{revealedMessage}</p>}
-      {revealError && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            {revealError === "alreadyRevealed"
-              ? t("errors.messageAlreadyRevealed")
-              : revealError === "decryptFailed"
-                ? t("errors.messageDecryptFailed")
-                : t("errors.revealFailed")}
-          </AlertDescription>
-        </Alert>
-      )}
-      <p className="text-xs text-muted-foreground">
-        {t("contentExpiresAt", { date: new Date(drop.contentExpiresAt).toLocaleString() })}
-      </p>
-      {drop.fileUploadStatus !== "complete" && <p>{t("waitingForFile")}</p>}
-      {drop.fileUploadStatus === "complete" && !downloaded && !downloadFailed && (
-        <Button onClick={download} disabled={downloadPercent > 0 && downloadPercent < 100}>
-          {t("downloadButton")}
-        </Button>
-      )}
-      {downloadFailed && (
-        <>
+    <Card>
+      <CardContent className="flex flex-col gap-4">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="flex min-w-0 flex-col">
+            <h2 className="text-base leading-6 font-semibold">
+              {metadata ? t("filesCount", { count: metadata.files.length }) : t("deliveryTitle")}
+              {metadata && metadata.files.length > 1 && (
+                <span className="font-normal text-muted-foreground"> · {formatBytes(totalSize)}</span>
+              )}
+            </h2>
+            <p className="flex items-center gap-1 text-xs leading-4 text-muted-foreground">
+              <Clock aria-hidden="true" className="size-3.5" />
+              {t("contentExpiresAt", { date: formatDateTime(drop.contentExpiresAt) })}
+            </p>
+          </div>
+          {downloaded ? (
+            <span className="inline-flex items-center gap-1 text-xs font-medium text-success">
+              <CheckCircle2 aria-hidden="true" className="size-3.5" />
+              {t("statusDownloaded")}
+            </span>
+          ) : (
+            <span
+              className={`inline-flex items-center gap-1.5 text-xs font-medium ${uploading ? "text-muted-foreground" : "text-info"}`}
+            >
+              <span aria-hidden="true" className={`size-2 rounded-full ${uploading ? "bg-muted-foreground" : "bg-info"}`} />
+              {uploading ? t("statusUploading") : t("statusReady")}
+            </span>
+          )}
+        </div>
+
+        {metadata && (
+          <ul className="divide-y rounded-md border">
+            {metadata.files.map((f) => (
+              <li key={f.name} className="flex items-center gap-3 px-3 py-2">
+                <FileIcon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate">{f.name}</span>
+                <span className="text-xs font-medium text-muted-foreground tabular-nums">{formatBytes(f.size)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {drop.hasMessage && revealedMessage === null && metadata !== null && (
+          <div className="flex flex-wrap items-center gap-3 rounded-md bg-muted px-3 py-2">
+            <Lock aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1 text-xs leading-4 text-muted-foreground">{t("messageSealedHint")}</span>
+            <Button variant="outline" size="sm" className="h-11 sm:h-8" onClick={() => setConfirmReveal(true)}>
+              {t("decryptMessageButton")}
+            </Button>
+          </div>
+        )}
+        {revealedMessage !== null && (
+          <blockquote className="rounded-md border-l-0 bg-muted px-4 py-3 text-base leading-[26px] whitespace-pre-line">
+            {revealedMessage}
+          </blockquote>
+        )}
+        {revealError && (
           <Alert variant="destructive">
+            <AlertTriangle aria-hidden="true" />
+            <AlertDescription>
+              {revealError === "alreadyRevealed"
+                ? t("errors.messageAlreadyRevealed")
+                : revealError === "decryptFailed"
+                  ? t("errors.messageDecryptFailed")
+                  : t("errors.revealFailed")}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {uploading && <p className="text-muted-foreground">{t("waitingForFile")}</p>}
+        {(downloadPercent > 0 || decryptPercent > 0) && !downloaded && (
+          <div className="flex flex-col gap-3" aria-live="polite">
+            <Progress value={downloadPercent}>
+              <div className="flex w-full justify-between text-xs font-medium">
+                <span>{t("downloading")}</span>
+                <span className="text-muted-foreground tabular-nums">{Math.round(downloadPercent)} %</span>
+              </div>
+            </Progress>
+            <Progress value={decryptPercent}>
+              <div className="flex w-full justify-between text-xs font-medium">
+                <span>{t("decrypting")}</span>
+                <span className="text-muted-foreground tabular-nums">{Math.round(decryptPercent)} %</span>
+              </div>
+            </Progress>
+          </div>
+        )}
+        {downloadFailed && (
+          <Alert variant="destructive">
+            <AlertTriangle aria-hidden="true" />
             <AlertDescription>{t("errors.downloadFailed")}</AlertDescription>
           </Alert>
-          <Button onClick={download}>{t("retryButton")}</Button>
-        </>
-      )}
-      {(downloadPercent > 0 || decryptPercent > 0) && !downloaded && (
-        <div className="space-y-2">
-          <Progress value={downloadPercent}>
-            <p className="text-xs">{t("downloading")}</p>
-          </Progress>
-          <Progress value={decryptPercent}>
-            <p className="text-xs">{t("decrypting")}</p>
-          </Progress>
+        )}
+        {downloaded && (
+          <p className="flex items-center gap-2 text-success">
+            <CheckCircle2 aria-hidden="true" className="size-4" />
+            <span className="text-foreground">{t("downloadedMessage")}</span>
+          </p>
+        )}
+
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          {onAutoSaveChange ? (
+            <label className="flex min-h-11 cursor-pointer items-center gap-2 text-xs sm:min-h-0">
+              <input
+                type="checkbox"
+                className="size-4 accent-primary"
+                checked={autoSave}
+                onChange={(e) => onAutoSaveChange(e.target.checked)}
+              />
+              {t("autoSaveToggle")}
+            </label>
+          ) : (
+            <span />
+          )}
+          {!uploading && !downloaded && !downloadFailed && (
+            <Button
+              size="lg"
+              className="h-12 w-full sm:h-10 sm:w-auto"
+              onClick={download}
+              disabled={downloadPercent > 0 && downloadPercent < 100}
+            >
+              <Download aria-hidden="true" />
+              {t("downloadButton")}
+            </Button>
+          )}
+          {downloadFailed && (
+            <Button size="lg" className="h-12 w-full sm:h-10 sm:w-auto" onClick={download}>
+              {t("retryButton")}
+            </Button>
+          )}
+          {downloaded && !autoSave && savedBlobUrl && (
+            <Button asChild size="lg" className="h-12 w-full sm:h-10 sm:w-auto">
+              <a href={savedBlobUrl} download="download.zip">
+                <Download aria-hidden="true" />
+                {t("saveFileLink")}
+              </a>
+            </Button>
+          )}
         </div>
-      )}
-      {downloaded && !autoSave && savedBlobUrl && (
-        <a href={savedBlobUrl} download="download.zip" className="underline">
-          {t("saveFileLink")}
-        </a>
-      )}
-      {downloaded && <p>{t("downloadedMessage")}</p>}
-      {onAutoSaveChange && (
-        <label className="flex items-center gap-2 text-xs">
-          <input type="checkbox" checked={autoSave} onChange={(e) => onAutoSaveChange(e.target.checked)} />
-          {t("autoSaveToggle")}
-        </label>
-      )}
+      </CardContent>
       <AlertDialog open={confirmReveal} onOpenChange={setConfirmReveal}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -949,6 +1185,6 @@ function DropDetail({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </>
+    </Card>
   );
 }
