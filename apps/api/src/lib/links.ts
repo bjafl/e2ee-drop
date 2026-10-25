@@ -422,6 +422,7 @@ export async function toLinkStatusResponse(
     ownerNote: link.ownerNote ?? undefined,
     retentionDays: link.retentionDays,
     expiresAt: link.expiresAt?.getTime(),
+    maxFileSizeBytes: env.MAX_FILE_SIZE_BYTES,
   };
   if (!link.ownerId) return base;
 

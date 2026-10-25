@@ -102,6 +102,11 @@ export interface LinkStatusResponse {
   ownerNote?: string;
   retentionDays: number;
   expiresAt?: number; // epoch ms, mirrors CreateLinkResponse's field for an already-created link
+  // Server's MAX_FILE_SIZE_BYTES, so the send page can show the limit and reject
+  // an oversize file before spending time encrypting it. Advisory only: the
+  // upload-url route still enforces the limit (413). Optional so an older API
+  // that omits it degrades to "no client-side check".
+  maxFileSizeBytes?: number;
   recipientName?: string;
   recipientUsername?: string;
   recipientEmail?: string; // present only when design spec §6.4's visibility rule allows it

@@ -782,4 +782,23 @@ describe("UploadPage", () => {
     fireEvent.click(screen.getByTestId("codewords-confirm"));
     expect(screen.getByRole("button", { name: SEND_BUTTON })).not.toBeDisabled();
   });
+  // Issue #4: the server's max size caps the whole archive, so a file that would
+  // push the running total over it is refused on drop — before any encryption.
+  it("refuses a file that would push the total over the server's max size, naming it", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...LINK_RESPONSE, maxFileSizeBytes: 8 }) })
+    );
+    renderAt("abc123");
+    await screen.findByText(/max 8 B in total/i);
+
+    await selectFile("small.txt"); // 5 bytes, fits
+    const input = screen.getByTestId("file-input") as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [new File(["hello"], "big.txt", { type: "text/plain" })] } });
+
+    await waitFor(() => expect(screen.getByTestId("size-error")).toHaveTextContent("big.txt"));
+    expect(screen.queryByText("big.txt", { selector: "li span" })).not.toBeInTheDocument();
+    expect(screen.getByText("small.txt")).toBeInTheDocument();
+    expect(encryptForSendMock).not.toHaveBeenCalled();
+  });
 });
