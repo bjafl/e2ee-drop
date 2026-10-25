@@ -33,7 +33,6 @@
   "linksHeading": "Lenker",
   "linksCount_one": "{{count}} lenke",
   "linksCount_other": "{{count}} lenker",
-  "newLink": "Ny lenke",
   "filterLabel": "Filtrer på hvor nøkkelen ligger",
   "filterAll": "Alle",
   "colLink": "Lenke",
@@ -61,6 +60,5 @@
   "codewordsLabel": "Verifiseringsord",
   "codewordsReloginRequired": "Logg inn på nytt for å se verifiseringsordene for lenkene dine. Nøkkelen din er ikke låst opp i denne fanen.",
   "reloginLink": "Logg inn på nytt",
-  "footerSelfHosted": "Selvhostet. Åpen kildekode (MIT).",
-  "footerSource": "Kildekode på GitHub"
+  "filterBrowserShort": "Nettleseren"
 }

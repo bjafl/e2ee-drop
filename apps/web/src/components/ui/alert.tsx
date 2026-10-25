@@ -21,15 +21,19 @@ const alertVariants = cva(
   }
 )
 
+// role: errors (destructive) are announced immediately (role="alert"); static
+// notes/warnings use role="note" so screen readers don't interrupt for them.
+// Pass `role` explicitly to override.
 function Alert({
   className,
   variant,
+  role,
   ...props
 }: React.ComponentProps<"div"> & VariantProps<typeof alertVariants>) {
   return (
     <div
       data-slot="alert"
-      role="alert"
+      role={role ?? (variant === "destructive" ? "alert" : "note")}
       className={cn(alertVariants({ variant }), className)}
       {...props}
     />

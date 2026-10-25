@@ -34,8 +34,8 @@ export function Codewords({
         <li
           key={`${i}-${word}`}
           className={cn(
-            "flex items-baseline gap-2 rounded-md bg-muted font-mono font-medium [counter-increment:cw] before:font-sans before:text-xs before:font-medium before:text-muted-foreground before:content-[counter(cw)]",
-            size === "lg" ? "px-4 py-3 text-lg leading-6" : "px-3 py-2 text-base leading-6"
+            "flex min-w-0 items-baseline gap-2 rounded-md bg-muted font-mono [overflow-wrap:anywhere] font-medium [counter-increment:cw] before:font-sans before:text-xs before:font-medium before:text-muted-foreground before:content-[counter(cw)]",
+            size === "lg" ? "px-3 py-2.5 text-base leading-6 sm:px-4 sm:py-3 sm:text-lg" : "px-3 py-2 text-base leading-6"
           )}
         >
           {word}

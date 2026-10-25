@@ -309,7 +309,11 @@ export function NewLinkPage() {
             {isAccount && (
               <div className="flex flex-col gap-2">
                 <Label htmlFor="visibility">{t("visibilityLabel")}</Label>
-                <Select value={visibility} onValueChange={(value) => setVisibility(value as "public" | "contacts-only")}>
+                <Select
+                  value={visibility}
+                  items={{ public: t("visibilityPublic"), "contacts-only": t("visibilityContactsOnly") }}
+                  onValueChange={(value) => setVisibility(value as "public" | "contacts-only")}
+                >
                   <SelectTrigger id="visibility" className="h-11 w-full max-w-md sm:h-9">
                     <SelectValue />
                   </SelectTrigger>

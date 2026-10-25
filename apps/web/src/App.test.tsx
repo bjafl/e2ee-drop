@@ -31,7 +31,7 @@ describe("App routing", () => {
         <App />
       </MemoryRouter>
     );
-    expect(screen.getByText(/end-to-end encrypted file drops/i)).toBeInTheDocument();
+    expect(screen.getByText(/receive files securely/i)).toBeInTheDocument();
   });
 
   it("renders the contacts page at /contacts", () => {

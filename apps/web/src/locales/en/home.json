@@ -33,7 +33,6 @@
   "linksHeading": "Links",
   "linksCount_one": "{{count}} link",
   "linksCount_other": "{{count}} links",
-  "newLink": "New link",
   "filterLabel": "Filter by where the key lives",
   "filterAll": "All",
   "colLink": "Link",
@@ -61,6 +60,5 @@
   "codewordsLabel": "Verification words",
   "codewordsReloginRequired": "Log in again to see your links' verification words — your key isn't unlocked in this tab.",
   "reloginLink": "Log in again",
-  "footerSelfHosted": "Self-hosted. Open source (MIT).",
-  "footerSource": "Source code on GitHub"
+  "filterBrowserShort": "Browser"
 }

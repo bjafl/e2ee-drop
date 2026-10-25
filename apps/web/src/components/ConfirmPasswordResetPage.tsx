@@ -255,7 +255,7 @@ export function ConfirmPasswordResetPage() {
     );
   }
 
-  const totpField = (id: string) => (
+  const renderTotpField = (id: string) => (
     <div className="flex flex-col gap-2">
       <Label htmlFor={id}>{t("confirm.totpCode")}</Label>
       <Input
@@ -273,7 +273,7 @@ export function ConfirmPasswordResetPage() {
     </div>
   );
 
-  const passwordField = (id: string) => (
+  const renderPasswordField = (id: string) => (
     <div className="flex flex-col gap-2">
       <Label htmlFor={id}>{t("confirm.newPassword")}</Label>
       <Input
@@ -306,8 +306,8 @@ export function ConfirmPasswordResetPage() {
                 onChange={(e) => setRecoveryCode(e.target.value)}
               />
             </div>
-            {passwordField("new-password")}
-            {needsTotp && totpField("reset-totp")}
+            {renderPasswordField("new-password")}
+            {needsTotp && renderTotpField("reset-totp")}
             <div className="mt-2 flex flex-col gap-2">
               <Button type="submit" size="lg" disabled={submitting}>
                 {t("confirm.submitWithRecovery")}
@@ -324,8 +324,8 @@ export function ConfirmPasswordResetPage() {
               <TriangleAlert aria-hidden="true" />
               <AlertDescription className="text-foreground">{t("confirm.freshWarning")}</AlertDescription>
             </Alert>
-            {passwordField("fresh-new-password")}
-            {needsTotp && totpField("fresh-reset-totp")}
+            {renderPasswordField("fresh-new-password")}
+            {needsTotp && renderTotpField("fresh-reset-totp")}
             <Button type="submit" variant="destructive" size="lg" className="mt-2" disabled={submitting}>
               {t("confirm.submitFresh")}
             </Button>

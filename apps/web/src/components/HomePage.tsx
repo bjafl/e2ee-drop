@@ -9,7 +9,6 @@ import {
   Info,
   KeyRound,
   Link2,
-  Plus,
   ShieldCheck,
   UserRound,
 } from "lucide-react";
@@ -33,7 +32,6 @@ import homeNb from "@/locales/nb/home.json";
 i18n.addResourceBundle("en", "home", homeEn, true, false);
 i18n.addResourceBundle("nb", "home", homeNb, true, false);
 
-const SOURCE_URL = "https://github.com/bjafl/e2ee-drop";
 
 // Review finding F1: the owner's own view of a link's verification phrase,
 // derived locally from the key pair unwrapped at login (accountPublicKey) —
@@ -266,10 +264,10 @@ function Dashboard({
     };
   };
 
-  const filters: { id: Filter; label: string }[] = [
+  const filters: { id: Filter; label: string; shortLabel?: string }[] = [
     { id: "all", label: t("filterAll") },
     { id: "account", label: tc("storage.account") },
-    { id: "browser", label: tc("storage.browser") },
+    { id: "browser", label: tc("storage.browser"), shortLabel: t("filterBrowserShort") },
   ];
 
   return (
@@ -353,22 +351,24 @@ function Dashboard({
                   key={f.id}
                   type="button"
                   aria-pressed={filter === f.id}
+                  aria-label={f.shortLabel ? f.label : undefined}
                   onClick={() => setFilter(f.id)}
                   className={cn(
                     "h-9 rounded-sm px-3 text-sm font-medium whitespace-nowrap transition-colors duration-150 sm:h-8",
                     filter === f.id ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
                   )}
                 >
-                  {f.label}
+                  {f.shortLabel ? (
+                    <>
+                      <span className="sm:hidden">{f.shortLabel}</span>
+                      <span className="hidden sm:inline">{f.label}</span>
+                    </>
+                  ) : (
+                    f.label
+                  )}
                 </button>
               ))}
             </div>
-            <Button asChild variant="secondary" className="h-11 sm:h-9">
-              <Link to="/links/new">
-                <Plus />
-                {t("newLink")}
-              </Link>
-            </Button>
           </div>
         </div>
 
@@ -558,14 +558,6 @@ function Landing({ localLinks }: { localLinks: [string, StoredLink][] }) {
           </section>
         )}
       </PageContainer>
-      <footer className="border-t">
-        <div className="mx-auto flex max-w-[1168px] flex-wrap justify-between gap-4 px-4 py-4 text-xs leading-4 text-muted-foreground md:px-6">
-          <span>{t("footerSelfHosted")}</span>
-          <a href={SOURCE_URL} className="text-primary hover:text-primary-hover" target="_blank" rel="noreferrer">
-            {t("footerSource")}
-          </a>
-        </div>
-      </footer>
     </>
   );
 }

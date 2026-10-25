@@ -35,7 +35,7 @@ const RESEND_COOLDOWN_SECONDS = 60;
 function Brand() {
   const { t } = useTranslation("nav");
   return (
-    <Link to="/" className="flex items-center gap-2 text-base font-semibold text-foreground no-underline hover:text-foreground">
+    <Link to="/" className="flex shrink-0 items-center gap-2 text-base font-semibold whitespace-nowrap text-foreground no-underline hover:text-foreground">
       <span className="inline-flex size-7 items-center justify-center rounded-sm bg-primary text-primary-foreground">
         <Lock className="size-4" aria-hidden="true" />
       </span>
@@ -63,20 +63,25 @@ const desktopLinkClass = ({ isActive }: { isActive: boolean }) =>
  */
 function AccountMenu({ username, onLogout }: { username: string; onLogout: () => void }) {
   const { t } = useTranslation("nav");
-  const [open, setOpen] = useState(false);
   const panelId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const location = useLocation();
-
-  useEffect(() => setOpen(false), [location.pathname]);
+  // Open state is tied to the path it was opened on, so navigating closes it
+  // without a state-syncing effect.
+  const [openOn, setOpenOn] = useState<string | null>(null);
+  const open = openOn === location.pathname;
+  const setOpen = (next: boolean | ((prev: boolean) => boolean)) => {
+    const value = typeof next === "function" ? next(open) : next;
+    setOpenOn(value ? location.pathname : null);
+  };
 
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") setOpenOn(null);
     };
     const onPointer = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpenOn(null);
     };
     document.addEventListener("keydown", onKey);
     document.addEventListener("mousedown", onPointer);
@@ -182,9 +187,10 @@ function MobileMenu({
   onLogout: () => void;
 }) {
   const { t } = useTranslation(["nav", "common"]);
-  const [open, setOpen] = useState(false);
   const location = useLocation();
-  useEffect(() => setOpen(false), [location.pathname]);
+  const [openOn, setOpenOn] = useState<string | null>(null);
+  const open = openOn === location.pathname;
+  const setOpen = (next: boolean) => setOpenOn(next ? location.pathname : null);
 
   const itemClass = ({ isActive }: { isActive: boolean }) =>
     cn(
@@ -382,7 +388,7 @@ export function NavBar() {
                 <Button
                   asChild
                   variant="ghost"
-                  className="size-11 px-0 text-primary md:size-auto md:bg-primary md:px-3 md:text-primary-foreground md:shadow-sm md:hover:bg-primary-hover md:hover:text-primary-foreground"
+                  className="size-11 px-0 text-primary md:h-9 md:w-auto md:bg-primary md:px-3 md:text-primary-foreground md:shadow-sm md:hover:bg-primary-hover md:hover:text-primary-foreground"
                 >
                   <Link to="/links/new">
                     <Plus className="size-5 md:size-4" aria-hidden="true" />
@@ -394,7 +400,10 @@ export function NavBar() {
               </>
             ) : (
               <>
-                <ThemeToggle />
+                {/* Logged-out phones have no menu sheet; keep the bar to brand + two actions. */}
+                <span className="hidden sm:contents">
+                  <ThemeToggle />
+                </span>
                 <Button asChild variant="ghost">
                   <Link to="/login">{t("login")}</Link>
                 </Button>
