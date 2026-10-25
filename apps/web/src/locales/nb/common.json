@@ -1,4 +1,27 @@
 {
   "appName": "e2ee-drop",
-  "nav": { "receive": "Motta en fil", "send": "Send en fil" }
+  "nav": { "receive": "Motta filer", "send": "Send filer" },
+  "storage": {
+    "account": "Konto",
+    "browser": "Denne nettleseren",
+    "accountHint": "Nøkkelen ligger på kontoen din, beskyttet av passordet ditt. Åpne den på alle enheter der du logger inn.",
+    "browserHint": "Nøkkelen finnes bare i denne nettleseren. Tømmer du nettleserdata eller bytter enhet, kan filene ikke åpnes."
+  },
+  "lifetime": { "permanent": "Fast", "oneTime": "Engangs" },
+  "codewordsListLabel": "Verifiseringsord",
+  "units": { "B": "B", "kB": "kB", "MB": "MB", "GB": "GB" },
+  "relative": {
+    "justNow": "akkurat nå",
+    "expired": "utløpt",
+    "inHours": "om {{count}} t",
+    "inMinutes": "om {{count}} min",
+    "inDays_one": "om {{count}} dag",
+    "inDays_other": "om {{count}} dager"
+  },
+  "dateAt": "{{date}} kl. {{time}}",
+  "never": "Aldri",
+  "openMenu": "Åpne meny",
+  "closeMenu": "Lukk meny",
+  "back": "Tilbake",
+  "footer": { "selfHosted": "Selvhostet. Åpen kildekode (MIT).", "source": "Kildekode" }
 }

@@ -261,7 +261,7 @@ describe("ReceivePage — anonymous single-drop view", () => {
     renderAt("abc123");
 
     await waitFor(() => {
-      expect(screen.getByText(/pin/i)).toBeInTheDocument();
+      expect(screen.getByText(/protected with a pin/i)).toBeInTheDocument();
     });
     expect(screen.queryByTestId("codewords")).not.toBeInTheDocument();
 
@@ -623,11 +623,11 @@ describe("ReceivePage — claim flow", () => {
 
     renderAt("req123");
     await waitFor(() => {
-      expect(screen.getByText(/claim anonymously/i)).toBeInTheDocument();
+      expect(screen.getByText(/claim in this browser/i)).toBeInTheDocument();
     });
 
     fireEvent.change(screen.getByPlaceholderText(/pin/i), { target: { value: "4242" } });
-    fireEvent.click(screen.getByText(/^claim anonymously$/i));
+    fireEvent.click(screen.getByText(/^claim in this browser$/i));
 
     await waitFor(() => {
       expect(saveLinkMock).toHaveBeenCalledWith(
@@ -657,10 +657,10 @@ describe("ReceivePage — claim flow", () => {
 
     renderAt("req123");
     await waitFor(() => {
-      expect(screen.getByText(/claim anonymously/i)).toBeInTheDocument();
+      expect(screen.getByText(/claim in this browser/i)).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByText(/^claim anonymously$/i));
+    fireEvent.click(screen.getByText(/^claim in this browser$/i));
 
     await waitFor(() => {
       expect(screen.getByText(/save the decryption key/i)).toBeInTheDocument();
@@ -682,10 +682,10 @@ describe("ReceivePage — claim flow", () => {
 
     renderAt("req123");
     await waitFor(() => {
-      expect(screen.getByText(/claim anonymously/i)).toBeInTheDocument();
+      expect(screen.getByText(/claim in this browser/i)).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByText(/^claim anonymously$/i));
+    fireEvent.click(screen.getByText(/^claim in this browser$/i));
 
     await waitFor(() => {
       expect(screen.getByText(/could not claim/i)).toBeInTheDocument();

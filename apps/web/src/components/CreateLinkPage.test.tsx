@@ -86,7 +86,7 @@ describe("CreateLinkPage", () => {
     const user = userEvent.setup();
     render(<CreateLinkPage />);
 
-    await user.type(screen.getByLabelText(/note for the recipient/i), "For the design team");
+    await user.type(screen.getByLabelText(/note for the sender/i), "For the design team");
     await user.clear(screen.getByLabelText(/delete received files after/i));
     await user.type(screen.getByLabelText(/delete received files after/i), "5");
     await user.click(screen.getByRole("button", { name: /create/i }));

@@ -6,7 +6,13 @@
   "retentionDaysLabel": "Slett mottatte filer etter (dager)",
   "createButton": "Opprett lenke",
   "success": "Lenke opprettet:",
-  "sendPageHint": "Dette er din egen side — kom tilbake hit når mottakeren har tatt i bruk lenken under, for å faktisk sende filen.",
+  "sendPageHint": "Dette er din egen side. Kom tilbake hit når mottakeren har tatt i bruk lenken, så sender du filen.",
   "goToSendPage": "Gå til sendesiden din",
-  "errors": { "createFailed": "Kunne ikke opprette lenken. Prøv igjen." }
+  "errors": {
+    "createFailed": "Kunne ikke opprette lenken. Prøv igjen."
+  },
+  "description": "Lag en lenke som mottakeren åpner for å ta imot filen. Nøkkelen lages i mottakerens nettleser, og du sender når lenken er tatt i bruk.",
+  "copyLink": "Kopier",
+  "copied": "Kopiert",
+  "shareHint": "Send denne lenken til mottakeren."
 }

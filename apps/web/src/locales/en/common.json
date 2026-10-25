@@ -1,4 +1,27 @@
 {
   "appName": "e2ee-drop",
-  "nav": { "receive": "Receive a file", "send": "Send a file" }
+  "nav": { "receive": "Receive a file", "send": "Send a file" },
+  "storage": {
+    "account": "Account",
+    "browser": "This browser",
+    "accountHint": "The key is stored on your account, protected by your password. Open it on any device you sign in on.",
+    "browserHint": "The key exists only in this browser. Clearing browser data or switching device means the files can't be opened."
+  },
+  "lifetime": { "permanent": "Permanent", "oneTime": "One-time" },
+  "codewordsListLabel": "Verification words",
+  "units": { "B": "B", "kB": "kB", "MB": "MB", "GB": "GB" },
+  "relative": {
+    "justNow": "just now",
+    "expired": "expired",
+    "inHours": "in {{count}} h",
+    "inMinutes": "in {{count}} min",
+    "inDays_one": "in {{count}} day",
+    "inDays_other": "in {{count}} days"
+  },
+  "dateAt": "{{date}} at {{time}}",
+  "never": "Never",
+  "openMenu": "Open menu",
+  "closeMenu": "Close menu",
+  "back": "Back",
+  "footer": { "selfHosted": "Self-hosted. Open source (MIT).", "source": "Source code" }
 }

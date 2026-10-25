@@ -8,5 +8,11 @@
   "success": "Link created:",
   "sendPageHint": "This is your own page — come back here once your recipient has claimed the link below, to actually send the file.",
   "goToSendPage": "Go to your send page",
-  "errors": { "createFailed": "Could not create that link. Please try again." }
+  "errors": {
+    "createFailed": "Could not create that link. Please try again."
+  },
+  "description": "Create a link the other person opens to receive your file. Their browser generates the key; you send once they've claimed it.",
+  "copyLink": "Copy",
+  "copied": "Copied",
+  "shareHint": "Send this link to the recipient."
 }

@@ -3,9 +3,14 @@ import { useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import QRCode from "react-qr-code";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Check, Copy, ShieldCheck, ShieldOff, TriangleAlert } from "lucide-react";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { PageContainer, PageHeader } from "@/components/common/Page";
 import { DeleteAccountDialog } from "@/components/DeleteAccountDialog";
 import { useAuth } from "@/hooks/useAuth";
 import i18n from "@/i18n";
@@ -163,128 +168,206 @@ export function AccountPage() {
     }
   };
 
+  const initials = (user.username ?? "?").slice(0, 2).toUpperCase();
+  const codeInputClass = "max-w-48 font-mono tabular-nums";
+
   return (
-    <Card className="mx-auto mt-12 max-w-md">
-      <CardHeader>
-        <CardTitle>{t("title")}</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-6">
-        <div className="space-y-1">
-          <p>{t("signedInAs", { username: user.username })}</p>
-          <p className="text-sm text-muted-foreground">{t("email", { email: user.email })}</p>
-        </div>
-
-        <div className="space-y-3 border-t pt-4">
-          <h2 className="font-semibold">{t("twoFactor.heading")}</h2>
-          {error && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
-
-          {flow.step === "idle" && !user.totpEnabled && (
-            <Button data-testid="enable-2fa-button" onClick={startSetup}>
-              {t("twoFactor.enable")}
-            </Button>
-          )}
-
-          {flow.step === "idle" && user.totpEnabled && (
-            <div className="flex flex-wrap gap-2">
-              <Button data-testid="replace-2fa-button" variant="outline" onClick={startReplace}>
-                {t("twoFactor.replace")}
-              </Button>
-              <Button data-testid="disable-2fa-button" variant="destructive" onClick={startDisable}>
-                {t("twoFactor.disable")}
-              </Button>
-              <Button data-testid="regenerate-backup-codes-button" variant="outline" onClick={startRegenerate}>
-                {t("twoFactor.regenerateBackupCodes")}
-              </Button>
+    <PageContainer width="narrow">
+      <PageHeader title={t("title")} description={t("description")} />
+      <div className="flex flex-col gap-6">
+        <Card>
+          <CardContent className="flex items-center gap-4">
+            <span
+              aria-hidden="true"
+              className="inline-flex size-12 shrink-0 items-center justify-center rounded-full bg-brand-tint text-base font-semibold"
+            >
+              {initials}
+            </span>
+            <div className="flex min-w-0 flex-col">
+              <p className="font-semibold">{t("signedInAs", { username: user.username })}</p>
+              <p className="flex flex-wrap items-center gap-2 text-muted-foreground">
+                <span className="break-all">{t("email", { email: user.email })}</span>
+                {user.emailVerified ? (
+                  <Badge variant="accent">
+                    <Check aria-hidden="true" />
+                    {t("emailVerified")}
+                  </Badge>
+                ) : (
+                  <Badge variant="muted">{t("emailUnverified")}</Badge>
+                )}
+              </p>
             </div>
-          )}
+          </CardContent>
+        </Card>
 
-          {(flow.step === "setup" || flow.step === "confirming") && (
-            <div className="space-y-3">
-              <p>{t("twoFactor.scanQr")}</p>
-              <div className="w-40 bg-white p-2">
-                <QRCode value={flow.otpauthUrl} size={144} />
-              </div>
-              <p className="break-all font-mono text-sm">{flow.secretBase32}</p>
-              <label htmlFor="totp-confirm-code">{t("twoFactor.codeLabel")}</label>
-              <input
-                id="totp-confirm-code"
-                data-testid="totp-code-input"
-                inputMode="numeric"
-                value={code}
-                onChange={(e) => setCode(e.target.value)}
-                className="w-full rounded border p-2"
-              />
-              <Button data-testid="confirm-2fa-code-button" onClick={confirmEnable}>
-                {t("twoFactor.confirm")}
-              </Button>
+        <Card>
+          <CardHeader>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <CardTitle>{t("twoFactor.heading")}</CardTitle>
+              {user.totpEnabled ? (
+                <span className="inline-flex items-center gap-1 text-xs font-medium text-success">
+                  <ShieldCheck className="size-4" aria-hidden="true" />
+                  {t("twoFactor.statusOn")}
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-xs font-medium text-warning">
+                  <ShieldOff className="size-4" aria-hidden="true" />
+                  {t("twoFactor.statusOff")}
+                </span>
+              )}
             </div>
-          )}
-
-          {(flow.step === "disabling" || flow.step === "disabling-for-replace" || flow.step === "regenerating") && (
-            <div className="space-y-3">
-              <label htmlFor="totp-action-code">{t("twoFactor.currentCodeLabel")}</label>
-              <input
-                id="totp-action-code"
-                data-testid="totp-action-code-input"
-                inputMode="numeric"
-                autoCapitalize="off"
-                spellCheck={false}
-                value={code}
-                onChange={(e) => setCode(e.target.value)}
-                className="w-full rounded border p-2"
-              />
-              <Button
-                data-testid="confirm-totp-action-button"
-                onClick={
-                  flow.step === "disabling-for-replace"
-                    ? confirmDisableForReplace
-                    : flow.step === "disabling"
-                      ? confirmDisable
-                      : confirmRegenerate
-                }
-              >
-                {t("twoFactor.confirm")}
-              </Button>
-            </div>
-          )}
-
-          {flow.step === "backup-codes" && (
-            <div className="space-y-3">
-              <Alert variant="destructive" data-testid="backup-codes-warning">
-                <AlertDescription>{t("twoFactor.backupCodesWarning")}</AlertDescription>
+            <CardDescription>{t("twoFactor.description")}</CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            {error && (
+              <Alert variant="destructive">
+                <AlertDescription>{error}</AlertDescription>
               </Alert>
-              <pre className="rounded bg-muted p-2 font-mono text-sm">{flow.codes.join("\n")}</pre>
-              <div className="flex gap-2">
-                <Button variant="outline" onClick={() => navigator.clipboard.writeText(flow.codes.join("\n"))}>
-                  {t("twoFactor.backupCodesCopy")}
-                </Button>
-                <Button onClick={() => setFlow({ step: "idle" })}>{t("twoFactor.backupCodesDone")}</Button>
-              </div>
-            </div>
-          )}
-        </div>
+            )}
 
-        <div>
-          <h2 className="mb-2 font-semibold">{t("privacy")}</h2>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={allowContactRequests}
-              onChange={toggleAllowContactRequests}
-              aria-label={t("allowContactRequestsLabel")}
-            />
-            {t("allowContactRequestsLabel")}
-          </label>
-        </div>
-        <div>
-          <h2 className="mb-2 font-semibold">{t("dangerZone")}</h2>
-          <DeleteAccountDialog onDeleted={handleDeleted} />
-        </div>
-      </CardContent>
-    </Card>
+            {flow.step === "idle" && !user.totpEnabled && (
+              <Button data-testid="enable-2fa-button" className="self-start" onClick={startSetup}>
+                {t("twoFactor.enable")}
+              </Button>
+            )}
+
+            {flow.step === "idle" && user.totpEnabled && (
+              <div className="flex flex-wrap gap-2">
+                <Button data-testid="replace-2fa-button" variant="outline" onClick={startReplace}>
+                  {t("twoFactor.replace")}
+                </Button>
+                <Button data-testid="regenerate-backup-codes-button" variant="outline" onClick={startRegenerate}>
+                  {t("twoFactor.regenerateBackupCodes")}
+                </Button>
+                <Button data-testid="disable-2fa-button" variant="ghost" className="text-destructive" onClick={startDisable}>
+                  {t("twoFactor.disable")}
+                </Button>
+              </div>
+            )}
+
+            {(flow.step === "setup" || flow.step === "confirming") && (
+              <div className="flex flex-col gap-4">
+                <p>{t("twoFactor.scanQr")}</p>
+                <div className="flex flex-wrap items-center gap-4">
+                  <div className="rounded-md border bg-white p-3">
+                    <QRCode value={flow.otpauthUrl} size={144} />
+                  </div>
+                  <p className="min-w-0 flex-1 rounded-md bg-muted px-3 py-2 font-mono text-[13px] leading-5 break-all">
+                    {flow.secretBase32}
+                  </p>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="totp-confirm-code">{t("twoFactor.codeLabel")}</Label>
+                  <div className="flex flex-wrap gap-2">
+                    <Input
+                      id="totp-confirm-code"
+                      data-testid="totp-code-input"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      className={codeInputClass}
+                      value={code}
+                      onChange={(e) => setCode(e.target.value)}
+                    />
+                    <Button data-testid="confirm-2fa-code-button" onClick={confirmEnable}>
+                      {t("twoFactor.confirm")}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {(flow.step === "disabling" || flow.step === "disabling-for-replace" || flow.step === "regenerating") && (
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="totp-action-code">{t("twoFactor.currentCodeLabel")}</Label>
+                <div className="flex flex-wrap gap-2">
+                  <Input
+                    id="totp-action-code"
+                    data-testid="totp-action-code-input"
+                    inputMode="numeric"
+                    autoCapitalize="off"
+                    spellCheck={false}
+                    className={codeInputClass}
+                    value={code}
+                    onChange={(e) => setCode(e.target.value)}
+                  />
+                  <Button
+                    data-testid="confirm-totp-action-button"
+                    onClick={
+                      flow.step === "disabling-for-replace"
+                        ? confirmDisableForReplace
+                        : flow.step === "disabling"
+                          ? confirmDisable
+                          : confirmRegenerate
+                    }
+                  >
+                    {t("twoFactor.confirm")}
+                  </Button>
+                  <Button variant="ghost" onClick={() => setFlow({ step: "idle" })}>
+                    {t("twoFactor.cancel")}
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {flow.step === "backup-codes" && (
+              <div className="flex flex-col gap-4">
+                <Alert variant="warning" data-testid="backup-codes-warning">
+                  <TriangleAlert aria-hidden="true" />
+                  <AlertDescription className="text-foreground">{t("twoFactor.backupCodesWarning")}</AlertDescription>
+                </Alert>
+                <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {flow.codes.map((c) => (
+                    <li key={c} className="rounded-md bg-muted px-3 py-2 text-center font-mono text-[13px] leading-5">
+                      {c}
+                    </li>
+                  ))}
+                </ul>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" onClick={() => navigator.clipboard.writeText(flow.codes.join("\n"))}>
+                    <Copy aria-hidden="true" />
+                    {t("twoFactor.backupCodesCopy")}
+                  </Button>
+                  <Button onClick={() => setFlow({ step: "idle" })}>{t("twoFactor.backupCodesDone")}</Button>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>{t("privacy")}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <label className="flex min-h-11 cursor-pointer items-start gap-3">
+              <input
+                type="checkbox"
+                className="mt-1 size-4 accent-primary"
+                checked={allowContactRequests}
+                onChange={toggleAllowContactRequests}
+                aria-label={t("allowContactRequestsLabel")}
+                aria-describedby="allow-contact-requests-hint"
+              />
+              <span className="flex flex-col">
+                <span className="font-medium">{t("allowContactRequestsLabel")}</span>
+                <span id="allow-contact-requests-hint" className="text-xs leading-4 text-muted-foreground">
+                  {t("allowContactRequestsHint")}
+                </span>
+              </span>
+            </label>
+          </CardContent>
+        </Card>
+
+        <Card className="border-destructive/40">
+          <CardHeader>
+            <CardTitle className="text-destructive">{t("dangerZone")}</CardTitle>
+            <CardDescription>{t("dangerZoneHint")}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <DeleteAccountDialog onDeleted={handleDeleted} />
+          </CardContent>
+        </Card>
+      </div>
+    </PageContainer>
   );
 }

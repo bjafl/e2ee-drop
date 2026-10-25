@@ -2,8 +2,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
+import { Send, UserPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { FormError } from "@/components/auth/AuthLayout";
+import { PageContainer, PageHeader } from "@/components/common/Page";
 import i18n from "@/i18n";
 import contactsEn from "@/locales/en/contacts.json";
 import contactsNb from "@/locales/nb/contacts.json";
@@ -17,6 +23,30 @@ interface ContactSummary {
   username: string;
   status: "pending" | "accepted" | "blocked";
   direction: "incoming" | "outgoing";
+}
+
+function Avatar({ name }: { name: string }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="inline-flex size-9 shrink-0 items-center justify-center rounded-full bg-brand-tint text-xs font-semibold uppercase"
+    >
+      {name.slice(0, 2)}
+    </span>
+  );
+}
+
+function Row({ name, meta, children }: { name: string; meta?: React.ReactNode; children?: React.ReactNode }) {
+  return (
+    <li className="flex flex-wrap items-center gap-3 py-3 first:pt-0 last:pb-0">
+      <Avatar name={name} />
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="truncate font-medium">{name}</span>
+        {meta}
+      </span>
+      {children && <div className="flex flex-wrap gap-2">{children}</div>}
+    </li>
+  );
 }
 
 export function ContactsPage() {
@@ -82,80 +112,132 @@ export function ContactsPage() {
     await reload();
   };
 
+  const sectionList = (items: ContactSummary[], empty: string, render: (c: ContactSummary) => React.ReactNode) =>
+    items.length === 0 ? (
+      <p className="text-muted-foreground">{empty}</p>
+    ) : (
+      <ul className="divide-y divide-border">{items.map(render)}</ul>
+    );
+
   return (
-    <Card className="mx-auto mt-12 max-w-md">
-      <CardHeader>
-        <CardTitle>{t("title")}</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-6">
-        <div className="flex gap-2">
-          <input
-            value={usernameInput}
-            onChange={(e) => setUsernameInput(e.target.value)}
-            placeholder={t("addPlaceholder")}
-            className="flex-1 rounded border p-2 text-sm"
-          />
-          <Button onClick={sendRequest}>{t("addButton")}</Button>
-        </div>
-        {error && <p role="alert">{error}</p>}
-
-        <div>
-          <h2 className="font-semibold">{t("pendingHeading")}</h2>
-          {pending.map((contact) => (
-            <div key={contact.id} className="flex items-center justify-between py-1">
-              <span>
-                <span>{contact.username}</span>{" "}
-                <span className="text-muted-foreground text-xs">
-                  ({contact.direction === "incoming" ? t("incoming") : t("outgoing")})
-                </span>
-              </span>
-              {contact.direction === "incoming" ? (
-                <div className="flex gap-2">
-                  <Button size="sm" onClick={() => accept(contact.id)}>
-                    {t("acceptButton")}
-                  </Button>
-                  <Button size="sm" variant="destructive" onClick={() => reject(contact.id)}>
-                    {t("rejectButton")}
-                  </Button>
-                </div>
-              ) : (
-                <Button size="sm" variant="destructive" onClick={() => reject(contact.id)}>
-                  {t("cancelButton")}
-                </Button>
-              )}
-            </div>
-          ))}
-        </div>
-
-        <div>
-          <h2 className="font-semibold">{t("acceptedHeading")}</h2>
-          {accepted.map((contact) => (
-            <div key={contact.id} className="flex items-center justify-between py-1">
-              <span>{contact.username}</span>
-              <div className="flex gap-2">
-                <Button asChild size="sm">
-                  <Link to={`/send/${contact.username}`}>{t("sendFileButton")}</Link>
-                </Button>
-                <Button size="sm" variant="destructive" onClick={() => block(contact.id)}>
-                  {t("blockButton")}
+    <PageContainer width="narrow">
+      <PageHeader title={t("title")} description={t("description")} />
+      <div className="flex flex-col gap-6">
+        <Card>
+          <CardContent>
+            <form
+              className="flex flex-col gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void sendRequest();
+              }}
+            >
+              <Label htmlFor="contact-username">{t("addLabel")}</Label>
+              <div className="flex flex-wrap gap-2">
+                <Input
+                  id="contact-username"
+                  value={usernameInput}
+                  onChange={(e) => setUsernameInput(e.target.value)}
+                  placeholder={t("addPlaceholder")}
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  className="min-w-48 flex-1"
+                />
+                <Button type="submit">
+                  <UserPlus aria-hidden="true" />
+                  {t("addButton")}
                 </Button>
               </div>
-            </div>
-          ))}
-        </div>
+            </form>
+            {error && (
+              <div className="mt-3">
+                <FormError>{error}</FormError>
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
-        <div>
-          <h2 className="font-semibold">{t("blockedHeading")}</h2>
-          {blocked.map((contact) => (
-            <div key={contact.id} className="flex items-center justify-between py-1">
-              <span>{contact.username}</span>
-              <Button size="sm" variant="secondary" onClick={() => unblock(contact.id)}>
-                {t("unblockButton")}
-              </Button>
-            </div>
-          ))}
-        </div>
-      </CardContent>
-    </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>
+              <h2>{t("pendingHeading")}</h2>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {sectionList(pending, t("emptyPending"), (contact) => (
+              <Row
+                key={contact.id}
+                name={contact.username}
+                meta={
+                  <span className="text-xs leading-4 text-muted-foreground">
+                    {contact.direction === "incoming" ? t("incoming") : t("outgoing")}
+                  </span>
+                }
+              >
+                {contact.direction === "incoming" ? (
+                  <>
+                    <Button size="sm" onClick={() => accept(contact.id)}>
+                      {t("acceptButton")}
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => reject(contact.id)}>
+                      {t("rejectButton")}
+                    </Button>
+                  </>
+                ) : (
+                  <Button size="sm" variant="ghost" onClick={() => reject(contact.id)}>
+                    {t("cancelButton")}
+                  </Button>
+                )}
+              </Row>
+            ))}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>
+              <h2>{t("acceptedHeading")}</h2>
+            </CardTitle>
+            <CardDescription>{t("acceptedHint")}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {sectionList(accepted, t("emptyAccepted"), (contact) => (
+              <Row key={contact.id} name={contact.username}>
+                <Button asChild size="sm" variant="secondary">
+                  <Link to={`/send/${contact.username}`}>
+                    <Send aria-hidden="true" />
+                    {t("sendFileButton")}
+                  </Link>
+                </Button>
+                <Button size="sm" variant="ghost" className="text-destructive" onClick={() => block(contact.id)}>
+                  {t("blockButton")}
+                </Button>
+              </Row>
+            ))}
+          </CardContent>
+        </Card>
+
+        {blocked.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle>
+                <h2>{t("blockedHeading")}</h2>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ul className="divide-y divide-border">
+                {blocked.map((contact) => (
+                  <Row key={contact.id} name={contact.username} meta={<Badge variant="muted">{t("blockedBadge")}</Badge>}>
+                    <Button size="sm" variant="outline" onClick={() => unblock(contact.id)}>
+                      {t("unblockButton")}
+                    </Button>
+                  </Row>
+                ))}
+              </ul>
+            </CardContent>
+          </Card>
+        )}
+      </div>
+    </PageContainer>
   );
 }

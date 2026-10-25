@@ -1,1 +1,10 @@
-{ "verifying": "Verifying your email…", "success": "Your email has been verified.", "errors": { "invalidToken": "This verification link is invalid or has expired." } }
+{
+  "verifying": "Confirming your email…",
+  "success": "Your email has been verified.",
+  "successHint": "Your inbox and permanent links are now unlocked.",
+  "goToOverview": "Go to overview",
+  "errors": {
+    "invalidToken": "This verification link is invalid or has expired.",
+    "invalidTokenHint": "Log in and send a new confirmation email from the banner at the top."
+  }
+}

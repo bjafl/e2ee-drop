@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import nacl from "tweetnacl";
 import { encodeBase64 } from "tweetnacl-util";
@@ -127,6 +127,21 @@ describe("HomePage dashboard branch", () => {
 
     await waitFor(() => expect(screen.getByTestId("dashboard-active-links")).toBeInTheDocument());
     expect(screen.getByTestId("anonymous-links-section")).toBeInTheDocument();
+  });
+
+  it("merges account and browser links into one list, filterable by where the key lives", async () => {
+    renderHome();
+
+    await waitFor(() => expect(screen.getByText("verifieduser")).toBeInTheDocument());
+    expect(screen.getByText("localslug")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Account" }));
+    expect(screen.getByText("verifieduser")).toBeInTheDocument();
+    expect(screen.queryByText("localslug")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "This browser" }));
+    expect(screen.queryByText("verifieduser")).not.toBeInTheDocument();
+    expect(screen.getByText("localslug")).toBeInTheDocument();
   });
 
   it("shows the pending-receipts section with an incoming counterparty from GET /api/inbox", async () => {

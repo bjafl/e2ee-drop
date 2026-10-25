@@ -14,6 +14,8 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { deriveAuthKey } from "@/lib/keyWrapping";
 import i18n from "@/i18n";
 import deleteAccountEn from "@/locales/en/deleteAccount.json";
@@ -79,18 +81,26 @@ export function DeleteAccountDialog({ onDeleted }: DeleteAccountDialogProps) {
           <AlertDialogTitle>{t("title")}</AlertDialogTitle>
           <AlertDialogDescription>{t("warning")}</AlertDialogDescription>
         </AlertDialogHeader>
-        <input
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          placeholder={t("passwordPlaceholder")}
-          className="w-full rounded border p-2 text-sm"
-          data-testid="delete-account-password"
-        />
-        {error && <p role="alert">{error}</p>}
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="delete-account-password">{t("passwordLabel")}</Label>
+          <Input
+            id="delete-account-password"
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder={t("passwordPlaceholder")}
+            data-testid="delete-account-password"
+          />
+        </div>
+        {error && (
+          <p role="alert" className="text-sm text-destructive">
+            {error}
+          </p>
+        )}
         <AlertDialogFooter>
           <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
-          <AlertDialogAction disabled={!password || submitting} onClick={handleConfirm}>
+          <AlertDialogAction variant="destructive" disabled={!password || submitting} onClick={handleConfirm}>
             {t("confirmButton")}
           </AlertDialogAction>
         </AlertDialogFooter>

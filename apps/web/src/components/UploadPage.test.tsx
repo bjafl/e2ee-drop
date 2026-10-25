@@ -139,8 +139,26 @@ async function selectFile(name = "test.txt") {
   });
 }
 
+// The send button's label reflects what's being sent ("Encrypt and send 1
+// file" / "Encrypt and send message"), so match on its stable prefix.
+const SEND_BUTTON = /^encrypt and send/i;
+
+// Sending is gated on the sender ticking "the recipient has confirmed the same
+// words" whenever the words are shown. The words derive asynchronously, so the
+// checkbox may not exist yet; when it does and is unticked, tick it.
+function confirmWordsIfShown() {
+  const box = screen.queryByTestId("codewords-confirm") as HTMLInputElement | null;
+  if (box && !box.checked) fireEvent.click(box);
+}
+
+async function confirmWords() {
+  const box = (await screen.findByTestId("codewords-confirm")) as HTMLInputElement;
+  if (!box.checked) fireEvent.click(box);
+}
+
 function clickSend() {
-  fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
+  confirmWordsIfShown();
+  fireEvent.click(screen.getByRole("button", { name: SEND_BUTTON }));
 }
 
 describe("UploadPage", () => {
@@ -378,9 +396,10 @@ describe("UploadPage", () => {
     });
 
     await selectFile();
+    await confirmWords();
 
     expect(encryptForSendMock).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: /^send$/i })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: SEND_BUTTON })).not.toBeDisabled();
   });
 
   it("disables the send button until a file is chosen or a message is typed", async () => {
@@ -389,13 +408,14 @@ describe("UploadPage", () => {
       expect(screen.getByTestId("recipient-badge")).toBeInTheDocument();
     });
 
-    expect(screen.getByRole("button", { name: /^send$/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: SEND_BUTTON })).toBeDisabled();
 
     fireEvent.change(screen.getByPlaceholderText(/optional message/i), {
       target: { value: "hi" },
     });
+    await confirmWords();
 
-    expect(screen.getByRole("button", { name: /^send$/i })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: SEND_BUTTON })).not.toBeDisabled();
   });
 
   it("shows the anonymous-consent dialog for a logged-out sender, and sends after continuing anonymously", async () => {
@@ -510,7 +530,7 @@ describe("UploadPage", () => {
     });
 
     expect(screen.queryByTestId("dropzone")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^send$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: SEND_BUTTON })).not.toBeInTheDocument();
     expect(setKeyPairMock).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("link", { name: /log in again/i }));
@@ -571,7 +591,7 @@ describe("UploadPage", () => {
     // The form must still be present and interactive after a failure — not
     // replaced by a full-page dead end.
     expect(screen.getByTestId("recipient-badge")).toBeInTheDocument();
-    const sendButton = screen.getByRole("button", { name: /^send$/i });
+    const sendButton = screen.getByRole("button", { name: SEND_BUTTON });
     expect(sendButton).not.toBeDisabled();
 
     fireEvent.click(sendButton);
@@ -743,11 +763,23 @@ describe("UploadPage", () => {
     });
 
     await selectFile("only.txt");
-    expect(screen.getByRole("button", { name: /^send$/i })).not.toBeDisabled();
+    await confirmWords();
+    expect(screen.getByRole("button", { name: SEND_BUTTON })).not.toBeDisabled();
 
     fireEvent.click(screen.getByRole("button", { name: /remove only\.txt/i }));
 
     expect(screen.queryByText("only.txt")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^send$/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: SEND_BUTTON })).toBeDisabled();
+  });
+
+  it("keeps send disabled until the sender confirms the recipient sees the same verification words", async () => {
+    renderAt("abc123");
+    await screen.findByTestId("recipient-badge");
+    await selectFile("gated.txt");
+    await screen.findByTestId("codewords-confirm");
+
+    expect(screen.getByRole("button", { name: SEND_BUTTON })).toBeDisabled();
+    fireEvent.click(screen.getByTestId("codewords-confirm"));
+    expect(screen.getByRole("button", { name: SEND_BUTTON })).not.toBeDisabled();
   });
 });

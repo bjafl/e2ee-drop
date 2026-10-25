@@ -2,8 +2,11 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { PasswordResetRequestResponse } from "@e2ee-drop/shared";
+import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { AuthCard, StatusCard } from "@/components/auth/AuthLayout";
 import i18n from "@/i18n";
 import passwordResetEn from "@/locales/en/passwordReset.json";
 import passwordResetNb from "@/locales/nb/passwordReset.json";
@@ -32,29 +35,42 @@ export function RequestPasswordResetPage() {
     setOutcome(body?.emailDeliveryAvailable === false ? "unavailable" : "sent");
   };
 
-  if (outcome === "sent") return <p>{t("request.sent")}</p>;
-  if (outcome === "unavailable") return <p>{t("request.unavailable")}</p>;
+  if (outcome === "sent") {
+    return (
+      <StatusCard tone="success" role="status" title={t("request.sentTitle")}>
+        <p>{t("request.sent")}</p>
+      </StatusCard>
+    );
+  }
+  if (outcome === "unavailable") {
+    return (
+      <StatusCard tone="error" role="status" title={t("request.unavailableTitle")}>
+        <p>{t("request.unavailable")}</p>
+      </StatusCard>
+    );
+  }
 
   return (
-    <Card className="mx-auto mt-12 max-w-md">
-      <CardHeader>
-        <CardTitle>{t("request.title")}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <form className="space-y-4" onSubmit={handleSubmit}>
-          <div>
-            <label htmlFor="reset-email">{t("request.email")}</label>
-            <input
-              id="reset-email"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full rounded border p-2"
-            />
-          </div>
-          <Button type="submit">{t("request.submit")}</Button>
-        </form>
-      </CardContent>
-    </Card>
+    <AuthCard
+      title={t("request.title")}
+      description={t("request.description")}
+      footer={<Link to="/login" className="font-medium">{t("request.backToLogin")}</Link>}
+    >
+      <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="reset-email">{t("request.email")}</Label>
+          <Input
+            id="reset-email"
+            type="email"
+            autoComplete="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
+        </div>
+        <Button type="submit" size="lg" className="mt-2 w-full">
+          {t("request.submit")}
+        </Button>
+      </form>
+    </AuthCard>
   );
 }

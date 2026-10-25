@@ -1,6 +1,7 @@
 // apps/web/src/components/RequestPasswordResetPage.test.tsx
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import userEvent from "@testing-library/user-event";
 
 import { RequestPasswordResetPage } from "./RequestPasswordResetPage";
@@ -17,7 +18,11 @@ function mockRequestResponse(emailDeliveryAvailable: boolean) {
 
 async function submitEmail() {
   const user = userEvent.setup();
-  render(<RequestPasswordResetPage />);
+  render(
+    <MemoryRouter>
+      <RequestPasswordResetPage />
+    </MemoryRouter>
+  );
   await user.type(screen.getByLabelText(/email/i), "someone@example.com");
   await user.click(screen.getByRole("button", { name: /send reset link/i }));
 }

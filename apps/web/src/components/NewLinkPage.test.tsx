@@ -96,7 +96,7 @@ describe("NewLinkPage", () => {
     render(<NewLinkPage />);
 
     fireEvent.change(screen.getByLabelText(/link name/i), { target: { value: "team-drop" } });
-    fireEvent.change(screen.getByLabelText(/note for the recipient/i), {
+    fireEvent.change(screen.getByLabelText(/note for the sender/i), {
       target: { value: "For the design team" },
     });
     fireEvent.change(screen.getByLabelText(/delete received files after/i), { target: { value: "5" } });
@@ -132,5 +132,31 @@ describe("NewLinkPage", () => {
   it("I7: pre-fills the retention field with a default value instead of leaving it blank", () => {
     render(<NewLinkPage />);
     expect(screen.getByLabelText(/delete received files after/i)).toHaveValue(1);
+  });
+
+  it("creates a browser-key, one-time link via POST /api/links when 'This browser' is chosen", async () => {
+    window.localStorage.clear();
+    authState.user = { publicKey: encodeBase64(nacl.box.keyPair().publicKey), keyPair: nacl.box.keyPair() };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ linkId: "b1", slug: "brw123", codewords: API_CODEWORDS, codewordLocale: "en", expiresAt: Date.now() + 3_600_000 }),
+      })
+    );
+
+    render(<NewLinkPage />);
+    fireEvent.click(screen.getByLabelText(/this browser/i));
+    // Account-only fields disappear; the browser-only PIN field appears.
+    expect(screen.queryByLabelText(/link name/i)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/^pin/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /create browser link/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("link", { name: /download page/i })).toHaveAttribute("href", "/receive/brw123");
+    });
+    expect(vi.mocked(fetch).mock.calls[0][0]).toBe("/api/links");
+    const stored = JSON.parse(window.localStorage.getItem("e2ee-drop:links") ?? "{}");
+    expect(stored.brw123).toBeDefined();
   });
 });

@@ -1,9 +1,11 @@
 // apps/web/src/components/LoginPage.tsx
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { AuthCard, FormError, StatusCard } from "@/components/auth/AuthLayout";
 import { useAuth } from "@/hooks/useAuth";
 import i18n from "@/i18n";
 import authEn from "@/locales/en/auth.json";
@@ -28,11 +30,13 @@ export function LoginPage() {
   const [totpCode, setTotpCode] = useState("");
   const [needsTotp, setNeedsTotp] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setSubmitting(true);
     try {
       const result = await login(email, password, needsTotp ? totpCode : undefined);
       if (result.requiresTotp) {
@@ -46,62 +50,78 @@ export function LoginPage() {
       setDone(true);
     } catch {
       setError(needsTotp ? t("login.errors.invalidTotp") : t("login.errors.invalid"));
+    } finally {
+      setSubmitting(false);
     }
   };
 
-  // Same terminal-message pattern as RegisterPage/UploadPage/CreateLinkPage:
-  // no logged-in landing page exists yet in this codebase (Plan 3), so
-  // without a `returnTo` there's no established redirect target to navigate
-  // to after a successful login.
-  if (done) return <p>{t("login.title")} ✓</p>;
+  // Without a `returnTo` there's no established redirect target, so end on a
+  // terminal confirmation with a way onward.
+  if (done) {
+    return (
+      <StatusCard tone="success" role="status" title={t("login.done")}>
+        <Button asChild>
+          <Link to="/">{t("login.goToOverview")}</Link>
+        </Button>
+      </StatusCard>
+    );
+  }
 
   return (
-    <Card className="mx-auto mt-12 max-w-md">
-      <CardHeader>
-        <CardTitle>{t("login.title")}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <form className="space-y-4" onSubmit={handleSubmit}>
-          {error && <p role="alert">{error}</p>}
-          <div>
-            <label htmlFor="login-email">{t("login.email")}</label>
-            <input
-              id="login-email"
-              type="email"
-              autoComplete="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full rounded border p-2"
+    <AuthCard
+      title={t("login.title")}
+      footer={
+        <>
+          {t("login.noAccount")} <Link to="/register" className="font-medium">{t("login.registerLink")}</Link>
+        </>
+      }
+    >
+      <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
+        {error && <FormError>{error}</FormError>}
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="login-email">{t("login.email")}</Label>
+          <Input
+            id="login-email"
+            type="email"
+            autoComplete="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
+        </div>
+        <div className="flex flex-col gap-2">
+          <div className="flex items-baseline justify-between gap-2">
+            <Label htmlFor="login-password">{t("login.password")}</Label>
+            <Link to="/reset-password" className="text-xs font-medium">
+              {t("login.forgot")}
+            </Link>
+          </div>
+          <Input
+            id="login-password"
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+        </div>
+        {needsTotp && (
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="login-totp">{t("login.totpCode")}</Label>
+            <Input
+              id="login-totp"
+              autoComplete="one-time-code"
+              autoCapitalize="off"
+              spellCheck={false}
+              inputMode="text"
+              className="font-mono tabular-nums"
+              value={totpCode}
+              onChange={(e) => setTotpCode(e.target.value)}
             />
           </div>
-          <div>
-            <label htmlFor="login-password">{t("login.password")}</label>
-            <input
-              id="login-password"
-              type="password"
-              autoComplete="current-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full rounded border p-2"
-            />
-          </div>
-          {needsTotp && (
-            <div>
-              <label htmlFor="login-totp">{t("login.totpCode")}</label>
-              <input
-                id="login-totp"
-                autoComplete="one-time-code"
-                autoCapitalize="off"
-                spellCheck={false}
-                value={totpCode}
-                onChange={(e) => setTotpCode(e.target.value)}
-                className="w-full rounded border p-2"
-              />
-            </div>
-          )}
-          <Button type="submit">{t("login.submit")}</Button>
-        </form>
-      </CardContent>
-    </Card>
+        )}
+        <Button type="submit" size="lg" className="mt-2 w-full" disabled={submitting}>
+          {t("login.submit")}
+        </Button>
+      </form>
+    </AuthCard>
   );
 }

@@ -1,9 +1,12 @@
 {
   "triggerButton": "Slett konto",
-  "title": "Slette kontoen din?",
-  "warning": "Dette sletter kontoen din, alle lenkene dine, alle filer som venter i dem, og kontaktene dine, for godt. Dette kan ikke angres.",
+  "title": "Slette kontoen?",
+  "warning": "Kontoen, alle lenkene dine, alle filer som venter i dem og kontaktene dine slettes for godt. Dette kan ikke angres.",
   "passwordPlaceholder": "Bekreft passordet ditt",
   "cancel": "Avbryt",
   "confirmButton": "Slett kontoen min for godt",
-  "errors": { "unknown": "Noe gikk galt. Prøv igjen." }
+  "errors": {
+    "unknown": "Noe gikk galt. Prøv igjen."
+  },
+  "passwordLabel": "Passord"
 }

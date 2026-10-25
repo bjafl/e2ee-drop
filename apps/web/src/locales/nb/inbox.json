@@ -1,10 +1,10 @@
 {
   "title": "Innboks",
   "loading": "Laster…",
-  "empty": "Ingenting her ennå.",
-  "selectPrompt": "Velg noen fra listen for å se leveransene deres.",
-  "incomingBadge": "innkommende",
-  "outgoingBadge": "utgående",
+  "empty": "Ingenting her ennå",
+  "selectPrompt": "Velg en person for å se leveransene.",
+  "incomingBadge": "Innkommende",
+  "outgoingBadge": "Utgående",
   "status": {
     "sender_opened": "Åpnet av avsender",
     "sent": "Sendt",
@@ -17,6 +17,31 @@
     "sent": "Sendt",
     "receiver_opened": "Åpnet av mottaker",
     "partial_delivery": "Delvis hentet",
+    "delivered": "Levert"
+  },
+  "description": "Leveranser til og fra deg, gruppert per person.",
+  "liveHint": "Oppdateres automatisk",
+  "emptyHint": "Når noen sender til en av lenkene dine, eller du sender til noen, dukker det opp her.",
+  "filterLabel": "Filtrer på retning",
+  "filterAll": "Alle",
+  "filterIncoming": "Innkommende",
+  "filterOutgoing": "Utgående",
+  "peopleLabel": "Personer",
+  "dropsLabel": "Leveranser",
+  "backToList": "Alle personer",
+  "anonymousHint": "Ingen verifisert identitet",
+  "noDrops": "Ingen leveranser.",
+  "withMessage": "med melding",
+  "progressLabel": "Fremdrift",
+  "stepDone": "fullført",
+  "stepPending": "ikke ennå",
+  "openAndDownload": "Åpne og last ned",
+  "dropCount_one": "{{count}} leveranse",
+  "dropCount_other": "{{count}} leveranser",
+  "steps": {
+    "sent": "Sendt",
+    "openedByYou": "Åpnet av deg",
+    "openedByThem": "Åpnet",
     "delivered": "Levert"
   }
 }
