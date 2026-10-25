@@ -148,7 +148,9 @@ function ReceivePageForLink() {
 
   const [link, setLink] = useState<LinkStatusResponse | null>(null);
   const [linkNotFound, setLinkNotFound] = useState(false);
-  const [pinPrompt, setPinPrompt] = useState(false);
+  // Issue #7: whether the PIN prompt shows is derived (a PIN-protected local
+  // key that hasn't been unlocked yet), not set from an effect.
+  const [pinUnlocked, setPinUnlocked] = useState(false);
   const [pinInput, setPinInput] = useState("");
   const [pinError, setPinError] = useState(false);
   const [drops, setDrops] = useState<DropSummary[]>([]);
@@ -194,6 +196,7 @@ function ReceivePageForLink() {
   // that link and must still get the anonymous single-drop view, never
   // "none" or a queue.
   const hasStoredKey = !!stored;
+  const pinPrompt = Boolean(stored?.pinProtected) && !pinUnlocked;
   const userPublicKey = user?.publicKey;
   const userKeyPair = user?.keyPair ?? null;
 
@@ -224,9 +227,8 @@ function ReceivePageForLink() {
           // leave the key pair unset and let the rest of the page render
           // normally, same as any other missing-key state here.
         });
-    } else {
-      setPinPrompt(true);
     }
+    // A PIN-protected key waits for submitPin below; `pinPrompt` derives that.
   }, [stored, slug, unlockLink, setKeyPair]);
 
   // SECURITY: only ever set the account key pair once this link is
@@ -251,7 +253,7 @@ function ReceivePageForLink() {
       const keyPair = nacl.box.keyPair.fromSecretKey(decodeBase64(raw));
       setKeyPair(keyPair);
       setLocalPublicKey(encodeBase64(keyPair.publicKey));
-      setPinPrompt(false);
+      setPinUnlocked(true);
       setPinError(false);
     } catch {
       setPinError(true);

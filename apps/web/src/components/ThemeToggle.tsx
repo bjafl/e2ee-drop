@@ -1,5 +1,4 @@
 // apps/web/src/components/ThemeToggle.tsx
-import { useEffect, useState } from "react";
 import { useTheme } from "next-themes";
 import { useTranslation } from "react-i18next";
 import { Monitor, Moon, Sun } from "lucide-react";
@@ -30,14 +29,10 @@ export function ThemeToggle() {
   const { t } = useTranslation("nav");
   const { theme, setTheme } = useTheme();
 
-  // next-themes reports `theme` as undefined until its first effect runs, to
-  // avoid a hydration mismatch. This app has no SSR step, but the same
-  // one-tick gap still exists client-side, so render a stable placeholder
-  // until then rather than flashing the wrong icon.
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
-
-  const current = mounted ? (theme ?? "system") : "system";
+  // next-themes reports `theme` as undefined until it has read the stored
+  // preference; until then show the "system" placeholder rather than flashing
+  // the wrong icon. Derived directly (issue #7) — no separate mounted flag.
+  const current = theme ?? "system";
   const Icon = ICON_FOR_THEME[current] ?? Monitor;
   const label = t(`theme${current.charAt(0).toUpperCase()}${current.slice(1)}`);
 
