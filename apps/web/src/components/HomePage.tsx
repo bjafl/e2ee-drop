@@ -24,6 +24,7 @@ import { CopyButton } from "@/components/links/CopyButton";
 import { useAuth } from "@/hooks/useAuth";
 import { accountPublicKey, useCodewords } from "@/hooks/useCodewords";
 import { useLocalLinks, type StoredLink } from "@/hooks/useLocalLinks";
+import { useLocalLinkStatuses, type LocalLinkStatus } from "@/hooks/useLocalLinkStatuses";
 import { formatDate, formatTimeLeft } from "@/lib/format";
 import i18n from "@/i18n";
 import homeEn from "@/locales/en/home.json";
@@ -60,17 +61,19 @@ function OwnLinkCodewords({ link, publicKey }: { link: LinkSummary; publicKey: s
   return <CodewordsInline words={codewords} testId={`codewords-${link.slug}`} />;
 }
 
-type Tone = "success" | "info" | "muted" | "destructive";
+type Tone = "success" | "info" | "muted" | "warning" | "destructive";
 const TONE_TEXT: Record<Tone, string> = {
   success: "text-success",
   info: "text-info",
   muted: "text-muted-foreground",
+  warning: "text-warning",
   destructive: "text-destructive",
 };
 const TONE_DOT: Record<Tone, string> = {
   success: "bg-success",
   info: "bg-info",
   muted: "bg-muted-foreground",
+  warning: "bg-warning",
   destructive: "bg-destructive",
 };
 
@@ -82,6 +85,19 @@ function StatusLabel({ tone, children }: { tone: Tone; children: ReactNode }) {
     </span>
   );
 }
+
+// Issue #2: status of a browser-key link, read from the server (see
+// useLocalLinkStatuses). Unknown/not-yet-fetched falls back to "waiting".
+const LOCAL_STATUS: Record<LocalLinkStatus, { tone: Tone; key: string }> = {
+  unknown: { tone: "muted", key: "statusWaiting" },
+  waiting: { tone: "muted", key: "statusWaiting" },
+  uploading: { tone: "info", key: "statusUploading" },
+  ready: { tone: "info", key: "statusReady" },
+  opened: { tone: "info", key: "statusOpened" },
+  partial: { tone: "warning", key: "statusPartial" },
+  delivered: { tone: "success", key: "statusDelivered" },
+  gone: { tone: "destructive", key: "statusExpired" },
+};
 
 function sendUrl(slug: string) {
   return `${window.location.origin}/send/${slug}`;
@@ -172,9 +188,11 @@ type Filter = "all" | LinkStorage;
 
 function Dashboard({
   localLinks,
+  localStatuses,
   needsReloginForCodewords,
 }: {
   localLinks: [string, StoredLink][];
+  localStatuses: Record<string, LocalLinkStatus>;
   needsReloginForCodewords: (links: LinkSummary[] | null) => boolean;
 }) {
   const { t } = useTranslation("home");
@@ -257,7 +275,7 @@ function Dashboard({
       kind: t("kindBrowser"),
       storage: "browser",
       mode: "one-time",
-      status: { tone: "muted", label: t("statusWaiting") },
+      status: { tone: LOCAL_STATUS[localStatuses[slug] ?? "unknown"].tone, label: t(LOCAL_STATUS[localStatuses[slug] ?? "unknown"].key) },
       expires: formatTimeLeft(stored.expiresAt, now),
       expiresWarn: msLeft < 6 * 60 * 60 * 1000,
       href: `/receive/${slug}`,
@@ -441,7 +459,13 @@ function Dashboard({
   );
 }
 
-function Landing({ localLinks }: { localLinks: [string, StoredLink][] }) {
+function Landing({
+  localLinks,
+  localStatuses,
+}: {
+  localLinks: [string, StoredLink][];
+  localStatuses: Record<string, LocalLinkStatus>;
+}) {
   const { t } = useTranslation("home");
   const { user } = useAuth();
   const illustrationWords = t("illustrationWords").split(" ");
@@ -543,8 +567,11 @@ function Landing({ localLinks }: { localLinks: [string, StoredLink][] }) {
                   >
                     <span className="flex min-w-0 flex-1 flex-col">
                       <span className="font-mono text-[13px] leading-5 break-all">{slug}</span>
-                      <span className="text-xs leading-4 text-muted-foreground tabular-nums">
-                        {t("expiresIn", { timeLeft: formatTimeLeft(stored.expiresAt) })}
+                      <span className="flex flex-wrap items-center gap-x-2 text-xs leading-4 text-muted-foreground tabular-nums">
+                        <StatusLabel tone={LOCAL_STATUS[localStatuses[slug] ?? "unknown"].tone}>
+                          {t(LOCAL_STATUS[localStatuses[slug] ?? "unknown"].key)}
+                        </StatusLabel>
+                        <span>{t("expiresIn", { timeLeft: formatTimeLeft(stored.expiresAt) })}</span>
                       </span>
                     </span>
                     {stored.pinProtected && <Badge variant="muted">{t("pinProtected")}</Badge>}
@@ -581,8 +608,16 @@ export function HomePage() {
   const needsReloginForCodewords = (myLinks: LinkSummary[] | null) =>
     !ownPublicKey && Boolean(myLinks?.some((link) => link.recipientIsOwner));
 
+  const localStatuses = useLocalLinkStatuses(localLinks.map(([slug]) => slug));
+
   if (isDashboard) {
-    return <Dashboard localLinks={localLinks} needsReloginForCodewords={needsReloginForCodewords} />;
+    return (
+      <Dashboard
+        localLinks={localLinks}
+        localStatuses={localStatuses}
+        needsReloginForCodewords={needsReloginForCodewords}
+      />
+    );
   }
-  return <Landing localLinks={localLinks} />;
+  return <Landing localLinks={localLinks} localStatuses={localStatuses} />;
 }

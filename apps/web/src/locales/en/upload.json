@@ -28,7 +28,9 @@
   "success": "File sent successfully.",
   "errors": {
     "linkNotFound": "This link is invalid or has expired.",
-    "uploadFailed": "Upload failed. Please try again."
+    "uploadFailed": "Upload failed. Please try again.",
+    "tooLarge_one": "{{names}} was not added: the total would exceed {{max}}.",
+    "tooLarge_other": "{{names}} were not added: the total would exceed {{max}}."
   },
   "titleNamed": "Send files to {{name}}",
   "subtitle": "Everything is encrypted in your browser before it's uploaded. The server sees neither files nor message.",
@@ -54,5 +56,8 @@
   "waitingForClaimTitle": "Waiting for the recipient",
   "waitingLive": "This page updates by itself",
   "successBody": "The files are encrypted and uploaded. The recipient can now download them.",
-  "successBodyNamed": "The files are encrypted and uploaded. {{name}} can now download them."
+  "successBodyNamed": "The files are encrypted and uploaded. {{name}} can now download them.",
+  "dropHintWithMax": "Encrypted before upload. Max {{max}} in total",
+  "totalSize": "Total",
+  "totalOfMax": "{{total}} of {{max}}"
 }

@@ -60,5 +60,10 @@
   "codewordsLabel": "Verification words",
   "codewordsReloginRequired": "Log in again to see your links' verification words — your key isn't unlocked in this tab.",
   "reloginLink": "Log in again",
-  "filterBrowserShort": "Browser"
+  "filterBrowserShort": "Browser",
+  "statusUploading": "Uploading",
+  "statusReady": "File ready",
+  "statusOpened": "Opened",
+  "statusPartial": "Partly fetched",
+  "statusDelivered": "Delivered"
 }

@@ -161,8 +161,49 @@ export function UploadPage() {
   // every recipient-side surface shows.
   const codewords = useCodewords(link?.recipientPublicKey, link?.linkId, link?.codewordLocale);
 
+  // Issue #4: the server's MAX_FILE_SIZE_BYTES caps the whole encrypted archive
+  // (all files zipped into one upload), not each file. Check the running total
+  // as files are added so an oversize selection is refused immediately instead
+  // of after a long encrypt. Advisory only — the upload-url route still 413s.
+  // An older API without maxFileSizeBytes simply skips this check.
+  const maxBytes = link?.maxFileSizeBytes;
+  const [sizeError, setSizeError] = useState<string | null>(null);
+  const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
+
+  const handleDrop = useCallback(
+    (accepted: File[]) => {
+      if (!maxBytes) {
+        setSizeError(null);
+        setFiles((prev) => [...prev, ...accepted]);
+        return;
+      }
+      let running = files.reduce((sum, f) => sum + f.size, 0);
+      const added: File[] = [];
+      const rejected: File[] = [];
+      for (const file of accepted) {
+        if (running + file.size <= maxBytes) {
+          added.push(file);
+          running += file.size;
+        } else {
+          rejected.push(file);
+        }
+      }
+      setFiles((prev) => [...prev, ...added]);
+      setSizeError(
+        rejected.length === 0
+          ? null
+          : t("errors.tooLarge", {
+              count: rejected.length,
+              names: rejected.map((f) => f.name).join(", "),
+              max: formatBytes(maxBytes),
+            })
+      );
+    },
+    [files, maxBytes, t]
+  );
+
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    onDrop: (accepted) => setFiles((prev) => [...prev, ...accepted]),
+    onDrop: handleDrop,
     disabled: isUploading,
   });
 
@@ -477,8 +518,17 @@ export function UploadPage() {
                   <Upload aria-hidden="true" className="size-5" />
                 </span>
                 <span className="font-medium">{isDragActive ? t("dropActive") : t("dropInstructions")}</span>
-                <span className="text-xs text-muted-foreground">{t("dropHint")}</span>
+                <span className="text-xs text-muted-foreground">
+                  {maxBytes ? t("dropHintWithMax", { max: formatBytes(maxBytes) }) : t("dropHint")}
+                </span>
               </div>
+
+              {sizeError && (
+                <p role="alert" data-testid="size-error" className="flex items-start gap-2 text-sm text-destructive">
+                  <X aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+                  {sizeError}
+                </p>
+              )}
 
               {files.length > 0 && (
                 <ul aria-label={t("selectedFiles")} className="divide-y rounded-md border">
@@ -496,12 +546,25 @@ export function UploadPage() {
                         className="size-11 text-muted-foreground sm:size-8"
                         aria-label={t("removeFile", { name: f.name })}
                         disabled={isUploading}
-                        onClick={() => setFiles((prev) => prev.filter((_, index) => index !== i))}
+                        onClick={() => {
+                          setSizeError(null);
+                          setFiles((prev) => prev.filter((_, index) => index !== i));
+                        }}
                       >
                         <X />
                       </Button>
                     </li>
                   ))}
+                  {files.length > 1 && (
+                    <li className="flex items-center justify-between gap-3 py-2 pr-3 pl-3 text-xs font-medium text-muted-foreground">
+                      <span>{t("totalSize")}</span>
+                      <span className="tabular-nums" data-testid="total-size">
+                        {maxBytes
+                          ? t("totalOfMax", { total: formatBytes(totalBytes), max: formatBytes(maxBytes) })
+                          : formatBytes(totalBytes)}
+                      </span>
+                    </li>
+                  )}
                 </ul>
               )}
 

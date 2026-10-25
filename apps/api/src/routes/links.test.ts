@@ -253,6 +253,20 @@ describe("link routes", () => {
     );
   });
 
+  it("reports the server's max file size on the link status so the send page can validate early", async () => {
+    const server = buildServer();
+    const createBody = (
+      await server.inject({
+        method: "POST",
+        url: "/api/links",
+        payload: { recipientPublicKey: fakePublicKey("cmVjaXBpZW50a2V5") },
+      })
+    ).json();
+
+    const body = (await server.inject({ method: "GET", url: `/api/links/${createBody.slug}` })).json();
+    expect(body.maxFileSizeBytes).toBe(env.MAX_FILE_SIZE_BYTES);
+  });
+
   it("returns the link's actual server-side expiresAt (epoch ms) on create", async () => {
     const server = buildServer();
     const before = Date.now();

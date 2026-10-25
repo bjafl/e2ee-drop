@@ -53,6 +53,39 @@ describe("HomePage", () => {
     expect(screen.queryByText(/old999/)).not.toBeInTheDocument();
   });
 
+  // Issue #2: a browser-key link shows its real server-side status, read from
+  // GET /api/links/:slug, instead of always "Waiting for file".
+  it("shows the real status of this browser's links (file ready / expired)", async () => {
+    const now = Date.now();
+    window.localStorage.setItem(
+      "e2ee-drop:links",
+      JSON.stringify({
+        ready1: { privateKey: "c2VjcmV0", createdAt: now, expiresAt: now + 60_000 },
+        gone22: { privateKey: "c2VjcmV0", createdAt: now - 1, expiresAt: now + 60_000 },
+      })
+    );
+    const fetchMock = vi.fn((url: string) => {
+      if (url === "/api/links/ready1") {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ drop: { fileUploadStatus: "complete", deliveryStatus: "sent" } }),
+        });
+      }
+      return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderHome();
+
+    const readyRow = screen.getByRole("link", { name: /ready1/ });
+    const goneRow = screen.getByRole("link", { name: /gone22/ });
+    await waitFor(() => expect(readyRow).toHaveTextContent("File ready"));
+    await waitFor(() => expect(goneRow).toHaveTextContent("Expired"));
+    expect(fetchMock).toHaveBeenCalledWith("/api/links/ready1");
+    vi.unstubAllGlobals();
+  });
+
   it("shows no link list when this browser has no stored links", () => {
     renderHome();
 

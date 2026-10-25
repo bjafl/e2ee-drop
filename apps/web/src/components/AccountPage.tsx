@@ -1,5 +1,5 @@
 // apps/web/src/components/AccountPage.tsx
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Navigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import QRCode from "react-qr-code";
@@ -52,10 +52,13 @@ export function AccountPage() {
   // (below) is in flight. The override is cleared whenever
   // user.allowContactRequests itself changes, so it can never mask a real,
   // later value from /me.
-  const [pendingOverride, setPendingOverride] = useState<boolean | null>(null);
-  useEffect(() => {
-    setPendingOverride(null);
-  }, [user?.allowContactRequests]);
+  // Issue #7: the override remembers which server value it was made against;
+  // as soon as user.allowContactRequests changes it no longer applies — the
+  // same "cleared on change" rule as before, derived instead of reset in an
+  // effect.
+  const [override, setOverride] = useState<{ value: boolean; base: boolean | undefined } | null>(null);
+  const pendingOverride = override && override.base === user?.allowContactRequests ? override.value : null;
+  const setPendingOverride = (value: boolean) => setOverride({ value, base: user?.allowContactRequests });
   // Defaults to true, matching the DB column's default (see
   // packages/db/prisma/schema.prisma) — undefined here just means the
   // initial /api/auth/me restore hasn't populated it yet (see AuthUser).

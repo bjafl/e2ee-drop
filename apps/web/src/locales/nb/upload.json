@@ -28,7 +28,9 @@
   "success": "Sendt",
   "errors": {
     "linkNotFound": "Lenken er ugyldig eller utløpt.",
-    "uploadFailed": "Opplastingen feilet. Prøv igjen."
+    "uploadFailed": "Opplastingen feilet. Prøv igjen.",
+    "tooLarge_one": "{{names}} ble ikke lagt til: totalen ville blitt over {{max}}.",
+    "tooLarge_other": "{{names}} ble ikke lagt til: totalen ville blitt over {{max}}."
   },
   "titleNamed": "Send filer til {{name}}",
   "subtitle": "Alt krypteres i nettleseren din før det lastes opp. Serveren ser verken filer eller melding.",
@@ -54,5 +56,8 @@
   "sendingAnonymously": "Du sender anonymt.",
   "logInToSendAsYou": "Logg inn for å sende som deg selv",
   "successBody": "Filene er kryptert og lastet opp. Mottakeren kan nå laste dem ned.",
-  "successBodyNamed": "Filene er kryptert og lastet opp. {{name}} kan nå laste dem ned."
+  "successBodyNamed": "Filene er kryptert og lastet opp. {{name}} kan nå laste dem ned.",
+  "dropHintWithMax": "Krypteres før opplasting. Maks {{max}} totalt",
+  "totalSize": "Totalt",
+  "totalOfMax": "{{total}} av {{max}}"
 }

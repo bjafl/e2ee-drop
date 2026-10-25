@@ -57,10 +57,7 @@ export function ContactsPage() {
   const [usernameInput, setUsernameInput] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  const reload = useCallback(async () => {
-    const res = await fetch("/api/contacts");
-    if (!res.ok) return;
-    const data = await res.json();
+  const apply = useCallback((data: { pending: ContactSummary[]; accepted: ContactSummary[]; blocked?: ContactSummary[] }) => {
     setPending(data.pending);
     setAccepted(data.accepted);
     // `blocked` holds only rows the caller themselves blocked (see
@@ -69,9 +66,26 @@ export function ContactsPage() {
     setBlocked(data.blocked ?? []);
   }, []);
 
+  const reload = useCallback(async () => {
+    const res = await fetch("/api/contacts");
+    if (!res.ok) return;
+    apply(await res.json());
+  }, [apply]);
+
+  // Initial load: state is only set once the response arrives (issue #7), and
+  // not at all if the page unmounted meanwhile.
   useEffect(() => {
-    reload();
-  }, [reload]);
+    let active = true;
+    fetch("/api/contacts")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (active && data) apply(data);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [apply]);
 
   const sendRequest = async () => {
     setError(null);

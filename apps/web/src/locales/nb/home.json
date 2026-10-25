@@ -60,5 +60,10 @@
   "codewordsLabel": "Verifiseringsord",
   "codewordsReloginRequired": "Logg inn på nytt for å se verifiseringsordene for lenkene dine. Nøkkelen din er ikke låst opp i denne fanen.",
   "reloginLink": "Logg inn på nytt",
-  "filterBrowserShort": "Nettleseren"
+  "filterBrowserShort": "Nettleseren",
+  "statusUploading": "Lastes opp",
+  "statusReady": "Fil klar",
+  "statusOpened": "Åpnet",
+  "statusPartial": "Delvis hentet",
+  "statusDelivered": "Levert"
 }

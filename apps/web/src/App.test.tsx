@@ -34,22 +34,22 @@ describe("App routing", () => {
     expect(screen.getByText(/receive files securely/i)).toBeInTheDocument();
   });
 
-  it("renders the contacts page at /contacts", () => {
+  it("renders the contacts page at /contacts (lazy-loaded)", async () => {
     render(
       <MemoryRouter initialEntries={["/contacts"]}>
         <App />
       </MemoryRouter>
     );
     // Use a more specific query to avoid multiple "Contacts" headings
-    expect(screen.getByPlaceholderText("Username to add")).toBeInTheDocument();
+    expect(await screen.findByPlaceholderText("Username to add")).toBeInTheDocument();
   });
 
-  it("renders the account page at /account", () => {
+  it("renders the account page at /account (lazy-loaded)", async () => {
     render(
       <MemoryRouter initialEntries={["/account"]}>
         <App />
       </MemoryRouter>
     );
-    expect(screen.getByText(/signed in as me/i)).toBeInTheDocument();
+    expect(await screen.findByText(/signed in as me/i)).toBeInTheDocument();
   });
 });
