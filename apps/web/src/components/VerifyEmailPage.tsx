@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { StatusCard } from "@/components/auth/AuthLayout";
 import { useAuth } from "@/hooks/useAuth";
 import i18n from "@/i18n";
 import verifyEmailEn from "@/locales/en/verifyEmail.json";
@@ -60,7 +63,26 @@ export function VerifyEmailPage() {
     };
   }, [token, patchUser]);
 
-  if (status === "pending") return <p>{t("verifying")}</p>;
-  if (status === "error") return <p role="alert">{t("errors.invalidToken")}</p>;
-  return <p>{t("success")}</p>;
+  if (status === "pending") {
+    return (
+      <StatusCard title={t("verifying")} role="status">
+        <Skeleton className="h-2 w-40" />
+      </StatusCard>
+    );
+  }
+  if (status === "error") {
+    return (
+      <StatusCard tone="error" role="alert" title={t("errors.invalidToken")}>
+        <p>{t("errors.invalidTokenHint")}</p>
+      </StatusCard>
+    );
+  }
+  return (
+    <StatusCard tone="success" role="status" title={t("success")}>
+      <p>{t("successHint")}</p>
+      <Button asChild>
+        <Link to="/">{t("goToOverview")}</Link>
+      </Button>
+    </StatusCard>
+  );
 }

@@ -13,5 +13,13 @@
   "sendFileButton": "Send a file",
   "incoming": "wants to connect",
   "outgoing": "request sent",
-  "errors": { "addFailed": "Could not send that request." }
+  "errors": {
+    "addFailed": "Could not send that request."
+  },
+  "description": "People you trust. Accepted contacts can send to you directly.",
+  "addLabel": "Add a contact",
+  "acceptedHint": "Send to a contact without asking for a link first.",
+  "emptyPending": "No pending requests.",
+  "emptyAccepted": "No contacts yet. Add someone by username above.",
+  "blockedBadge": "Blocked"
 }

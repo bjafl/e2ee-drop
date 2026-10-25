@@ -1,6 +1,6 @@
 {
   "title": "Kontakter",
-  "addPlaceholder": "Brukernavn å legge til",
+  "addPlaceholder": "Brukernavn",
   "addButton": "Send forespørsel",
   "pendingHeading": "Ventende",
   "acceptedHeading": "Kontakter",
@@ -10,8 +10,16 @@
   "cancelButton": "Avbryt",
   "blockButton": "Blokker",
   "unblockButton": "Fjern blokkering",
-  "sendFileButton": "Send en fil",
+  "sendFileButton": "Send filer",
   "incoming": "ønsker kontakt",
   "outgoing": "forespørsel sendt",
-  "errors": { "addFailed": "Kunne ikke sende forespørselen." }
+  "errors": {
+    "addFailed": "Kunne ikke sende forespørselen."
+  },
+  "description": "Folk du stoler på. Godkjente kontakter kan sende direkte til deg.",
+  "addLabel": "Legg til kontakt",
+  "acceptedHint": "Send til en kontakt uten å be om lenke først.",
+  "emptyPending": "Ingen ventende forespørsler.",
+  "emptyAccepted": "Ingen kontakter ennå. Legg til noen med brukernavn over.",
+  "blockedBadge": "Blokkert"
 }

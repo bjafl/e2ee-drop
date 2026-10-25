@@ -2,9 +2,12 @@
 import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
+import { TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label, FieldHint } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { AuthCard, FormError, StatusCard } from "@/components/auth/AuthLayout";
 import { useAuth, RegisterError } from "@/hooks/useAuth";
 import { MIN_PASSWORD_LENGTH, isPasswordLongEnough } from "@/lib/passwordPolicy";
 import i18n from "@/i18n";
@@ -75,86 +78,82 @@ export function RegisterPage() {
 
   if (recoveryCode && !confirmed) {
     return (
-      <Card className="mx-auto mt-12 max-w-md">
-        <CardHeader>
-          <CardTitle>{t("register.recoveryTitle")}</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <Alert variant="destructive">
-            <AlertDescription>{t("register.recoveryWarning")}</AlertDescription>
+      <AuthCard title={t("register.recoveryTitle")}>
+        <div className="flex flex-col gap-4">
+          <Alert variant="warning">
+            <TriangleAlert aria-hidden="true" />
+            <AlertDescription className="text-foreground">{t("register.recoveryWarning")}</AlertDescription>
           </Alert>
-          <p className="break-all rounded bg-muted p-2 font-mono text-sm">{recoveryCode}</p>
-          <Button onClick={() => setConfirmed(true)}>{t("register.recoveryConfirm")}</Button>
-        </CardContent>
-      </Card>
+          <p className="rounded-md bg-muted px-4 py-3 text-center font-mono text-lg leading-6 font-medium break-all">
+            {recoveryCode}
+          </p>
+          <Button size="lg" onClick={() => setConfirmed(true)}>
+            {t("register.recoveryConfirm")}
+          </Button>
+        </div>
+      </AuthCard>
     );
   }
 
-  // Once the recovery code is confirmed there's nowhere established to send the
-  // user yet: this codebase has no logged-in "my account" landing page (that
-  // arrives in Plan 3) and no page here uses useNavigate — CreateLinkPage and
-  // UploadPage both end on a bare terminal message after success rather than
-  // redirecting. We follow that same pattern deliberately rather than invent a
-  // redirect target that doesn't exist yet.
-  if (confirmed) return <p>{t("register.title")} ✓</p>;
+  if (confirmed) {
+    return (
+      <StatusCard tone="success" role="status" title={t("register.done")}>
+        <p>{t("register.doneHint")}</p>
+        <Button asChild>
+          <Link to="/">{t("register.goToOverview")}</Link>
+        </Button>
+      </StatusCard>
+    );
+  }
+
+  const field = (
+    id: string,
+    label: string,
+    value: string,
+    onChange: (v: string) => void,
+    extra: React.ComponentProps<"input"> = {}
+  ) => (
+    <div className="flex flex-col gap-2">
+      <Label htmlFor={id}>{label}</Label>
+      <Input id={id} value={value} onChange={(e) => onChange(e.target.value)} {...extra} />
+    </div>
+  );
 
   return (
-    <Card className="mx-auto mt-12 max-w-md">
-      <CardHeader>
-        <CardTitle>{t("register.title")}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <form className="space-y-4" onSubmit={handleSubmit}>
-          {error && <p role="alert">{error}</p>}
-          <div>
-            <label htmlFor="email">{t("register.email")}</label>
-            <input
-              id="email"
-              type="email"
-              autoComplete="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full rounded border p-2"
-            />
-          </div>
-          <div>
-            <label htmlFor="username">{t("register.username")}</label>
-            <input
-              id="username"
-              autoComplete="username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className="w-full rounded border p-2"
-            />
-          </div>
-          <div>
-            <label htmlFor="name">{t("register.name")}</label>
-            <input
-              id="name"
-              autoComplete="name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="w-full rounded border p-2"
-            />
-          </div>
-          <div>
-            <label htmlFor="password">{t("register.password")}</label>
-            <input
-              id="password"
-              type="password"
-              autoComplete="new-password"
-              aria-describedby="password-hint"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full rounded border p-2"
-            />
-            <p id="password-hint" className="text-sm text-muted-foreground">
-              {t("register.passwordHint", { min: MIN_PASSWORD_LENGTH })}
-            </p>
-          </div>
-          <Button type="submit">{t("register.submit")}</Button>
-        </form>
-      </CardContent>
-    </Card>
+    <AuthCard
+      title={t("register.title")}
+      description={t("register.description")}
+      footer={
+        <>
+          {t("register.haveAccount")} <Link to="/login" className="font-medium">{t("register.loginLink")}</Link>
+        </>
+      }
+    >
+      <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
+        {error && <FormError>{error}</FormError>}
+        {field("email", t("register.email"), email, setEmail, { type: "email", autoComplete: "email" })}
+        {field("username", t("register.username"), username, setUsername, {
+          autoComplete: "username",
+          autoCapitalize: "off",
+          spellCheck: false,
+        })}
+        {field("name", t("register.name"), name, setName, { autoComplete: "name" })}
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="password">{t("register.password")}</Label>
+          <Input
+            id="password"
+            type="password"
+            autoComplete="new-password"
+            aria-describedby="password-hint"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          <FieldHint id="password-hint">{t("register.passwordHint", { min: MIN_PASSWORD_LENGTH })}</FieldHint>
+        </div>
+        <Button type="submit" size="lg" className="mt-2 w-full">
+          {t("register.submit")}
+        </Button>
+      </form>
+    </AuthCard>
   );
 }

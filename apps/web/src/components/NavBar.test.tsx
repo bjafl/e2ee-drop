@@ -36,7 +36,35 @@ describe("NavBar", () => {
     expect(screen.queryByRole("button", { name: /log out/i })).not.toBeInTheDocument();
   });
 
-  it("shows contacts/new link/account/logout and hides login/register when logged in", () => {
+  it("marks the current route's nav link as the active page", () => {
+    authState.user = { id: "u1", username: "alice", emailVerified: true };
+
+    render(
+      <MemoryRouter initialEntries={["/inbox"]}>
+        <NavBar />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByRole("link", { name: /^inbox$/i })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: /^overview$/i })).not.toHaveAttribute("aria-current");
+  });
+
+  it("opens the mobile menu sheet with navigation and log out", async () => {
+    authState.user = { id: "u1", username: "alice", emailVerified: true };
+
+    render(
+      <MemoryRouter>
+        <NavBar />
+      </MemoryRouter>
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: /open menu/i }));
+    const sheet = await screen.findByRole("dialog");
+    expect(sheet).toHaveTextContent(/account and security/i);
+    expect(sheet).toHaveTextContent(/log out/i);
+  });
+
+  it("shows contacts/new link/account/logout and hides login/register when logged in", async () => {
     authState.user = { id: "u1", username: "alice" };
 
     render(
@@ -47,6 +75,8 @@ describe("NavBar", () => {
 
     expect(screen.getByRole("link", { name: /contacts/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /new link/i })).toBeInTheDocument();
+    // Account and Log out live in the account menu (a disclosure) since the redesign.
+    await userEvent.click(screen.getByRole("button", { name: /account menu for alice/i }));
     expect(screen.getByRole("link", { name: /^account$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /log out/i })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /log in/i })).not.toBeInTheDocument();
@@ -62,6 +92,7 @@ describe("NavBar", () => {
       </MemoryRouter>
     );
 
+    await userEvent.click(screen.getByRole("button", { name: /account menu for alice/i }));
     await userEvent.click(screen.getByRole("button", { name: /log out/i }));
 
     expect(logout).toHaveBeenCalledTimes(1);

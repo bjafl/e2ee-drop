@@ -17,6 +17,15 @@
     "currentCodeLabel": "Enter your current 6-digit code or a backup code to continue",
     "backupCodesWarning": "Save these codes now — they will not be shown again. Each can be used once to log in if you lose access to your authenticator.",
     "backupCodesCopy": "Copy all",
-    "backupCodesDone": "I've saved these codes"
-  }
+    "backupCodesDone": "I've saved these codes",
+    "statusOn": "On",
+    "statusOff": "Off",
+    "description": "Ask for a code from your authenticator app when you log in.",
+    "cancel": "Cancel"
+  },
+  "description": "Sign-in, security and privacy for your account.",
+  "emailVerified": "Verified",
+  "emailUnverified": "Not verified",
+  "allowContactRequestsHint": "Others can ask to add you as a contact from your links.",
+  "dangerZoneHint": "Removes your account, your links and everything waiting in them. This can't be undone."
 }

@@ -5,5 +5,8 @@
   "passwordPlaceholder": "Confirm your password",
   "cancel": "Cancel",
   "confirmButton": "Permanently delete my account",
-  "errors": { "unknown": "Something went wrong. Please try again." }
+  "errors": {
+    "unknown": "Something went wrong. Please try again."
+  },
+  "passwordLabel": "Password"
 }

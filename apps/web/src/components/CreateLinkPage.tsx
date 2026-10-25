@@ -1,21 +1,21 @@
 // apps/web/src/components/CreateLinkPage.tsx
-import { useState } from "react";
-import nacl from "tweetnacl";
-import { encodeBase64 } from "tweetnacl-util";
-import { useTranslation } from "react-i18next";
+//
+// /create: a one-time receive link whose private key lives only in this
+// browser. Key generation and storage live in useCreateBrowserLink (shared
+// with NewLinkPage's "This browser" option); this page is the form and the
+// "Your link is ready" result.
+import { useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
-import type { CreateLinkResponse } from "@e2ee-drop/shared";
+import { useTranslation } from "react-i18next";
+import { Monitor } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { useLocalLinks } from "@/hooks/useLocalLinks";
-import { isLocalStorageWritable } from "@/lib/storageProbe";
-import { useCodewords } from "@/hooks/useCodewords";
-import i18n from "@/i18n";
-import createLinkEn from "@/locales/en/createLink.json";
-import createLinkNb from "@/locales/nb/createLink.json";
-
-i18n.addResourceBundle("en", "createLink", createLinkEn, true, false);
-i18n.addResourceBundle("nb", "createLink", createLinkNb, true, false);
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { FieldHint, Label } from "@/components/ui/label";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { PageContainer, PageHeader } from "@/components/common/Page";
+import { BrowserLinkResult } from "@/components/links/BrowserLinkResult";
+import { useCreateBrowserLink } from "@/components/links/useCreateBrowserLink";
 
 // I7 (final review): mirrors apps/api/src/env.ts's DROP_RETENTION_DAYS_DEFAULT
 // (1) — no frontend-visible response exposes the operator-configured value
@@ -24,156 +24,98 @@ i18n.addResourceBundle("nb", "createLink", createLinkNb, true, false);
 const DEFAULT_RETENTION_DAYS_PLACEHOLDER = 1;
 
 export function CreateLinkPage() {
-  const { t, i18n: i18next } = useTranslation("createLink");
-  const { saveLink } = useLocalLinks();
+  const { t } = useTranslation("createLink");
+  const { create, created, creating, error } = useCreateBrowserLink();
   const [ownerNote, setOwnerNote] = useState("");
   const [retentionDays, setRetentionDays] = useState<number | "">(DEFAULT_RETENTION_DAYS_PLACEHOLDER);
   const [pin, setPin] = useState("");
-  const [slug, setSlug] = useState<string | null>(null);
-  // Review finding F1: the phrase is derived locally from the public half of
-  // the key pair this page generated itself (the only copy of its private
-  // key goes into this browser's storage, never to the server), plus the
-  // new link's id and wordlist locale — never from the response's
-  // `codewords` field.
-  const [created, setCreated] = useState<{ publicKey: string; linkId: string; locale: string } | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-  const [creating, setCreating] = useState(false);
 
-  const create = async () => {
-    setError(null);
-    // Task 9 / F9 (step 1, strategy a): the create call below persists its
-    // private key the same way ReceivePage.tsx's anonymous claim does — via
-    // saveLink -> useLocalLinks' localStorage write, whose actual
-    // localStorage.setItem happens later, decoupled, inside that hook's own
-    // useEffect (try/catch, no re-throw). Awaiting saveLink can't surface a
-    // storage failure, so probe storage directly first, same as ClaimView.
-    // Milder consequence than the claim flow (an unused link just expires
-    // server-side), but still worth refusing rather than silently leaving the
-    // key in memory only.
-    if (!isLocalStorageWritable()) {
-      setError(t("errors.storageUnavailable"));
-      return;
-    }
-    setCreating(true);
-    try {
-      const keyPair = nacl.box.keyPair();
-      const locale = i18next.language?.startsWith("nb") ? "nb" : "en";
-      const response = await fetch("/api/links", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          recipientPublicKey: encodeBase64(keyPair.publicKey),
-          locale,
-          ownerNote: ownerNote || undefined,
-          retentionDays: retentionDays === "" ? undefined : retentionDays,
-        }),
-      });
-      if (!response.ok) throw new Error("create failed");
-      const body = (await response.json()) as CreateLinkResponse;
-      // POST /api/links (one-time, anonymous links only) always sets expiresAt
-      // server-side — CreateLinkResponse.expiresAt is only optional because the
-      // same response type is reused by POST /api/links/custom, whose permanent
-      // links have none. Treat a missing one here as a malformed response.
-      if (body.expiresAt === undefined) throw new Error("create failed: missing expiresAt");
-      // Keep the private key exactly as long as the server keeps the link
-      // (operator-configurable LINK_EXPIRY_HOURS) — forgetting it earlier would
-      // make a later drop on a still-valid link undecryptable. Optionally wrapped
-      // with the owner's PIN (design spec §3.4) before being written to storage.
-      await saveLink(body.slug, encodeBase64(keyPair.secretKey), body.expiresAt, pin || undefined);
-      setSlug(body.slug);
-      // The server's codewordLocale is harmless to use (it only picks the
-      // wordlist; the hash comes from our own key) and keeps this phrase on
-      // the same wordlist the sender's page will use for this link.
-      setCreated({ publicKey: encodeBase64(keyPair.publicKey), linkId: body.linkId, locale: body.codewordLocale ?? locale });
-    } catch {
-      setError(t("errors.createFailed"));
-    } finally {
-      setCreating(false);
-    }
-  };
+  if (created) {
+    return (
+      <PageContainer>
+        <BrowserLinkResult created={created} />
+      </PageContainer>
+    );
+  }
 
-  const link = slug ? `${window.location.origin}/send/${slug}` : null;
-  const codewords = useCodewords(created?.publicKey, created?.linkId, created?.locale);
-
-  const copyLink = async () => {
-    if (!link) return;
-    await navigator.clipboard.writeText(link);
-    setCopied(true);
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    void create({
+      ownerNote,
+      retentionDays: retentionDays === "" ? undefined : retentionDays,
+      pin: pin || undefined,
+    });
   };
 
   return (
-    <Card className="mx-auto mt-12 max-w-md">
-      <CardHeader>
-        <CardTitle>{t("title")}</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {error && <p role="alert">{error}</p>}
-        {!link && (
-          <>
-            <div>
-              <label htmlFor="ownerNote">{t("ownerNoteLabel")}</label>
-              <textarea
-                id="ownerNote"
-                value={ownerNote}
-                onChange={(e) => setOwnerNote(e.target.value)}
-                placeholder={t("ownerNotePlaceholder")}
-                className="w-full rounded border p-2 text-sm"
-              />
-              <p className="text-xs text-muted-foreground">{t("ownerNoteWarning")}</p>
-            </div>
-            <div>
-              <label htmlFor="retentionDays">{t("retentionDaysLabel")}</label>
-              <input
-                id="retentionDays"
-                type="number"
-                min={1}
-                value={retentionDays}
-                onChange={(e) => setRetentionDays(e.target.value === "" ? "" : Number(e.target.value))}
-                className="w-full rounded border p-2 text-sm"
-              />
-            </div>
-            <div>
-              <label htmlFor="pin">{t("pinLabel")}</label>
-              <input
-                id="pin"
-                type="password"
-                inputMode="numeric"
-                value={pin}
-                onChange={(e) => setPin(e.target.value)}
-                placeholder={t("pinPlaceholder")}
-                className="w-full rounded border p-2 text-sm"
-              />
-              <p className="text-xs text-muted-foreground">{t("pinWarning")}</p>
-            </div>
-            <Button onClick={create} disabled={creating}>
-              {creating ? t("creating") : t("createButton")}
-            </Button>
-          </>
+    <PageContainer width="narrow">
+      <PageHeader title={t("title")} description={t("intro")} />
+      <form onSubmit={submit} className="flex flex-col gap-6">
+        {error && (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
         )}
-        {link && (
-          <>
-            <p className="break-all rounded bg-muted p-2 text-sm">{link}</p>
-            <Button onClick={copyLink}>{copied ? t("copied") : t("copyLink")}</Button>
-            {/* All CODEWORD_WORD_COUNT words, the same count the sender's
-                page shows (finding F1, Step 3) — no truncated preview. */}
-            {codewords && (
-              <div>
-                <p className="text-sm text-muted-foreground">{t("codewordsLabel")}</p>
-                <p className="font-mono text-lg" data-testid="codewords">
-                  {codewords.join(" · ")}
-                </p>
-              </div>
-            )}
-            <div className="space-y-2 border-t pt-4">
-              <p className="text-sm text-muted-foreground">{t("downloadPageHint")}</p>
-              <Button asChild variant="secondary">
-                <Link to={`/receive/${slug}`}>{t("goToDownloadPage")}</Link>
-              </Button>
-            </div>
-          </>
-        )}
-      </CardContent>
-    </Card>
+
+        <Alert variant="info" role="note">
+          <Monitor aria-hidden="true" />
+          <AlertTitle>{t("browserNoteTitle")}</AlertTitle>
+          <AlertDescription>
+            {t("browserNoteBody")} {t("accountNudge")}{" "}
+            <Link to="/register" className="font-medium text-primary no-underline hover:text-primary-hover">
+              {t("createAccount")}
+            </Link>
+          </AlertDescription>
+        </Alert>
+
+        <div className="flex flex-col gap-5 rounded-lg border bg-card p-4 md:p-6">
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="ownerNote">
+              {t("ownerNoteLabel")} <span className="font-normal text-muted-foreground">{t("optional")}</span>
+            </Label>
+            <Textarea
+              id="ownerNote"
+              rows={2}
+              value={ownerNote}
+              onChange={(e) => setOwnerNote(e.target.value)}
+              placeholder={t("ownerNotePlaceholder")}
+            />
+            <FieldHint>{t("ownerNoteWarning")}</FieldHint>
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="retentionDays">{t("retentionDaysLabel")}</Label>
+            <Input
+              id="retentionDays"
+              type="number"
+              min={1}
+              inputMode="numeric"
+              value={retentionDays}
+              onChange={(e) => setRetentionDays(e.target.value === "" ? "" : Number(e.target.value))}
+              className="max-w-32 tabular-nums"
+            />
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="pin">{t("pinLabel")}</Label>
+            <Input
+              id="pin"
+              type="password"
+              inputMode="numeric"
+              autoComplete="off"
+              value={pin}
+              onChange={(e) => setPin(e.target.value)}
+              placeholder={t("pinPlaceholder")}
+              className="max-w-48"
+            />
+            <FieldHint className="max-w-prose">{t("pinWarning")}</FieldHint>
+          </div>
+        </div>
+
+        <div className="flex justify-end">
+          <Button type="submit" size="lg" disabled={creating} className="h-12 w-full sm:h-10 sm:w-auto">
+            {creating ? t("creating") : t("createButton")}
+          </Button>
+        </div>
+      </form>
+    </PageContainer>
   );
 }

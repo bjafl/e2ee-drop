@@ -44,7 +44,8 @@ export function ThemeToggle() {
   return (
     <Button
       variant="ghost"
-      size="icon-sm"
+      size="icon"
+      className="text-muted-foreground"
       aria-label={label}
       title={label}
       onClick={() => setTheme(NEXT_THEME[current] ?? "system")}

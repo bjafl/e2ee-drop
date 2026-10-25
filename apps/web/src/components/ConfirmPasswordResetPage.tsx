@@ -4,9 +4,14 @@ import { useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import nacl from "tweetnacl";
 import { encodeBase64 } from "tweetnacl-util";
+import { Link } from "react-router-dom";
+import { TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label, FieldHint } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Skeleton } from "@/components/ui/skeleton";
+import { AuthCard, FormError, StatusCard } from "@/components/auth/AuthLayout";
 import {
   generateWrappingSalt,
   deriveWrappingKey,
@@ -206,128 +211,127 @@ export function ConfirmPasswordResetPage() {
     setDone(true);
   };
 
-  if (invalidToken) return <p role="alert">{t("confirm.errors.invalidToken")}</p>;
+  if (invalidToken) {
+    return <StatusCard tone="error" role="alert" title={t("confirm.errors.invalidToken")} />;
+  }
 
   if (freshRecoveryCode && !done) {
     return (
-      <Card className="mx-auto mt-12 max-w-md">
-        <CardHeader>
-          <CardTitle>{t("confirm.newRecoveryTitle")}</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <Alert variant="destructive">
-            <AlertDescription>{t("confirm.newRecoveryWarning")}</AlertDescription>
+      <AuthCard title={t("confirm.newRecoveryTitle")}>
+        <div className="flex flex-col gap-4">
+          <Alert variant="warning">
+            <TriangleAlert aria-hidden="true" />
+            <AlertDescription className="text-foreground">{t("confirm.newRecoveryWarning")}</AlertDescription>
           </Alert>
-          <p className="break-all rounded bg-muted p-2 font-mono text-sm">{freshRecoveryCode}</p>
-          <Button onClick={handleFreshRecoveryConfirm}>{t("confirm.newRecoveryConfirm")}</Button>
-        </CardContent>
-      </Card>
+          <p className="rounded-md bg-muted px-4 py-3 text-center font-mono text-lg leading-6 font-medium break-all">
+            {freshRecoveryCode}
+          </p>
+          <Button size="lg" onClick={handleFreshRecoveryConfirm}>
+            {t("confirm.newRecoveryConfirm")}
+          </Button>
+        </div>
+      </AuthCard>
     );
   }
 
-  if (done) return <p>{t("confirm.success")}</p>;
-  if (!info) return <p>…</p>;
+  if (done) {
+    return (
+      <StatusCard tone="success" role="status" title={t("confirm.success")}>
+        <Button asChild>
+          <Link to="/login">{t("confirm.goToLogin")}</Link>
+        </Button>
+      </StatusCard>
+    );
+  }
+  if (!info) {
+    return (
+      <AuthCard title={t("confirm.title")}>
+        <div className="flex flex-col gap-3" aria-busy="true">
+          <Skeleton className="h-4 w-3/4" />
+          <Skeleton className="h-9 w-full" />
+          <Skeleton className="h-9 w-full" />
+        </div>
+      </AuthCard>
+    );
+  }
+
+  const totpField = (id: string) => (
+    <div className="flex flex-col gap-2">
+      <Label htmlFor={id}>{t("confirm.totpCode")}</Label>
+      <Input
+        id={id}
+        autoComplete="one-time-code"
+        inputMode="numeric"
+        autoCapitalize="off"
+        spellCheck={false}
+        className="font-mono tabular-nums"
+        aria-describedby={`${id}-help`}
+        value={totpCode}
+        onChange={(e) => setTotpCode(e.target.value)}
+      />
+      <FieldHint id={`${id}-help`}>{t("confirm.totpHelp")}</FieldHint>
+    </div>
+  );
+
+  const passwordField = (id: string) => (
+    <div className="flex flex-col gap-2">
+      <Label htmlFor={id}>{t("confirm.newPassword")}</Label>
+      <Input
+        id={id}
+        type="password"
+        autoComplete="new-password"
+        aria-describedby={`${id}-hint`}
+        value={newPassword}
+        onChange={(e) => setNewPassword(e.target.value)}
+      />
+      <FieldHint id={`${id}-hint`}>{t("confirm.passwordHint", { min: MIN_PASSWORD_LENGTH })}</FieldHint>
+    </div>
+  );
 
   return (
-    <Card className="mx-auto mt-12 max-w-md">
-      <CardHeader>
-        <CardTitle>{t("confirm.title")}</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {error && <p role="alert">{error}</p>}
+    <AuthCard title={t("confirm.title")}>
+      <div className="flex flex-col gap-4">
+        {error && <FormError>{error}</FormError>}
         {!noRecovery && (
-          <form className="space-y-4" onSubmit={handleRecoverySubmit}>
-            <p>{t("confirm.recoveryHelp")}</p>
-            <div>
-              <label htmlFor="recovery-code">{t("confirm.recoveryCode")}</label>
-              <input
+          <form className="flex flex-col gap-4" onSubmit={handleRecoverySubmit}>
+            <p className="text-muted-foreground">{t("confirm.recoveryHelp")}</p>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="recovery-code">{t("confirm.recoveryCode")}</Label>
+              <Input
                 id="recovery-code"
+                autoCapitalize="off"
+                spellCheck={false}
+                className="font-mono"
                 value={recoveryCode}
                 onChange={(e) => setRecoveryCode(e.target.value)}
-                className="w-full rounded border p-2"
               />
             </div>
-            <div>
-              <label htmlFor="new-password">{t("confirm.newPassword")}</label>
-              <input
-                id="new-password"
-                type="password"
-                autoComplete="new-password"
-                aria-describedby="new-password-hint"
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                className="w-full rounded border p-2"
-              />
-              <p id="new-password-hint" className="text-sm text-muted-foreground">
-                {t("confirm.passwordHint", { min: MIN_PASSWORD_LENGTH })}
-              </p>
+            {passwordField("new-password")}
+            {needsTotp && totpField("reset-totp")}
+            <div className="mt-2 flex flex-col gap-2">
+              <Button type="submit" size="lg" disabled={submitting}>
+                {t("confirm.submitWithRecovery")}
+              </Button>
+              <Button type="button" variant="ghost" disabled={submitting} onClick={() => setNoRecovery(true)}>
+                {t("confirm.noRecovery")}
+              </Button>
             </div>
-            {needsTotp && (
-              <div>
-                <p>{t("confirm.totpHelp")}</p>
-                <label htmlFor="reset-totp">{t("confirm.totpCode")}</label>
-                <input
-                  id="reset-totp"
-                  autoComplete="one-time-code"
-                  inputMode="numeric"
-                  autoCapitalize="off"
-                  spellCheck={false}
-                  value={totpCode}
-                  onChange={(e) => setTotpCode(e.target.value)}
-                  className="w-full rounded border p-2"
-                />
-              </div>
-            )}
-            <Button type="submit" disabled={submitting}>
-              {t("confirm.submitWithRecovery")}
-            </Button>
-            <Button type="button" variant="ghost" disabled={submitting} onClick={() => setNoRecovery(true)}>
-              {t("confirm.noRecovery")}
-            </Button>
           </form>
         )}
         {noRecovery && (
-          <form className="space-y-4" onSubmit={handleFreshSubmit}>
-            <Alert variant="destructive">
-              <AlertDescription>{t("confirm.freshWarning")}</AlertDescription>
+          <form className="flex flex-col gap-4" onSubmit={handleFreshSubmit}>
+            <Alert variant="warning">
+              <TriangleAlert aria-hidden="true" />
+              <AlertDescription className="text-foreground">{t("confirm.freshWarning")}</AlertDescription>
             </Alert>
-            <div>
-              <label htmlFor="fresh-new-password">{t("confirm.newPassword")}</label>
-              <input
-                id="fresh-new-password"
-                type="password"
-                autoComplete="new-password"
-                aria-describedby="fresh-new-password-hint"
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                className="w-full rounded border p-2"
-              />
-              <p id="fresh-new-password-hint" className="text-sm text-muted-foreground">
-                {t("confirm.passwordHint", { min: MIN_PASSWORD_LENGTH })}
-              </p>
-            </div>
-            {needsTotp && (
-              <div>
-                <p>{t("confirm.totpHelp")}</p>
-                <label htmlFor="fresh-reset-totp">{t("confirm.totpCode")}</label>
-                <input
-                  id="fresh-reset-totp"
-                  autoComplete="one-time-code"
-                  inputMode="numeric"
-                  autoCapitalize="off"
-                  spellCheck={false}
-                  value={totpCode}
-                  onChange={(e) => setTotpCode(e.target.value)}
-                  className="w-full rounded border p-2"
-                />
-              </div>
-            )}
-            <Button type="submit" disabled={submitting}>
+            {passwordField("fresh-new-password")}
+            {needsTotp && totpField("fresh-reset-totp")}
+            <Button type="submit" variant="destructive" size="lg" className="mt-2" disabled={submitting}>
               {t("confirm.submitFresh")}
             </Button>
           </form>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </AuthCard>
   );
 }

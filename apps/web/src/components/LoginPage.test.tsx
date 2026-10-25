@@ -66,7 +66,7 @@ describe("LoginPage", () => {
     await fillAndSubmit(user);
 
     await waitFor(() => {
-      expect(screen.getByText(/log in ✓/i)).toBeInTheDocument();
+      expect(screen.getByText(/you.re logged in/i)).toBeInTheDocument();
     });
   });
 });

@@ -1,1 +1,10 @@
-{ "verifying": "Bekrefter e-posten din…", "success": "E-posten din er bekreftet.", "errors": { "invalidToken": "Denne bekreftelseslenken er ugyldig eller utløpt." } }
+{
+  "verifying": "Bekrefter e-posten din …",
+  "success": "E-posten din er bekreftet.",
+  "successHint": "Innboks og faste lenker er nå låst opp.",
+  "goToOverview": "Gå til oversikten",
+  "errors": {
+    "invalidToken": "Bekreftelseslenken er ugyldig eller utløpt.",
+    "invalidTokenHint": "Logg inn og send en ny bekreftelse fra banneret øverst."
+  }
+}

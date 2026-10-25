@@ -96,7 +96,7 @@ describe("NewLinkPage", () => {
     render(<NewLinkPage />);
 
     fireEvent.change(screen.getByLabelText(/link name/i), { target: { value: "team-drop" } });
-    fireEvent.change(screen.getByLabelText(/note for the recipient/i), {
+    fireEvent.change(screen.getByLabelText(/note for the sender/i), {
       target: { value: "For the design team" },
     });
     fireEvent.change(screen.getByLabelText(/delete received files after/i), { target: { value: "5" } });

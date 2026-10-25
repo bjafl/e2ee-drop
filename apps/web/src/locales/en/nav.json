@@ -15,5 +15,14 @@
   "resendVerification": "Resend verification email",
   "resendVerificationCooldown": "Resend available in {{seconds}}s",
   "resendUnavailable": "Email delivery is not configured on this server. Contact the administrator.",
-  "resendFailed": "Could not resend verification email. Please try again later."
+  "resendFailed": "Could not resend verification email. Please try again later.",
+  "overview": "Overview",
+  "accountSecurity": "Account and security",
+  "accountMenu": "Account menu for {{username}}",
+  "signedInAs": "Signed in as",
+  "mainMenu": "Main menu",
+  "theme": "Theme",
+  "themeOptionSystem": "System",
+  "themeOptionLight": "Light",
+  "themeOptionDark": "Dark"
 }
