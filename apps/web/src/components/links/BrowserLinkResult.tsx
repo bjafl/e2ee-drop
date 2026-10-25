@@ -97,7 +97,7 @@ export function BrowserLinkResult({
                 <Button
                   type="button"
                   variant="ghost"
-                  className="h-11 px-0 text-primary sm:hidden"
+                  className="h-11 px-0 text-primary-text sm:hidden"
                   aria-expanded={showQr}
                   onClick={() => setShowQr((v) => !v)}
                 >
@@ -169,7 +169,7 @@ export function BrowserLinkResult({
             <div className="flex flex-col gap-2 rounded-lg border bg-card p-4">
               <p className="font-semibold">{t("upsellTitle")}</p>
               <p className="text-muted-foreground">{t("upsellBody")}</p>
-              <Link to="/register" className="inline-flex min-h-11 items-center font-medium text-primary hover:text-primary-hover sm:min-h-0">
+              <Link to="/register" className="inline-flex min-h-11 items-center font-medium text-primary-text hover:text-primary-text hover:underline sm:min-h-0">
                 {t("createAccount")}
               </Link>
             </div>

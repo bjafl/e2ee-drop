@@ -62,7 +62,7 @@ export function CreateLinkPage() {
           <AlertTitle>{t("browserNoteTitle")}</AlertTitle>
           <AlertDescription>
             {t("browserNoteBody")} {t("accountNudge")}{" "}
-            <Link to="/register" className="font-medium text-primary no-underline hover:text-primary-hover">
+            <Link to="/register" className="font-medium text-primary-text no-underline hover:text-primary-text hover:underline">
               {t("createAccount")}
             </Link>
           </AlertDescription>

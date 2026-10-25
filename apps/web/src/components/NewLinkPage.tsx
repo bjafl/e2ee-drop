@@ -176,7 +176,7 @@ export function NewLinkPage() {
               <Info className="mt-0.5 size-4 shrink-0 text-info" aria-hidden="true" />
               <span>
                 {t("codewordsReloginRequired")}{" "}
-                <Link to="/login" state={{ returnTo: "/" }} className="font-medium text-primary hover:text-primary-hover">
+                <Link to="/login" state={{ returnTo: "/" }} className="font-medium text-primary-text hover:text-primary-text hover:underline">
                   {t("reloginLink")}
                 </Link>
               </span>
@@ -207,7 +207,7 @@ export function NewLinkPage() {
         eyebrow={
           <Link
             to="/"
-            className="inline-flex min-h-11 items-center gap-1 self-start text-xs leading-4 font-medium text-primary no-underline hover:text-primary-hover sm:min-h-0"
+            className="inline-flex min-h-11 items-center gap-1 self-start text-xs leading-4 font-medium text-primary-text no-underline hover:text-primary-text hover:underline sm:min-h-0"
           >
             <ArrowLeft className="size-3.5" aria-hidden="true" />
             {t("back")}

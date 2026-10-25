@@ -611,7 +611,7 @@ export function UploadPage() {
                   ) : (
                     <>
                       {t("sendingAnonymously")}{" "}
-                      <Link to="/login" state={{ returnTo: `/send/${slug}` }} className="font-medium text-primary">
+                      <Link to="/login" state={{ returnTo: `/send/${slug}` }} className="font-medium text-primary-text">
                         {t("logInToSendAsYou")}
                       </Link>
                     </>

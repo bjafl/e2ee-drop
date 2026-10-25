@@ -67,7 +67,7 @@ export function EmptyState({
   return (
     <div className={cn("flex flex-col items-center gap-2 rounded-lg bg-brand-tint px-6 py-8 text-center", className)}>
       {icon && (
-        <span className="mb-1 inline-flex size-10 items-center justify-center rounded-full bg-card text-primary [&_svg]:size-5">
+        <span className="mb-1 inline-flex size-10 items-center justify-center rounded-full bg-card text-primary-text [&_svg]:size-5">
           {icon}
         </span>
       )}

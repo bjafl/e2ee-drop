@@ -492,7 +492,7 @@ function ReceivePageForLink() {
               }}
             >
               <div className="flex gap-3">
-                <KeyRound aria-hidden="true" className="mt-0.5 size-5 shrink-0 text-primary" />
+                <KeyRound aria-hidden="true" className="mt-0.5 size-5 shrink-0 text-primary-text" />
                 <div className="flex flex-col gap-1">
                   <h1 className="text-base leading-6 font-semibold">{t("unlockTitle")}</h1>
                   <p className="text-muted-foreground">{t("enterPin")}</p>
@@ -593,7 +593,7 @@ function ReceivePageForLink() {
       <KeyRound aria-hidden="true" />
       <AlertDescription className="text-foreground">
         {t("reloginRequired")}{" "}
-        <Link to="/login" state={{ returnTo: `/receive/${slug}` }} className="font-medium text-primary">
+        <Link to="/login" state={{ returnTo: `/receive/${slug}` }} className="font-medium text-primary-text">
           {t("reloginLink")}
         </Link>
       </AlertDescription>
@@ -829,7 +829,7 @@ function ClaimView({
               <Link
                 to="/login"
                 state={{ returnTo: `/receive/${slug}` }}
-                className="inline-flex min-h-11 items-center font-medium text-primary hover:text-primary-hover sm:min-h-0"
+                className="inline-flex min-h-11 items-center font-medium text-primary-text hover:text-primary-text hover:underline sm:min-h-0"
               >
                 {t("logInToClaimWithAccount")}
               </Link>
