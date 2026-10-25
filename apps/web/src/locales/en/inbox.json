@@ -3,8 +3,8 @@
   "loading": "Loading…",
   "empty": "Nothing here yet.",
   "selectPrompt": "Select someone from the list to see their deliveries.",
-  "incomingBadge": "incoming",
-  "outgoingBadge": "outgoing",
+  "incomingBadge": "Incoming",
+  "outgoingBadge": "Outgoing",
   "status": {
     "sender_opened": "Opened by sender",
     "sent": "Sent",
@@ -17,6 +17,31 @@
     "sent": "Sent",
     "receiver_opened": "Opened by recipient",
     "partial_delivery": "Partially retrieved",
+    "delivered": "Delivered"
+  },
+  "description": "Deliveries to and from you, grouped by person.",
+  "liveHint": "Updates automatically",
+  "emptyHint": "When someone sends to one of your links, or you send to someone, it shows up here.",
+  "filterLabel": "Filter by direction",
+  "filterAll": "All",
+  "filterIncoming": "Incoming",
+  "filterOutgoing": "Outgoing",
+  "peopleLabel": "People",
+  "dropsLabel": "Deliveries",
+  "backToList": "All people",
+  "anonymousHint": "No verified identity",
+  "noDrops": "No deliveries.",
+  "withMessage": "with message",
+  "progressLabel": "Progress",
+  "stepDone": "done",
+  "stepPending": "not yet",
+  "openAndDownload": "Open and download",
+  "dropCount_one": "{{count}} delivery",
+  "dropCount_other": "{{count}} deliveries",
+  "steps": {
+    "sent": "Sent",
+    "openedByYou": "Opened by you",
+    "openedByThem": "Opened",
     "delivered": "Delivered"
   }
 }

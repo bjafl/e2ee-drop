@@ -1,4 +1,5 @@
 import { Routes, Route } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import { HomePage } from "@/components/HomePage";
 import { CreateLinkPage } from "@/components/CreateLinkPage";
 import { UploadPage } from "@/components/UploadPage";
@@ -16,26 +17,45 @@ import { InboxPage } from "@/components/InboxPage";
 import { NavBar } from "@/components/NavBar";
 import { AuthProvider } from "@/hooks/useAuth";
 
+function Footer() {
+  const { t } = useTranslation("common");
+  return (
+    <footer className="border-t">
+      <div className="mx-auto flex max-w-[1168px] flex-wrap justify-between gap-4 px-4 py-4 text-xs leading-4 text-muted-foreground md:px-6">
+        <span>{t("footer.selfHosted")}</span>
+        <a href="https://github.com/bjafl/e2ee-drop" rel="noreferrer" target="_blank">
+          {t("footer.source")}
+        </a>
+      </div>
+    </footer>
+  );
+}
+
 export default function App() {
   return (
     <AuthProvider>
-      <NavBar />
-      <Routes>
-        <Route path="/" element={<HomePage />} />
-        <Route path="/create" element={<CreateLinkPage />} />
-        <Route path="/send/:slug" element={<UploadPage />} />
-        <Route path="/receive/:slug" element={<ReceivePage />} />
-        <Route path="/contacts" element={<ContactsPage />} />
-        <Route path="/links/new" element={<NewLinkPage />} />
-        <Route path="/links/request" element={<RequestLinkPage />} />
-        <Route path="/account" element={<AccountPage />} />
-        <Route path="/inbox" element={<InboxPage />} />
-        <Route path="/register" element={<RegisterPage />} />
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/reset-password" element={<RequestPasswordResetPage />} />
-        <Route path="/reset-password/confirm" element={<ConfirmPasswordResetPage />} />
-        <Route path="/verify-email/confirm" element={<VerifyEmailPage />} />
-      </Routes>
+      <div className="flex min-h-svh flex-col">
+        <NavBar />
+        <div className="flex-1">
+          <Routes>
+            <Route path="/" element={<HomePage />} />
+            <Route path="/create" element={<CreateLinkPage />} />
+            <Route path="/send/:slug" element={<UploadPage />} />
+            <Route path="/receive/:slug" element={<ReceivePage />} />
+            <Route path="/contacts" element={<ContactsPage />} />
+            <Route path="/links/new" element={<NewLinkPage />} />
+            <Route path="/links/request" element={<RequestLinkPage />} />
+            <Route path="/account" element={<AccountPage />} />
+            <Route path="/inbox" element={<InboxPage />} />
+            <Route path="/register" element={<RegisterPage />} />
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/reset-password" element={<RequestPasswordResetPage />} />
+            <Route path="/reset-password/confirm" element={<ConfirmPasswordResetPage />} />
+            <Route path="/verify-email/confirm" element={<VerifyEmailPage />} />
+          </Routes>
+        </div>
+        <Footer />
+      </div>
     </AuthProvider>
   );
 }

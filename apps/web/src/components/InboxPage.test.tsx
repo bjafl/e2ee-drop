@@ -1,13 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render as rtlRender, screen, waitFor } from "@testing-library/react";
+import type { ReactElement } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { InboxPage } from "./InboxPage";
+
+// Drop cards link to /receive/:slug with a router <Link> (a full page load would
+// drop the in-memory account key), so the page needs a router context.
+function render(ui: ReactElement) {
+  return rtlRender(<MemoryRouter>{ui}</MemoryRouter>);
+}
 
 class MockEventSource {
   onmessage: ((event: MessageEvent) => void) | null = null;
   onopen: (() => void) | null = null;
   onerror: (() => void) | null = null;
   close = vi.fn();
-  constructor(public url: string) {}
+  url: string;
+  constructor(url: string) {
+    this.url = url;
+  }
 }
 
 describe("InboxPage", () => {
@@ -124,5 +135,31 @@ describe("InboxPage", () => {
 
     await waitFor(() => expect(screen.getByText("Opened by recipient")).toBeInTheDocument());
     expect(screen.queryByText("You've opened this")).not.toBeInTheDocument();
+  });
+
+  it("links an incoming, not-yet-delivered drop to its receive page", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          counterparties: [
+            {
+              key: "incoming:account:1",
+              kind: "account",
+              displayName: "friend1",
+              direction: "incoming",
+              drops: [{ id: "d1", linkSlug: "myslug", deliveryStatus: "sent", messageEnvelopeStatus: "sealed", fileEnvelopeStatus: "sealed", hasMessage: false, createdAt: 1 }],
+            },
+          ],
+        }),
+      })
+    );
+
+    render(<InboxPage />);
+    (await screen.findByText("friend1")).click();
+
+    const link = await screen.findByRole("link", { name: /open and download/i });
+    expect(link).toHaveAttribute("href", "/receive/myslug");
   });
 });
