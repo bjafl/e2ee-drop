@@ -226,7 +226,8 @@ function Dashboard({
   const showBrowser = filter !== "account";
   const accountCount = myLinks?.length ?? 0;
   const visibleCount = (showAccount ? accountCount : 0) + (showBrowser ? localLinks.length : 0);
-  const now = Date.now();
+  // Snapshot for this mount: relative expiry labels needn't tick live.
+  const [now] = useState(() => Date.now());
 
   const accountRow = (link: LinkSummary): RowProps => {
     const kind = link.isDefault ? t("kindDefault") : link.recipientIsOwner ? t("kindCustom") : t("kindRequest");
