@@ -49,6 +49,60 @@ describe("NavBar", () => {
     expect(screen.getByRole("link", { name: /^overview$/i })).not.toHaveAttribute("aria-current");
   });
 
+  // Issue #3: count of people with incoming drops not yet fully fetched.
+  it("shows a count of pending incoming deliveries on Inbox for a verified account", async () => {
+    authState.user = { id: "u1", username: "alice", emailVerified: true };
+    const pending = { deliveryStatus: "sent" };
+    const delivered = { deliveryStatus: "delivered" };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) =>
+        Promise.resolve({
+          ok: true,
+          json: async () =>
+            url === "/api/inbox"
+              ? {
+                  counterparties: [
+                    { key: "a", direction: "incoming", drops: [pending] },
+                    { key: "b", direction: "incoming", drops: [delivered, pending] },
+                    { key: "c", direction: "incoming", drops: [delivered] },
+                    { key: "d", direction: "outgoing", drops: [pending] },
+                  ],
+                }
+              : {},
+        })
+      )
+    );
+
+    render(
+      <MemoryRouter>
+        <NavBar />
+      </MemoryRouter>
+    );
+
+    const badge = await screen.findByTestId("inbox-count");
+    expect(badge).toHaveTextContent("2");
+    expect(badge).toHaveAccessibleName("2 new");
+    expect(screen.getByTestId("menu-new-dot")).toBeInTheDocument();
+    vi.unstubAllGlobals();
+  });
+
+  it("does not fetch the inbox count for an unverified account", () => {
+    authState.user = { id: "u1", username: "alice", emailVerified: false };
+    const fetchMock = vi.fn(() => Promise.resolve({ ok: true, json: async () => ({}) }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <MemoryRouter>
+        <NavBar />
+      </MemoryRouter>
+    );
+
+    expect(fetchMock).not.toHaveBeenCalledWith("/api/inbox");
+    expect(screen.queryByTestId("inbox-count")).not.toBeInTheDocument();
+    vi.unstubAllGlobals();
+  });
+
   it("opens the mobile menu sheet with navigation and log out", async () => {
     authState.user = { id: "u1", username: "alice", emailVerified: true };
 

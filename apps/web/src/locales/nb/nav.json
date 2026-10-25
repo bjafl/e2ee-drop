@@ -24,5 +24,9 @@
   "theme": "Tema",
   "themeOptionSystem": "System",
   "themeOptionLight": "Lys",
-  "themeOptionDark": "Mørk"
+  "themeOptionDark": "Mørk",
+  "newCount_one": "{{count}} ny",
+  "newCount_other": "{{count}} nye",
+  "openMenuWithNew_one": "Åpne meny, {{count}} ny i innboksen",
+  "openMenuWithNew_other": "Åpne meny, {{count}} nye i innboksen"
 }

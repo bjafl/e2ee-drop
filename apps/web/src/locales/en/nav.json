@@ -24,5 +24,9 @@
   "theme": "Theme",
   "themeOptionSystem": "System",
   "themeOptionLight": "Light",
-  "themeOptionDark": "Dark"
+  "themeOptionDark": "Dark",
+  "newCount_one": "{{count}} new",
+  "newCount_other": "{{count}} new",
+  "openMenuWithNew_one": "Open menu, {{count}} new in inbox",
+  "openMenuWithNew_other": "Open menu, {{count}} new in inbox"
 }

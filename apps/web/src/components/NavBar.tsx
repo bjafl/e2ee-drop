@@ -21,6 +21,7 @@ import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { useAuth } from "@/hooks/useAuth";
+import { useInboxCount } from "@/hooks/useInboxCount";
 import i18n from "@/i18n";
 import navEn from "@/locales/en/nav.json";
 import navNb from "@/locales/nb/nav.json";
@@ -177,13 +178,29 @@ function ThemeSegmented() {
   );
 }
 
+function CountBadge({ count, testId }: { count: number; testId?: string }) {
+  const { t } = useTranslation("nav");
+  if (count <= 0) return null;
+  return (
+    <span
+      data-testid={testId}
+      aria-label={t("newCount", { count })}
+      className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-xs leading-5 font-semibold text-primary-foreground tabular-nums"
+    >
+      {count > 99 ? "99+" : count}
+    </span>
+  );
+}
+
 function MobileMenu({
   username,
   showInbox,
+  inboxCount,
   onLogout,
 }: {
   username: string;
   showInbox: boolean;
+  inboxCount: number;
   onLogout: () => void;
 }) {
   const { t } = useTranslation(["nav", "common"]);
@@ -204,8 +221,20 @@ function MobileMenu({
     <Dialog.Root open={open} onOpenChange={setOpen}>
       <Dialog.Trigger
         render={
-          <Button variant="ghost" size="icon-lg" className="md:hidden" aria-label={t("common:openMenu")}>
+          <Button
+            variant="ghost"
+            size="icon-lg"
+            className="relative md:hidden"
+            aria-label={inboxCount > 0 ? t("openMenuWithNew", { count: inboxCount }) : t("common:openMenu")}
+          >
             <MenuIcon aria-hidden="true" />
+            {inboxCount > 0 && (
+              <span
+                aria-hidden="true"
+                data-testid="menu-new-dot"
+                className="absolute top-2.5 right-2.5 size-2 rounded-full bg-primary ring-2 ring-card"
+              />
+            )}
           </Button>
         }
       />
@@ -251,7 +280,8 @@ function MobileMenu({
                 <li>
                   <NavLink to="/inbox" className={itemClass} onClick={() => setOpen(false)}>
                     <Inbox aria-hidden="true" />
-                    {t("inbox")}
+                    <span className="flex-1">{t("inbox")}</span>
+                    <CountBadge count={inboxCount} />
                   </NavLink>
                 </li>
               )}
@@ -295,6 +325,8 @@ export function NavBar() {
   const { t } = useTranslation("nav");
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  // Issue #3: only verified accounts have an inbox (same rule as the nav item).
+  const inboxCount = useInboxCount(Boolean(user?.emailVerified));
   const [cooldownUntil, setCooldownUntil] = useState<number | null>(null);
   const [secondsLeft, setSecondsLeft] = useState(0);
   const [resendMessage, setResendMessage] = useState<string | null>(null);
@@ -368,8 +400,9 @@ export function NavBar() {
                   {t("overview")}
                 </NavLink>
                 {user.emailVerified && (
-                  <NavLink to="/inbox" className={desktopLinkClass}>
+                  <NavLink to="/inbox" className={(state) => cn(desktopLinkClass(state), "gap-2")}>
                     {t("inbox")}
+                    <CountBadge count={inboxCount} testId="inbox-count" />
                   </NavLink>
                 )}
                 <NavLink to="/contacts" className={desktopLinkClass}>
@@ -396,7 +429,12 @@ export function NavBar() {
                   </Link>
                 </Button>
                 <AccountMenu username={user.username} onLogout={handleLogout} />
-                <MobileMenu username={user.username} showInbox={Boolean(user.emailVerified)} onLogout={handleLogout} />
+                <MobileMenu
+                  username={user.username}
+                  showInbox={Boolean(user.emailVerified)}
+                  inboxCount={inboxCount}
+                  onLogout={handleLogout}
+                />
               </>
             ) : (
               <>
